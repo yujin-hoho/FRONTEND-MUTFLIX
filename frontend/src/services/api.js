@@ -1,5 +1,10 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 
+export const TMDB_GENRES = {
+  28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+  10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"
+};
+
 // Token hanya dari localStorage (login flow)
 const getToken = () => localStorage.getItem('token') || '';
 
@@ -23,7 +28,8 @@ export const getTMDBInfo = async (title) => {
                 backdrop_path: bestResult.backdrop_path,
                 rating: bestResult.vote_average,
                 overview: bestResult.overview,
-                date: bestResult.release_date || bestResult.first_air_date
+                date: bestResult.release_date || bestResult.first_air_date,
+                genre_ids: bestResult.genre_ids || []
             };
         }
         return null;
@@ -55,6 +61,19 @@ export const getTMDBCredits = async (tmdbId, mediaType) => {
         console.error("TMDB credits fetch error:", e);
         return null;
     }
+};
+
+export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
+  const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
+  if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
+  try {
+    const response = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.error("Error fetching TMDB season details:", error);
+    return null;
+  }
 };
 
 export const fetchContentReleases = async () => {

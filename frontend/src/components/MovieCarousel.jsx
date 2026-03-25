@@ -1,7 +1,7 @@
 import { Play, BookmarkPlus, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo } from '../services/api';
+import { getTMDBInfo, TMDB_GENRES } from '../services/api';
 
 const MovieCard = ({ item, tag, isFirst, isLast }) => {
   const [isHovered, setIsHovered] = useState(false);
@@ -32,6 +32,7 @@ const MovieCard = ({ item, tag, isFirst, isLast }) => {
         if (data) setTmdbData(data);
       });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item, title]);
 
   const rawPoster = item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
@@ -43,9 +44,13 @@ const MovieCard = ({ item, tag, isFirst, isLast }) => {
   const overview = item?.tmdb_overview || tmdbData?.overview || "A thrilling story awaits in this masterpiece.";
   const year = (tmdbData?.date || "2024").substring(0, 4);
   
-  // Mock logic to roughly match the reference image variety
-  const episodesCount = item?.episodes ? `${item.episodes} Episodes` : "24 Episodes";
+  const isSeries = mediaType === 'series' || item?.media_type === 'tv' || item?.episodes;
+  const episodesCount = item?.episodes ? `${item.episodes} Episodes` : (isSeries ? "24 Episodes" : "Movie");
   const bottomText = rating >= 8.5 && tag !== 'Free' ? `★ ${Number(rating).toFixed(1)}` : episodesCount;
+
+  const genres = tmdbData?.genre_ids && tmdbData.genre_ids.length > 0
+    ? tmdbData.genre_ids.slice(0, 3).map(id => TMDB_GENRES[id]).filter(Boolean)
+    : ["South Korea", "Romance", "Drama"];
 
   return (
     <div 
@@ -96,15 +101,22 @@ const MovieCard = ({ item, tag, isFirst, isLast }) => {
           className={`absolute top-1/2 -translate-y-[45%] w-[320px] bg-[#1a1c22] rounded-lg shadow-[0_20px_60px_rgba(0,0,0,0.95)] border border-white/10 hidden lg:block pb-1 z-[100] transform transition-all duration-300 animate-popup ${
             isFirst ? 'left-0 origin-left' : isLast ? 'right-0 origin-right' : 'left-1/2 -translate-x-1/2 origin-center'
           }`}
+          onClick={handleNavigate}
         >
           <div className="relative w-full h-[180px] rounded-t-lg overflow-hidden">
             <img src={poster} className="w-full h-full object-cover object-top" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#1a1c22] via-[#1a1c22]/40 to-transparent"></div>
             
-            <button className="absolute bottom-3 right-14 bg-white/10 backdrop-blur text-white border border-white/20 rounded-full p-2 shadow-lg hover:bg-white/20 transition">
+            <button 
+              className="absolute bottom-3 right-14 bg-white/10 backdrop-blur text-white border border-white/20 rounded-full p-2 shadow-lg hover:bg-white/20 transition"
+              onClick={(e) => { e.stopPropagation(); /* Add to List Action */ }}
+            >
               <BookmarkPlus size={18} />
             </button>
-            <button className="absolute bottom-3 right-3 bg-[#00dc41] text-black rounded-full p-2 shadow-[0_0_15px_rgba(0,220,65,0.4)] hover:scale-105 hover:bg-[#00f048] transition">
+            <button 
+              className="absolute bottom-3 right-3 bg-[#00dc41] text-black rounded-full p-2 shadow-[0_0_15px_rgba(0,220,65,0.4)] hover:scale-105 hover:bg-[#00f048] transition"
+              onClick={(e) => { e.stopPropagation(); /* Play Action */ }}
+            >
               <Play fill="black" size={18} className="ml-0.5" />
             </button>
           </div>
@@ -118,13 +130,13 @@ const MovieCard = ({ item, tag, isFirst, isLast }) => {
               <span className="px-0.5">|</span>
               <span>{year}</span>
               <span className="px-0.5">|</span>
-              <span>30 Episodes</span>
+              <span>{isSeries ? '30 Episodes' : 'Movie'}</span>
             </div>
             
             <div className="flex items-center gap-1.5 text-[10px] text-gray-400 mb-3 font-semibold">
-              <span className="bg-white/5 py-1 px-1.5 rounded hover:text-white transition cursor-pointer">South Korea</span>
-              <span className="bg-white/5 py-1 px-1.5 rounded hover:text-white transition cursor-pointer">Romance</span>
-              <span className="bg-white/5 py-1 px-1.5 rounded hover:text-white transition cursor-pointer">Drama</span>
+              {genres.map((g, i) => (
+                <span key={i} className="bg-white/5 py-1 px-1.5 rounded hover:text-white transition cursor-pointer">{g}</span>
+              ))}
             </div>
             
             <p className="text-[#a0a0a0] text-xs line-clamp-2 leading-relaxed">
