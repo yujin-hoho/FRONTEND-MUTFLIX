@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import HeroBanner from '../components/HeroBanner';
 import MovieCarousel from '../components/MovieCarousel';
@@ -15,6 +16,7 @@ const shuffleArray = (array) => {
 };
 
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [featuredList, setFeaturedList] = useState([]);
   const [genreSections, setGenreSections] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -24,6 +26,15 @@ const Dashboard = () => {
     const role = localStorage.getItem('role');
     return username ? { username, role } : null;
   });
+
+  const QUICK_FILTERS = [
+    { label: 'All Videos', path: '/filter' },
+    { label: 'Chinese Mainland', path: '/filter?region=Chinese Mainland' },
+    { label: 'South Korea', path: '/filter?region=South Korea' },
+    { label: 'Southeast Asia', path: '/filter?region=Southeast Asia' },
+    { label: 'America', path: '/filter?region=America' },
+    { label: 'Variety Show', path: '/filter?category=Variety Show' },
+  ];
 
   const loadData = useCallback(async () => {
     try {
@@ -75,7 +86,7 @@ const Dashboard = () => {
         resolvedItem.tmdb_backdrop_path = data?.backdrop_path || item.tmdb_backdrop_path;
         resolvedItem.tmdb_genre_ids = data?.genre_ids || [];
         resolvedItem.tmdb_overview = data?.overview || item.tmdb_overview;
-        resolvedItem.tmdb_rating = data?.vote_average || item.tmdb_rating;
+        resolvedItem.tmdb_rating = data?.rating || item.tmdb_rating;
         
         resolvedItems.push(resolvedItem);
         return {
@@ -160,7 +171,7 @@ const Dashboard = () => {
   }
 
   return (
-    <div className="min-h-screen bg-darkBG font-sans pb-20 overflow-x-hidden animate-page-enter">
+    <div className="min-h-screen bg-darkBG font-sans pb-20 overflow-x-hidden">
       <Navbar 
         onMeClick={() => setShowLoginModal(true)} 
         isLoggedIn={!!authUser}
@@ -168,19 +179,43 @@ const Dashboard = () => {
         onLogout={handleLogout}
       />
       
-      <main className="w-full">
+      <main className="w-full animate-page-enter">
         <HeroBanner items={featuredList} />
-        <div className="-mt-32 md:-mt-48 relative z-20 pb-12">
+        <div className="-mt-16 md:-mt-24 relative z-20 pb-12">
           {/* Genre Sections */}
-          {genreSections.map((section, idx) => (
-            <div key={section.title} className="mb-4">
-              <MovieCarousel 
-                title={section.title} 
-                items={section.items} 
-                tagType={section.tagType || (idx === 0 ? 'top' : idx % 3 === 0 ? 'free' : null)} 
-              />
-            </div>
-          ))}
+          {genreSections.map((section, idx) => {
+            const crimeIdx = genreSections.findIndex(s => s.title === 'Crime');
+            const targetIdx = crimeIdx !== -1 ? crimeIdx : 1;
+            
+            return (
+              <div key={section.title} className="mb-4">
+                <MovieCarousel 
+                  title={section.title} 
+                  items={section.items} 
+                  tagType={section.tagType || (idx === 0 ? 'top' : idx % 3 === 0 ? 'free' : null)} 
+                />
+                
+                {idx === targetIdx && (
+                  <div className="px-6 md:px-[60px] mb-4 -mt-2 w-full">
+                    <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                      {QUICK_FILTERS.map(f => (
+                        <button 
+                          key={f.label} 
+                          onClick={() => navigate(f.path)}
+                          className="bg-[#1a1c22] hover:bg-[#2a2c33] text-gray-300 hover:text-white px-5 py-2.5 rounded-md text-[14px] font-medium whitespace-nowrap transition-colors border border-white/5 flex items-center gap-2"
+                        >
+                          {f.label === 'All Videos' && (
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                          )}
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {/* The original instruction had a syntax error here, assuming it meant to replace the entire genreSections rendering logic.
               However, to maintain functionality and avoid introducing new undefined variables like `genreGroups` and `regularList`,

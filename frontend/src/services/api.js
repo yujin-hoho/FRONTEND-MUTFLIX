@@ -8,6 +8,13 @@ export const TMDB_GENRES = {
 // Token hanya dari localStorage (login flow)
 const getToken = () => localStorage.getItem('token') || '';
 
+// Jangan kirim header auth kalau token kosong.
+// Beberapa backend menganggap header auth yang ada-tapi-kosong sebagai invalid.
+const getAuthHeaders = () => {
+    const token = getToken();
+    return token ? { 'x-access-token': token } : {};
+};
+
 // Mengambil info dari TMDB jika backend tidak mengirimkan poster
 export const getTMDBInfo = async (title) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
@@ -29,7 +36,9 @@ export const getTMDBInfo = async (title) => {
                 rating: bestResult.vote_average,
                 overview: bestResult.overview,
                 date: bestResult.release_date || bestResult.first_air_date,
-                genre_ids: bestResult.genre_ids || []
+                genre_ids: bestResult.genre_ids || [],
+                origin_country: bestResult.origin_country || [],
+                original_language: bestResult.original_language
             };
         }
         return null;
@@ -79,9 +88,12 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
 export const fetchContentReleases = async () => {
     try {
         const res = await fetch(`${BASE_URL}/api/content-releases`, {
-            headers: { 'x-access-token': getToken() }
+            headers: getAuthHeaders()
         });
-        if (!res.ok) throw new Error('Network error');
+        if (!res.ok) {
+            if (res.status === 401) return { __error: true, status: 401 };
+            throw new Error(`Network error (${res.status})`);
+        }
         return await res.json();
     } catch (error) {
         console.error("Error fetching content releases:", error);
@@ -92,9 +104,12 @@ export const fetchContentReleases = async () => {
 export const fetchFolders = async () => {
     try {
         const res = await fetch(`${BASE_URL}/api/folders`, {
-            headers: { 'x-access-token': getToken() }
+            headers: getAuthHeaders()
         });
-        if (!res.ok) throw new Error('Network error');
+        if (!res.ok) {
+            if (res.status === 401) return { __error: true, status: 401 };
+            throw new Error(`Network error (${res.status})`);
+        }
         return await res.json();
     } catch (error) {
         console.error("Error fetching folders:", error);
@@ -105,9 +120,12 @@ export const fetchFolders = async () => {
 export const fetchVideos = async (folderName) => {
     try {
         const res = await fetch(`${BASE_URL}/api/videos/${encodeURIComponent(folderName)}`, {
-            headers: { 'x-access-token': getToken() }
+            headers: getAuthHeaders()
         });
-        if (!res.ok) throw new Error('Network error');
+        if (!res.ok) {
+            if (res.status === 401) return { __error: true, status: 401 };
+            throw new Error(`Network error (${res.status})`);
+        }
         return await res.json();
     } catch (error) {
         console.error("Error fetching videos:", error);

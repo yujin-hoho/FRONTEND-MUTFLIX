@@ -40,13 +40,13 @@ const MovieCard = ({ item, tag, isFirst, isLast }) => {
     ? (rawPoster.startsWith('http') ? rawPoster : `https://image.tmdb.org/t/p/w500${rawPoster}`) 
     : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop';
 
-  const rating = item?.tmdb_rating || tmdbData?.rating || 8.5;
+  const rating = item?.tmdb_rating || tmdbData?.rating || 0;
   const overview = item?.tmdb_overview || tmdbData?.overview || "A thrilling story awaits in this masterpiece.";
   const year = (tmdbData?.date || "2024").substring(0, 4);
   
   const isSeries = mediaType === 'series' || item?.media_type === 'tv' || item?.episodes;
   const episodesCount = item?.episodes ? `${item.episodes} Episodes` : (isSeries ? "24 Episodes" : "Movie");
-  const bottomText = rating >= 8.5 && tag !== 'Free' ? `★ ${Number(rating).toFixed(1)}` : episodesCount;
+  const bottomText = rating > 0 && tag !== 'Free' ? `★ ${Number(rating).toFixed(1)}` : episodesCount;
 
   const genres = tmdbData?.genre_ids && tmdbData.genre_ids.length > 0
     ? tmdbData.genre_ids.slice(0, 3).map(id => TMDB_GENRES[id]).filter(Boolean)
@@ -124,7 +124,7 @@ const MovieCard = ({ item, tag, isFirst, isLast }) => {
           <div className="p-4 pt-2">
             <h3 className="text-white font-bold text-[17px] mb-1.5 line-clamp-1">{title}</h3>
             <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-2.5 font-medium">
-              <span className="text-[#00dc41] font-bold text-[13px]">★ {Number(rating).toFixed(1)}</span>
+              <span className="text-[#00dc41] font-bold text-[13px]">★ {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
               <span className="px-0.5">|</span>
               <span className="border border-gray-600 px-1 rounded-sm text-[10px]">13+</span>
               <span className="px-0.5">|</span>
@@ -226,3 +226,4 @@ const MovieCarousel = ({ title, items, tagType }) => {
 };
 
 export default MovieCarousel;
+export { MovieCard };

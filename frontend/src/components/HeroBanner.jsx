@@ -1,8 +1,10 @@
 import { Play, BookmarkPlus } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const HeroBanner = ({ items }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const navigate = useNavigate();
 
   // Auto rotate
   useEffect(() => {
@@ -33,7 +35,11 @@ const HeroBanner = ({ items }) => {
         return (
           <div 
             key={item.id || index}
-            className={`absolute inset-0 w-full h-full transition-opacity duration-1000 ease-in-out ${isActive ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
+            className={`absolute inset-0 w-full h-full transition-all duration-1000 ease-in-out`}
+            style={{ 
+               opacity: isActive ? 1 : 0, 
+               zIndex: isActive ? 10 : (index === (currentIndex - 1 + items.length) % items.length ? 5 : 0) 
+            }}
           >
             <div className="absolute inset-0 w-full h-full">
               <img 
@@ -45,8 +51,8 @@ const HeroBanner = ({ items }) => {
               <div className="absolute inset-x-0 bottom-0 h-[40%] bg-gradient-to-t from-[#111319] to-transparent"></div>
             </div>
             
-            <div className={`relative z-10 flex flex-col justify-center h-full px-8 md:px-16 pt-20 pb-12 md:pb-32 max-w-[800px] transition-transform duration-1000 ${isActive ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'} drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)]`}>
-              <h1 className="text-4xl md:text-6xl font-black text-white mb-4 leading-tight tracking-tight drop-shadow-[0_2px_15px_rgba(0,0,0,0.8)]">
+            <div className={`relative z-10 flex flex-col justify-center h-full px-8 md:px-16 pt-20 pb-12 md:pb-32 max-w-[800px] transition-transform duration-1000 ${isActive ? 'translate-y-0 opacity-100' : 'translate-y-8 opacity-0'}`}>
+              <h1 className="text-4xl md:text-6xl font-black text-white mb-4 leading-tight tracking-tight">
                 {title}
               </h1>
               
@@ -65,18 +71,21 @@ const HeroBanner = ({ items }) => {
                   <span>{item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'Episodes' : 'Movie'}</span>
                 </div>
                 
-                <div className="flex items-center flex-wrap gap-x-4 gap-y-2 text-[13px] text-gray-400 font-medium">
-                  <span className="hover:text-white cursor-pointer transition">Trending</span>
-                  <span className="hover:text-white cursor-pointer transition">Must Watch</span>
+                <div className="flex items-center flex-wrap gap-x-4 gap-y-2 text-[13px] text-white font-medium">
+                  <span className="hover:text-gray-300 cursor-pointer transition">Trending</span>
+                  <span className="hover:text-gray-300 cursor-pointer transition">Must Watch</span>
                 </div>
               </div>
               
-              <p className="text-gray-400 text-[15px] mb-10 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-xl pr-4">
+              <p className="text-white text-[15px] mb-10 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-xl pr-4">
                 "{overview}"
               </p>
               
               <div className="flex gap-4">
-                <button className="bg-brand hover:brightness-[1.15] text-white rounded-full h-[52px] w-[52px] flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.4)]">
+                <button 
+                  onClick={() => navigate(`/detail/${encodeURIComponent(title)}?type=${item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'series' : 'movie'}`)}
+                  className="bg-brand hover:brightness-[1.15] text-white rounded-full h-[52px] w-[52px] flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.4)]"
+                >
                   <Play fill="black" size={24} className="ml-1 text-black" />
                 </button>
                 <button className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white rounded-full h-[52px] w-[52px] border border-white/20 flex items-center justify-center transition-all hover:scale-110 active:scale-95">

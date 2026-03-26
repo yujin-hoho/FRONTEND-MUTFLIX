@@ -1,9 +1,20 @@
 import { Search, RotateCcw, Globe, User, LogOut, Trash2, X } from 'lucide-react';
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const navigate = useNavigate();
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    if (searchTerm.trim()) {
+      navigate(`/search?q=${encodeURIComponent(searchTerm)}`);
+      setIsSearchFocused(false);
+    }
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -15,7 +26,7 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
 
   return (
     <nav className={`fixed top-0 w-full z-[100] px-6 py-4 flex items-center gap-6 transition-colors duration-300 ${isScrolled ? 'bg-[#111319] shadow-lg border-b border-white/5' : 'bg-gradient-to-b from-black/80 to-transparent'}`}>
-      <div className="text-brand font-black text-3xl md:text-4xl tracking-tight cursor-pointer select-none">
+      <div onClick={() => navigate('/')} className="text-brand font-black text-3xl md:text-4xl tracking-tight cursor-pointer select-none">
         MUTFLIX
       </div>
       <div className="flex gap-4 lg:gap-8 text-sm md:text-base font-medium text-gray-300 whitespace-nowrap hidden md:flex">
@@ -25,14 +36,18 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
       </div>
       
       <div className="flex-1 max-w-md xl:max-w-lg relative lg:ml-8 hidden sm:block">
-        <input 
-          type="text" 
-          placeholder="Pursuit of Jade" 
-          className="w-full bg-white/10 hover:bg-white/15 text-white text-sm rounded-full py-2.5 px-5 outline-none focus:bg-white/20 transition-all border border-white/10"
-          onFocus={() => setIsSearchFocused(true)}
-          onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
-        />
-        <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5 cursor-pointer hover:text-white"/>
+        <form onSubmit={handleSearch}>
+          <input 
+            type="text" 
+            placeholder="Pursuit of Jade" 
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-white/10 hover:bg-white/15 text-white text-sm rounded-full py-2.5 px-5 outline-none focus:bg-white/20 transition-all border border-white/10"
+            onFocus={() => setIsSearchFocused(true)}
+            onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
+          />
+          <Search onClick={handleSearch} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5 cursor-pointer hover:text-white"/>
+        </form>
         
         {/* iQIYI-style Search Dropdown */}
         {isSearchFocused && (
@@ -43,8 +58,8 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                 <span className="text-[13px] text-gray-500 font-medium">Search History</span>
                 <Trash2 className="w-4 h-4 text-gray-500 cursor-pointer hover:text-white transition" />
               </div>
-              <div className="flex justify-between items-center group cursor-pointer py-1">
-                <span className="text-[13px] text-gray-300 group-hover:text-[#00dc41] transition">peaceful property</span>
+              <div className="flex justify-between items-center group cursor-pointer py-1" onMouseDown={() => navigate('/search?q=Peaceful%20Property')}>
+                <span className="text-[13px] text-gray-300 group-hover:text-[#00dc41] transition">Peaceful Property</span>
                 <X className="w-3.5 h-3.5 text-gray-600 hover:text-white" />
               </div>
             </div>
@@ -54,16 +69,16 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
               <div className="text-[13px] text-gray-500 font-medium mb-4">Popular Searches</div>
               <div className="flex flex-col gap-3.5">
                 {[
-                  'Pursuit of Jade',
-                  'The Best Thing',
-                  'How Dare You!?',
-                  'Love Between Lines',
-                  'Running Man Thailand',
-                  'SPEED AND LOVE',
-                  'The Secret Friends Club',
+                  'Ashes of Love',
+                  'Crash Landing on You',
+                  'Vincenzo',
+                  'Business Proposal',
+                  'Squid Game',
+                  'True Beauty',
+                  'Hotel Del Luna',
                   'One Piece'
                 ].map((term, idx) => (
-                  <div key={idx} className="flex items-center gap-4 cursor-pointer group">
+                  <div key={idx} className="flex items-center gap-4 cursor-pointer group" onMouseDown={() => navigate(`/search?q=${encodeURIComponent(term)}`)}>
                     <span className={`text-[14px] font-bold w-3 text-center ${idx < 3 ? 'text-[#00dc41]' : 'text-gray-500'}`}>
                       {idx + 1}
                     </span>
