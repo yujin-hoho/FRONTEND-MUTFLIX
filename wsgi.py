@@ -1,8 +1,63 @@
 import os
 import threading
 import time
+import requests as py_requests
+from flask import request, Response
+
 # Import server app and background workers
 from serverUtama import app, background_cache_worker, warmup_cache
+
+
+# ==========================================
+# GDRIVE STREAMING PROXY (Production)
+# Proxies video from Google Drive → This Server → Client
+# Needed because browsers block direct GDrive access (CORS).
+# In dev, the Vite plugin handles this. In prod, this Flask route handles it.
+#
+# Security: The GDrive access_token is obtained by the frontend via the
+# authenticated /api/gdrive-stream-details/ endpoint (which requires JWT).
+# This proxy just forwards that token to Google — it doesn't expose any
+# additional access beyond what the authenticated user already has.
+# ==========================================
+@app.route("/gdrive-proxy/<file_id>")
+def gdrive_stream_proxy(file_id):
+    """Stream a GDrive file through this server to bypass CORS."""
+    access_token = request.args.get('access_token')
+    if not access_token:
+        return Response("Missing access_token", status=400)
+
+    # Build GDrive request
+    gdrive_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": "Mutflix/1.0"
+    }
+
+    # Forward Range header for seeking
+    if request.headers.get("Range"):
+        headers["Range"] = request.headers["Range"]
+
+    try:
+        upstream = py_requests.get(gdrive_url, headers=headers, stream=True, timeout=30)
+    except Exception as e:
+        return Response(f"Upstream error: {e}", status=502)
+
+    # Build response headers
+    resp_headers = {"Accept-Ranges": "bytes"}
+    for h in ["Content-Type", "Content-Length", "Content-Range"]:
+        if h in upstream.headers:
+            resp_headers[h] = upstream.headers[h]
+            
+    # Add CORS headers so the cross-origin frontend can play the video stream
+    resp_headers["Access-Control-Allow-Origin"] = "*"
+    resp_headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+
+    return Response(
+        upstream.iter_content(chunk_size=256 * 1024),  # 256KB chunks
+        status=upstream.status_code,
+        headers=resp_headers
+    )
+
 
 warmup_cache()
 

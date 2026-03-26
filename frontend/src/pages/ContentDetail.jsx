@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
@@ -8,6 +8,7 @@ import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout 
 const ContentDetail = () => {
   const { folderName } = useParams();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const decodedName = decodeURIComponent(folderName);
   const urlType = searchParams.get('type'); // 'movie' or 'series'
 
@@ -25,38 +26,38 @@ const ContentDetail = () => {
     return username ? { username, role } : null;
   });
 
-  const isSeriesContent = urlType === 'series' || 
-    (tmdbData?.media_type === 'tv') || 
+  const isSeriesContent = urlType === 'series' ||
+    (tmdbData?.media_type === 'tv') ||
     (!urlType && videos.length > 1);
 
   useEffect(() => {
     const loadData = async () => {
       setLoading(true);
-      
+
       const [videosResp, tmdb] = await Promise.all([
         fetchVideos(decodedName),
         getTMDBInfo(decodedName)
       ]);
-      
+
       const videosList = videosResp?.videos || [];
       videosList.sort((a, b) => {
         if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
         return (a.episode || 0) - (b.episode || 0);
       });
-      
+
       setVideos(videosList);
       setTmdbData(tmdb);
 
       if (tmdb?.tmdb_id) {
         const creditsData = await getTMDBCredits(tmdb.tmdb_id, tmdb.media_type);
         setCredits(creditsData);
-        
+
         // Fetch Season details for Episode Stills
         if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
           const uniqueSeasons = [...new Set(videosList.map(v => v.season || 1))];
           const seasonPromises = uniqueSeasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s));
           const seasonsData = await Promise.all(seasonPromises);
-          
+
           const dataMap = {};
           seasonsData.forEach((seasonData, index) => {
             if (seasonData && seasonData.episodes) {
@@ -72,10 +73,10 @@ const ContentDetail = () => {
           setEpisodeData(dataMap);
         }
       }
-      
+
       const seriesCheck = urlType === 'series' || (tmdb?.media_type === 'tv') || (!urlType && videosList.length > 1);
       setActiveTab(seriesCheck ? 'episodes' : 'cast');
-      
+
       setLoading(false);
     };
     loadData();
@@ -103,7 +104,7 @@ const ContentDetail = () => {
     : tmdbData?.poster_path
       ? `https://image.tmdb.org/t/p/original${tmdbData.poster_path}`
       : 'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
-      
+
   const posterPath = tmdbData?.poster_path
     ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
     : backdropPath;
@@ -208,7 +209,15 @@ const ContentDetail = () => {
 
           {/* Action Buttons */}
           <div className="flex items-center gap-3 flex-wrap">
-            <button className="bg-[#00dc41] hover:bg-[#00f048] text-black font-bold text-sm px-6 py-2.5 rounded flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.3)]">
+            <button
+              onClick={() => {
+                const firstVid = videos[0];
+                const epParam = firstVid?.episode || 1;
+                const sParam = firstVid?.season || 1;
+                navigate(`/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`);
+              }}
+              className="bg-[#00dc41] hover:bg-[#00f048] text-black font-bold text-sm px-6 py-2.5 rounded flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.3)]"
+            >
               <Play fill="black" size={16} /> Play
             </button>
             <button className="bg-white/10 hover:bg-white/20 backdrop-blur text-white text-sm px-4 py-2.5 rounded flex items-center gap-2 border border-white/15 transition-all hover:scale-105 active:scale-95">
@@ -227,11 +236,10 @@ const ContentDetail = () => {
             <button
               key={tab}
               onClick={() => setActiveTab(tab.toLowerCase())}
-              className={`py-3.5 text-sm font-medium border-b-2 transition-all ${
-                activeTab === tab.toLowerCase()
+              className={`py-3.5 text-sm font-medium border-b-2 transition-all ${activeTab === tab.toLowerCase()
                   ? 'text-white border-[#00dc41]'
                   : 'text-gray-500 border-transparent hover:text-gray-300'
-              }`}
+                }`}
             >
               {tab}
             </button>
@@ -240,7 +248,7 @@ const ContentDetail = () => {
       </div>
 
       <div className="px-6 md:px-16 py-6 animate-fade-in-up" style={{ animationDelay: '0.3s', opacity: 0, animationFillMode: 'forwards' }}>
-        
+
         {/* ====== EPISODES TAB ====== */}
         {activeTab === 'episodes' && (
           <div>
@@ -261,12 +269,17 @@ const ContentDetail = () => {
                 {videos.map((video, idx) => {
                   const epData = episodeData[`${video.season || 1}_${video.episode || idx + 1}`];
                   return (
-                    <EpisodeCard 
-                      key={idx} 
-                      video={video} 
-                      index={idx} 
-                      posterFallback={posterPath} 
+                    <EpisodeCard
+                      key={idx}
+                      video={video}
+                      index={idx}
+                      posterFallback={posterPath}
                       tmdbData={epData}
+                      onPlay={() => {
+                        const epParam = video.episode || idx + 1;
+                        const sParam = video.season || 1;
+                        navigate(`/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`);
+                      }}
                     />
                   );
                 })}
@@ -296,7 +309,7 @@ const ContentDetail = () => {
 };
 
 /* ====== Episode Card ====== */
-const EpisodeCard = ({ video, index, posterFallback, tmdbData }) => {
+const EpisodeCard = ({ video, index, posterFallback, tmdbData, onPlay }) => {
   const [isHovered, setIsHovered] = useState(false);
   const episodeNum = video.episode || index + 1;
   const name = tmdbData?.name || video.name || `Episode ${episodeNum}`;
@@ -307,6 +320,7 @@ const EpisodeCard = ({ video, index, posterFallback, tmdbData }) => {
       className="group cursor-pointer transition-all duration-300"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
+      onClick={onPlay}
     >
       <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1a1c22] mb-2 border border-transparent group-hover:border-white/20 transition-colors">
         <img src={imageToUse} alt={name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />

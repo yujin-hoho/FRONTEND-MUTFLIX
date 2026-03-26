@@ -1,8 +1,8 @@
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
+export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 
 export const TMDB_GENRES = {
-  28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
-  10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"
+    28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
+    10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"
 };
 
 // Token hanya dari localStorage (login flow)
@@ -19,13 +19,13 @@ const getAuthHeaders = () => {
 export const getTMDBInfo = async (title) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
     if (!tmdbKey || !title || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
-    
+
     try {
         const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim();
         const query = encodeURIComponent(cleanTitle);
         const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${query}&language=en-US`);
         const data = await res.json();
-        
+
         if (data.results && data.results.length > 0) {
             const bestResult = data.results.find(i => i.poster_path || i.backdrop_path) || data.results[0];
             return {
@@ -52,7 +52,7 @@ export const getTMDBInfo = async (title) => {
 export const getTMDBCredits = async (tmdbId, mediaType) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
     if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
-    
+
     try {
         const type = mediaType === 'movie' ? 'movie' : 'tv';
         const res = await fetch(`https://api.themoviedb.org/3/${type}/${tmdbId}/credits?api_key=${tmdbKey}&language=en-US`);
@@ -73,16 +73,16 @@ export const getTMDBCredits = async (tmdbId, mediaType) => {
 };
 
 export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
-  const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-  if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
-  try {
-    const response = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
-    if (!response.ok) return null;
-    return await response.json();
-  } catch (error) {
-    console.error("Error fetching TMDB season details:", error);
-    return null;
-  }
+    const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
+    if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
+    try {
+        const response = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
+        if (!response.ok) return null;
+        return await response.json();
+    } catch (error) {
+        console.error("Error fetching TMDB season details:", error);
+        return null;
+    }
 };
 
 export const fetchContentReleases = async () => {
@@ -188,3 +188,41 @@ export const logout = () => {
 };
 
 export const isLoggedIn = () => !!localStorage.getItem('token');
+
+// ==========================================
+// STREAMING & SUBTITLE API
+// ==========================================
+
+/**
+ * Get GDrive stream details (URL + auth headers) for a video file.
+ * @param {string} filePath - e.g. "gdrive/FILE_ID"
+ * @returns {Promise<{url: string, headers: Object}|null>}
+ */
+export const getStreamDetails = async (filePath) => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/gdrive-stream-details/${encodeURIComponent(filePath)}`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) return null;
+        return await res.json();
+    } catch (e) {
+        console.error('Error fetching stream details:', e);
+        return null;
+    }
+};
+
+/**
+ * Fetch raw subtitle content from the server.
+ * @param {string} subtitlePath - e.g. "gdrive/FILE_ID" or "folder/file.srt"
+ * @returns {Promise<string|null>} Raw subtitle text content
+ */
+export const fetchSubtitle = async (subtitlePath) => {
+    try {
+        const res = await fetch(`${BASE_URL}/subtitle/${encodeURIComponent(subtitlePath)}`);
+        if (!res.ok) return null;
+        return await res.text();
+    } catch (e) {
+        console.error('Error fetching subtitle:', e);
+        return null;
+    }
+};
