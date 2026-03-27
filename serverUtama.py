@@ -1827,11 +1827,19 @@ def _normalize_text(text):
     return [w for w in words if w]
 
 def build_search_index():
-    """Build inverted search index from folders data in RAM.
+    """Build inverted search index from folders data in RAM or Disk Cache.
     Called during warmup and after each BG worker refresh."""
     global _search_index_built
-    folders = _mem_cache.get('folders_list')
+    folders = mem_get('folders_list')
     if not folders: return
+    
+    # Pre-build TMDB lookup from content_releases cache for enrichment
+    releases = mem_get('content_releases') or []
+    tmdb_by_folder = {}
+    for rel in releases:
+        fn = rel.get('folder_name')
+        if fn:
+            tmdb_by_folder[fn.lower()] = rel
     
     new_index = defaultdict(list)
     seen = set()  # Avoid duplicates
@@ -1844,9 +1852,17 @@ def build_search_index():
             
             entry = {
                 'name': name,
+                'folder_name': name,
                 'type': item.get('type', media_type.rstrip('s')),
                 'source': item.get('source', '')
             }
+            # Enrich with TMDB data from content releases if available
+            rel = tmdb_by_folder.get(name.lower())
+            if rel:
+                if rel.get('tmdb_title'): entry['tmdb_title'] = rel['tmdb_title']
+                if rel.get('tmdb_poster_path'): entry['tmdb_poster_path'] = rel['tmdb_poster_path']
+                if rel.get('tmdb_rating'): entry['tmdb_rating'] = rel['tmdb_rating']
+                if rel.get('tmdb_overview'): entry['tmdb_overview'] = rel['tmdb_overview']
             
             # Index setiap kata dari nama
             words = _normalize_text(name)
@@ -2432,6 +2448,7 @@ def get_folders(current_user):
 
         mem_set(key, all_c)
         _response_cache.pop('resp_folders', None)  # Invalidate old serialized
+        build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         return add_cache_headers(orjson_jsonify(all_c, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
     stale = mem_get(key)
     if stale: return add_cache_headers(orjson_jsonify(stale, cache_key='resp_folders'), max_age=60)
@@ -2752,7 +2769,7 @@ def search_content(current_user):
     # Strategy 2: Substring fallback — search folder names directly if index gave nothing
     if not results:
         query_lower = query.lower()
-        folders = _mem_cache.get('folders_list')
+        folders = mem_get('folders_list')
         if folders:
             for media_type in ['series', 'movies']:
                 for item in folders.get(media_type, []):
@@ -2764,6 +2781,7 @@ def search_content(current_user):
                         seen.add(name)
                         results.append({
                             'name': name,
+                            'folder_name': name,
                             'type': item.get('type', media_type.rstrip('s')),
                             'source': item.get('source', '')
                         })
@@ -2772,6 +2790,18 @@ def search_content(current_user):
     query_lower = query.lower()
     results.sort(key=lambda x: (0 if x['name'].lower().startswith(query_lower) else 1, x['name']))
     
+    # Final TMDB enrichment for fallback results (Strategy 1 already has it, but it's safe to overwrite/ensure)
+    releases = mem_get('content_releases') or []
+    tmdb_by_folder = {r.get('folder_name', '').lower(): r for r in releases if r.get('folder_name')}
+    
+    for res in results[:50]:
+        rel = tmdb_by_folder.get(res['name'].lower())
+        if rel:
+            if rel.get('tmdb_title'): res['tmdb_title'] = rel['tmdb_title']
+            if rel.get('tmdb_poster_path'): res['tmdb_poster_path'] = rel['tmdb_poster_path']
+            if rel.get('tmdb_rating'): res['tmdb_rating'] = rel['tmdb_rating']
+            if rel.get('tmdb_overview'): res['tmdb_overview'] = rel['tmdb_overview']
+            
     return orjson_jsonify(results[:50])  # Max 50 results
 
 # ==========================================
@@ -2843,9 +2873,15 @@ def _delete_release(folder_name):
 @app.route("/api/content-releases", methods=["GET"])
 @token_required(check_expiry=False)
 def get_content_releases(current_user):
-    """Get all content releases."""
+    """Get all content releases — cached in RAM."""
+    key = "content_releases"
+    cached = mem_get(key)
+    if cached is not None and mem_is_fresh(key, 300):  # 5 min TTL
+        return add_cache_headers(orjson_jsonify(cached, cache_key='resp_releases'), max_age=300)
     releases = _load_releases()
-    return orjson_jsonify(releases)
+    mem_set(key, releases)
+    _response_cache.pop('resp_releases', None)
+    return add_cache_headers(orjson_jsonify(releases, cache_key='resp_releases'), max_age=300)
 
 @app.route("/api/content-releases", methods=["POST"])
 @token_required(check_expiry=False)
@@ -2857,6 +2893,10 @@ def set_content_release(current_user):
     
     folder_name = data['folder_name']
     _save_release(folder_name, data)
+    # Invalidate content_releases cache
+    _mem_cache.pop('content_releases', None)
+    _mem_cache_ts.pop('content_releases', None)
+    _response_cache.pop('resp_releases', None)
     return orjson_jsonify({"success": True, "status": data.get('status', 'published')})
 
 @app.route("/api/content-releases/<path:folder_name>", methods=["DELETE"])
@@ -2864,6 +2904,10 @@ def set_content_release(current_user):
 def delete_content_release(current_user, folder_name):
     """Delete a content release."""
     _delete_release(folder_name)
+    # Invalidate content_releases cache
+    _mem_cache.pop('content_releases', None)
+    _mem_cache_ts.pop('content_releases', None)
+    _response_cache.pop('resp_releases', None)
     return orjson_jsonify({"success": True})
 
 
@@ -2900,6 +2944,11 @@ def serve_fe(path):
 
 
 if __name__ == '__main__':
+    # Build search index immediately using disk cache
+    print("[INIT] Building initial search index from disk cache...", flush=True)
+    build_search_index()
+    print("[INIT] Search index ready.", flush=True)
+    
     # Start background cache worker thread
     
     threading.Thread(target=background_cache_worker, daemon=True).start()
