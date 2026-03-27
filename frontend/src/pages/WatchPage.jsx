@@ -502,8 +502,7 @@ const WatchPage = () => {
     if (loading) {
         return (
             <div className="min-h-screen bg-[#0a0b0f] flex flex-col items-center justify-center">
-                <div className="w-14 h-14 border-4 border-[#00dc41] border-t-transparent rounded-full animate-spin mb-6 mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
-                <div className="text-[#00dc41] font-black text-2xl tracking-[0.2em] animate-pulse">MUTFLIX</div>
+                <div className="w-14 h-14 border-4 border-[#00dc41] border-t-transparent rounded-full animate-spin mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
             </div>
         );
     }

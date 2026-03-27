@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import HeroBanner from '../components/HeroBanner';
@@ -26,7 +26,8 @@ const Dashboard = () => {
     const role = localStorage.getItem('role');
     return username ? { username, role } : null;
   });
-  const tmdbEnrichRef = useRef(false);
+  const [celebrities, setCelebrities] = useState([]);
+  const fetchIdRef = useRef(0);
 
   const QUICK_FILTERS = [
     { label: 'All Videos', path: '/filter' },
@@ -93,11 +94,8 @@ const Dashboard = () => {
     return sections.slice(0, 8);
   }, []);
 
-  // Phase 2: TMDB enrichment (background, non-blocking)
-  const enrichWithTMDB = useCallback(async (items) => {
-    if (tmdbEnrichRef.current) return; // Already running
-    tmdbEnrichRef.current = true;
-
+  // Phase 2: TMDB enrichment
+  const enrichWithTMDB = useCallback(async (items, currentFetchId) => {
     const resolvedItems = [...items]; // Copy so we can update in-place
     const tmdbPromises = [];
     let apiFetchCount = 0;
@@ -108,8 +106,7 @@ const Dashboard = () => {
       const title = item.tmdb_title || item.folder_name || item.name;
       if (!title) continue;
 
-      const hasEnoughInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
-      if (hasEnoughInfo) continue;
+      const hasBaseInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
 
       const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim();
       const cacheKey = `mutflix_tmdb_info_${cleanTitle.toLowerCase()}`;
@@ -117,44 +114,71 @@ const Dashboard = () => {
       let data = null;
 
       if (cached) {
-          try { data = JSON.parse(cached); } catch (e) { }
+        try { data = JSON.parse(cached); } catch (e) { }
       }
 
       if (data) {
-          const resolvedItem = { ...item };
-          if (data.poster_path) resolvedItem.tmdb_poster_path = data.poster_path;
-          resolvedItem.tmdb_backdrop_path = data.backdrop_path || item.tmdb_backdrop_path;
-          resolvedItem.tmdb_genre_ids = data.genre_ids || (data.genres ? data.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
-          resolvedItem.tmdb_overview = data.overview || item.tmdb_overview;
-          resolvedItem.tmdb_rating = data.rating || item.tmdb_rating;
-          resolvedItems[idx] = resolvedItem;
-      } else if (apiFetchCount < MAX_API_CALLS) {
-          apiFetchCount++;
-          tmdbPromises.push(
-              getTMDBInfo(title).then(apiData => {
-                  if (apiData) {
-                      const resolvedItem = { ...item };
-                      if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
-                      resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
-                      resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
-                      resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
-                      resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
-                      resolvedItems[idx] = resolvedItem;
-                  }
-              })
-          );
+        const resolvedItem = { ...item };
+        if (data.poster_path) resolvedItem.tmdb_poster_path = data.poster_path;
+        resolvedItem.tmdb_backdrop_path = data.backdrop_path || item.tmdb_backdrop_path;
+        resolvedItem.tmdb_genre_ids = data.genre_ids || (data.genres ? data.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
+        resolvedItem.tmdb_overview = data.overview || item.tmdb_overview;
+        resolvedItem.tmdb_rating = data.rating || item.tmdb_rating;
+        resolvedItem.tmdb_cast = data.cast || [];
+        resolvedItems[idx] = resolvedItem;
+      } else if (!hasBaseInfo && apiFetchCount < MAX_API_CALLS) {
+        apiFetchCount++;
+        tmdbPromises.push(
+          getTMDBInfo(title).then(apiData => {
+            if (apiData) {
+              const resolvedItem = { ...item };
+              if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
+              resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
+              resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
+              resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
+              resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
+              resolvedItem.tmdb_cast = apiData.cast || [];
+              resolvedItems[idx] = resolvedItem;
+            }
+          })
+        );
       }
     }
 
     await Promise.allSettled(tmdbPromises);
 
+    if (fetchIdRef.current !== currentFetchId) return;
+
+    // Extract celebrities and count appearances
+    const castCounts = {};
+    const castProfiles = {};
+    resolvedItems.forEach(item => {
+      if (item.tmdb_cast && Array.isArray(item.tmdb_cast)) {
+        item.tmdb_cast.forEach(actor => {
+          if (actor.profile_path) {
+            castCounts[actor.id] = (castCounts[actor.id] || 0) + 1;
+            castProfiles[actor.id] = actor;
+          }
+        });
+      }
+    });
+
+    const sortedActors = Object.values(castProfiles)
+      .sort((a, b) => castCounts[b.id] - castCounts[a.id]);
+
+    // Take top 40 most relevant actors, shuffle them, then pick 15 to show
+    const poolSize = Math.min(sortedActors.length, 40);
+    const topActors = shuffleArray(sortedActors.slice(0, poolSize)).slice(0, 15);
+
+    setCelebrities(topActors);
+
     // Rebuild sections with enriched data
     setFeaturedList(resolvedItems.slice(0, 6));
     setGenreSections(buildSections(resolvedItems));
-    tmdbEnrichRef.current = false;
   }, [buildSections]);
 
   const loadData = useCallback(async () => {
+    const currentFetchId = ++fetchIdRef.current;
     try {
       setLoading(true);
 
@@ -163,30 +187,29 @@ const Dashboard = () => {
         fetchContentReleases()
       ]);
 
+      if (fetchIdRef.current !== currentFetchId) return;
+
       const shuffledData = processData(foldersResp, releasesResp);
 
-      // PHASE 1: Show content immediately (no TMDB wait)
-      setFeaturedList(shuffledData.slice(0, 6));
-      setGenreSections(buildSections(shuffledData));
-      setLoading(false);
+      // Fetch TMDB data before resolving load state to ensure posters are ready
+      await enrichWithTMDB(shuffledData, currentFetchId);
 
-      // PHASE 2: Enrich with TMDB data in background (non-blocking)
-      enrichWithTMDB(shuffledData);
+      if (fetchIdRef.current !== currentFetchId) return;
+
+      setLoading(false);
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);
-      setLoading(false);
+      if (fetchIdRef.current === currentFetchId) setLoading(false);
     }
   }, [processData, buildSections, enrichWithTMDB]);
 
   useEffect(() => {
-    tmdbEnrichRef.current = false;
     loadData();
   }, [loadData]);
 
   const handleLoginSuccess = (data) => {
     setAuthUser({ username: data.username, role: data.role });
-    tmdbEnrichRef.current = false;
     loadData();
   };
 
@@ -198,8 +221,7 @@ const Dashboard = () => {
   if (loading) {
     return (
       <div className="min-h-screen bg-darkBG flex flex-col items-center justify-center">
-        <div className="w-14 h-14 border-4 border-brand border-t-transparent rounded-full animate-spin mb-6 mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
-        <div className="text-brand font-black text-2xl tracking-[0.2em] animate-pulse">MUTFLIX</div>
+        <div className="w-14 h-14 border-4 border-brand border-t-transparent rounded-full animate-spin mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
       </div>
     );
   }
@@ -246,13 +268,53 @@ const Dashboard = () => {
           )}
 
           {genreSections.slice(1).map((section, idx) => (
-            <div key={section.title} className="mb-4">
-              <MovieCarousel
-                title={section.title}
-                items={section.items}
-                tagType={section.tagType || ((idx + 1) % 3 === 0 ? 'free' : null)}
-              />
-            </div>
+            <React.Fragment key={section.title}>
+              {idx === 2 && (
+                <div className="px-6 md:px-[60px] py-4 md:py-8 w-full flex justify-center mt-2 mb-6 cursor-pointer animate-fade-in-up">
+                  <div className="w-full max-w-[1100px] h-auto bg-gradient-to-r from-brand/20 via-[#111319] to-[#111319] border border-brand/20 rounded-2xl flex flex-col md:flex-row items-center justify-between p-6 px-6 md:px-12 hover:border-brand/40 transition-colors shadow-2xl relative overflow-hidden group">
+                    <div className="absolute top-0 right-0 w-64 h-full bg-brand/5 blur-[50px] -z-10 group-hover:bg-brand/10 transition-colors rounded-full"></div>
+
+                    <div className="flex flex-col md:flex-row items-center gap-5 md:gap-7 z-10 w-full md:w-auto text-center md:text-left mb-6 md:mb-0">
+                      <div className="w-[50px] h-[60px] bg-brand/10 rounded-full flex items-center justify-center shrink-0 mx-auto md:mx-0 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,220,65,0.15)]">
+                        <svg className="w-8 h-8 text-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
+                          <line x1="12" y1="18" x2="12.01" y2="18"></line>
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-white font-black text-xl md:text-2xl tracking-wide mb-1.5 uppercase drop-shadow-lg">Download MUTFLIX App</h3>
+                        <p className="text-gray-400 text-sm md:text-[15px] font-medium max-w-[600px]">Watch your favorite movies and series anytime, anywhere with the best premium experience.</p>
+                      </div>
+                    </div>
+
+                    <a
+                      href="https://drive.google.com/drive/folders/16sQCGO3jGX1uUJ-gH2BbZh92LG2B3yfF?usp=drive_link"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="bg-brand text-black font-extrabold uppercase tracking-widest text-[13px] md:text-[14px] px-8 py-4 rounded-full hover:bg-white active:scale-95 transition-all flex items-center gap-2.5 shadow-[0_0_20px_rgba(0,220,65,0.4)] z-10 w-full md:w-auto justify-center hover:shadow-[0_0_25px_rgba(255,255,255,0.4)]"
+                    >
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                      </svg>
+                      Install Now
+                    </a>
+                  </div>
+                </div>
+              )}
+              <div className="mb-4">
+                <MovieCarousel
+                  title={section.title}
+                  items={section.items}
+                  tagType={section.tagType || ((idx + 1) % 3 === 0 ? 'free' : null)}
+                />
+              </div>
+
+              {idx === Math.min(4, Math.max(0, genreSections.slice(1).length - 1)) && celebrities.length > 0 && (
+                <CelebrityCarousel castList={celebrities} />
+              )}
+            </React.Fragment>
           ))}
         </div>
       </main>
@@ -267,4 +329,50 @@ const Dashboard = () => {
 };
 
 export default Dashboard;
+
+const CelebrityCarousel = ({ castList }) => {
+  const navigate = useNavigate();
+  const scrollRef = useRef(null);
+
+  if (!castList || castList.length === 0) return null;
+
+  return (
+    <div className="mb-10 px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-center animate-fade-in-up">
+      <div className="w-full flex items-center justify-between mb-4">
+        <h2 className="text-[20px] md:text-[22px] font-bold text-[#f5f5f5] tracking-wide">Popular Celebrities</h2>
+      </div>
+
+      <div className="relative w-full">
+        <button
+          onClick={() => scrollRef.current?.scrollBy({ left: -300, behavior: 'smooth' })}
+          className="absolute -left-5 md:-left-12 lg:-left-12 top-[35%] -translate-y-1/2 z-40 bg-[#16181db3] hover:bg-[#1a1c22f2] text-white/50 hover:text-white p-2 md:p-3 rounded-full opacity-0 group-hover/carousel:opacity-100 transition-all duration-300 hidden sm:flex items-center justify-center shadow-2xl backdrop-blur-md hover:scale-110"
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+
+        <button
+          onClick={() => scrollRef.current?.scrollBy({ left: 300, behavior: 'smooth' })}
+          className="absolute -right-5 md:-right-12 lg:-right-12 top-[35%] -translate-y-1/2 z-40 bg-[#16181db3] hover:bg-[#1a1c22f2] text-white/50 hover:text-white p-2 md:p-3 rounded-full opacity-0 group-hover/carousel:opacity-100 transition-all duration-300 hidden sm:flex items-center justify-center shadow-2xl backdrop-blur-md hover:scale-110"
+        >
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </button>
+
+        <div ref={scrollRef} className="flex gap-5 md:gap-8 overflow-x-auto no-scrollbar scroll-smooth w-full pb-4 snap-x">
+          {castList.map((actor, idx) => (
+            <div
+              key={actor.id || idx}
+              className="flex flex-col items-center cursor-pointer group snap-start shrink-0"
+              onClick={() => navigate(`/search?q=${encodeURIComponent(actor.name)}`)}
+            >
+              <div className="w-[85px] h-[85px] md:w-[130px] md:h-[130px] rounded-full overflow-hidden bg-[#22252b] border-[3px] border-transparent group-hover:border-[#00dc41]/70 transition-all duration-300 mb-3 shadow-lg group-hover:shadow-[0_0_15px_rgba(0,220,65,0.3)] shrink-0">
+                <img src={actor.profile_path} alt={actor.name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500 bg-center" />
+              </div>
+              <p className="text-white text-[13px] md:text-[15px] font-medium text-center w-[90px] md:w-[140px] truncate group-hover:text-[#00dc41] transition-colors">{actor.name}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { searchContent, getTMDBInfo, logout } from '../services/api';
+import { searchContent, getTMDBInfo, logout, fetchFolders, fetchContentReleases } from '../services/api';
 
 const Search = () => {
   const [searchParams] = useSearchParams();
@@ -32,20 +32,68 @@ const Search = () => {
     const doSearch = async () => {
       setLoading(true);
       try {
-        // Use server-side search (inverted index — instant)
-        const serverResults = await searchContent(query);
+        const [serverResults, foldersResp, releasesResp] = await Promise.all([
+          searchContent(query),
+          fetchFolders(),
+          fetchContentReleases()
+        ]);
 
         // PHASE 1: Show results immediately
-        const mappedResults = serverResults.map(item => ({
+        const mappedServer = serverResults.map(item => ({
           ...item,
           folder_name: item.folder_name || item.name,
           media_type: item.type === 'tv' ? 'tv' : (item.type || 'movie')
         }));
 
+        // Augment with local localStorage cache search for Actors and Genres
+        let foldersData = [];
+        if (foldersResp && typeof foldersResp === 'object' && !Array.isArray(foldersResp)) {
+          foldersData = [...(foldersResp.movies || []), ...(foldersResp.series || [])];
+        } else if (Array.isArray(foldersResp)) {
+          foldersData = foldersResp;
+        }
+        let releasesData = Array.isArray(releasesResp) ? releasesResp : (releasesResp?.data || []);
+        const allData = [...releasesData, ...foldersData];
+        
+        const localMatches = [];
+        const queryLower = query.toLowerCase();
+
+        allData.forEach(item => {
+          const title = item.tmdb_title || item.folder_name || item.name;
+          if (!title) return;
+          const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim().toLowerCase();
+          
+          let matched = cleanTitle.includes(queryLower);
+          
+          if (!matched) {
+            const cacheRaw = localStorage.getItem(`mutflix_tmdb_info_${cleanTitle}`);
+            if (cacheRaw) {
+              try {
+                const cacheData = JSON.parse(cacheRaw);
+                const hasActor = cacheData.cast?.some(c => c.name.toLowerCase().includes(queryLower));
+                const hasGenre = cacheData.genres?.some(g => g.name.toLowerCase().includes(queryLower));
+                if (hasActor || hasGenre) {
+                  matched = true;
+                }
+              } catch(e){}
+            }
+          }
+           
+          if (matched) {
+            localMatches.push({
+               ...item,
+               folder_name: item.folder_name || item.name,
+               media_type: item.type === 'tv' ? 'tv' : (item.type || 'movie')
+            });
+          }
+        });
+
+        const combined = [...localMatches, ...mappedServer];
+
         // Deduplicate mappedResults based on folder_name to avoid duplicate React keys
         const uniqueResults = [];
         const seenNames = new Set();
-        for (const item of mappedResults) {
+        for (const item of combined) {
           const name = item.folder_name || item.name;
           if (name && !seenNames.has(name)) {
             seenNames.add(name);

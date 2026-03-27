@@ -101,8 +101,8 @@ export const getTMDBInfo = async (title) => {
             const bestResult = data.results.find(i => i.poster_path || i.backdrop_path) || data.results[0];
             const type = bestResult.media_type === 'movie' ? 'movie' : 'tv';
             
-            // Second fetch for full details (genres, runtime, total episodes)
-            const detailRes = await fetch(`https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US`);
+            // Second fetch for full details (genres, runtime, total episodes, cast)
+            const detailRes = await fetch(`https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
             const details = await detailRes.json();
 
             const result = {
@@ -115,6 +115,9 @@ export const getTMDBInfo = async (title) => {
                 date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
                 genres: details.genres || [],
                 genre_ids: (details.genres || []).map(g => g.id),
+                cast: details.credits?.cast 
+                    ? details.credits.cast.slice(0, 15).map(c => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
+                    : [],
                 total_episodes: details.number_of_episodes || null,
                 total_seasons: details.number_of_seasons || null,
                 runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
