@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { fetchFolders, fetchContentReleases, getTMDBInfo, TMDB_GENRES, logout } from '../services/api';
+import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout } from '../services/api';
 
 const REGIONS = ['All regions', 'Chinese Mainland', 'South Korea', 'Indonesia', 'Thailand', 'Taiwan', 'Japan', 'Malaysia', 'America', 'UK'];
 const CATEGORIES = ['All Genres', 'Youth', 'Mystery', 'Costume', 'Urban', 'Romance', 'Sweet Love', 'Marriage', 'Drama', 'Comedy', 'Family', 'Friendship', 'Fantasy', 'Crime', 'War', 'Novel Adaptation', 'Contemporary', 'Ancient', 'Variety Show'];
@@ -117,10 +117,7 @@ const FilterPage = () => {
     const loadData = async () => {
       setLoading(true);
       try {
-        const [foldersResp, releasesResp] = await Promise.all([
-          fetchFolders(),
-          fetchContentReleases()
-        ]);
+        const foldersResp = await fetchFolders();
 
         let foldersData = [];
         if (foldersResp && typeof foldersResp === 'object' && !Array.isArray(foldersResp)) {
@@ -129,15 +126,7 @@ const FilterPage = () => {
           foldersData = foldersResp;
         }
 
-        let releasesData = Array.isArray(releasesResp) ? releasesResp : (releasesResp?.data || []);
-        let allData = [...releasesData, ...foldersData];
-
-        const uniqueDataMap = new Map();
-        allData.forEach(item => {
-          const name = item.tmdb_title || item.folder_name || item.name;
-          if (name && !uniqueDataMap.has(name)) uniqueDataMap.set(name, item);
-        });
-        let uniqueDataList = Array.from(uniqueDataMap.values());
+        let uniqueDataList = foldersData;
 
         // PHASE 1: Show results immediately with whatever data we have
         const quickResolved = uniqueDataList.map(item => {

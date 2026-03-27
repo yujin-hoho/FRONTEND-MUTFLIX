@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { searchContent, getTMDBInfo, logout, fetchFolders, fetchContentReleases } from '../services/api';
+import { searchContent, getTMDBInfo, logout, fetchFolders } from '../services/api';
 
 const Search = () => {
   const [searchParams] = useSearchParams();
@@ -32,10 +32,9 @@ const Search = () => {
     const doSearch = async () => {
       setLoading(true);
       try {
-        const [serverResults, foldersResp, releasesResp] = await Promise.all([
+        const [serverResults, foldersResp] = await Promise.all([
           searchContent(query),
-          fetchFolders(),
-          fetchContentReleases()
+          fetchFolders()
         ]);
 
         // PHASE 1: Show results immediately
@@ -52,7 +51,7 @@ const Search = () => {
         } else if (Array.isArray(foldersResp)) {
           foldersData = foldersResp;
         }
-        let releasesData = Array.isArray(releasesResp) ? releasesResp : (releasesResp?.data || []);
+        let releasesData = [];
         const allData = [...releasesData, ...foldersData];
         
         const localMatches = [];

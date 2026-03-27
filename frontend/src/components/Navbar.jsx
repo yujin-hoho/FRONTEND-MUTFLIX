@@ -1,4 +1,4 @@
-import { Search, RotateCcw, Globe, User, LogOut, Trash2, X, PlayCircle } from 'lucide-react';
+import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { searchContent, getTMDBInfo } from '../services/api';
@@ -215,9 +215,9 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
           <RotateCcw className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
           <span className="hidden lg:block">History</span>
         </div>
-        <div className="flex flex-col items-center cursor-pointer hover:text-brand transition group">
-          <Globe className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
-          <span className="hidden lg:block">Language</span>
+        <div className="flex flex-col items-center cursor-pointer hover:text-brand transition group" onClick={() => navigate('/mylist')}>
+          <List className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
+          <span className="hidden lg:block">My List</span>
         </div>
 
         {isLoggedIn ? (

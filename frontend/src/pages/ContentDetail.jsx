@@ -3,8 +3,9 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory } from '../services/api';
+import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList } from '../services/api';
 import MovieCarousel from '../components/MovieCarousel';
+import Footer from '../components/Footer';
 
 const ContentDetail = () => {
   const { folderName } = useParams();
@@ -28,109 +29,158 @@ const ContentDetail = () => {
   });
   const [historyMap, setHistoryMap] = useState({});
   const [lastWatchedMedia, setLastWatchedMedia] = useState(null);
+  const [isInMyList, setIsInMyList] = useState(false);
+  const [profileId, setProfileId] = useState(localStorage.getItem('mutflix_last_profile_id'));
+  const [isUpdatingList, setIsUpdatingList] = useState(false);
 
   const isSeriesContent = urlType === 'series' ||
     (tmdbData?.media_type === 'tv') ||
     (!urlType && videos.length > 1);
 
   useEffect(() => {
+    let isMounted = true;
     const loadData = async () => {
       setLoading(true);
+      try {
+        // Step 1: Fetch Basic Info (Videos + TMDB)
+        const [videosResp, tmdb] = await Promise.all([
+          fetchVideos(decodedName),
+          getTMDBInfo(decodedName)
+        ]);
+        
+        if (!isMounted) return;
 
-      const [videosResp, tmdb] = await Promise.all([
-        fetchVideos(decodedName),
-        getTMDBInfo(decodedName)
-      ]);
+        const videosList = videosResp?.videos || [];
+        videosList.sort((a, b) => {
+          if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
+          return (a.episode || 0) - (b.episode || 0);
+        });
 
-      const videosList = videosResp?.videos || [];
-      videosList.sort((a, b) => {
-        if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
-        return (a.episode || 0) - (b.episode || 0);
-      });
+        setVideos(videosList);
+        setTmdbData(tmdb);
 
-      setVideos(videosList);
-      setTmdbData(tmdb);
+        // Step 2: Parallel Fetching
+        const fetchTasks = [];
 
-      if (tmdb?.tmdb_id) {
-        const creditsData = await getTMDBCredits(tmdb.tmdb_id, tmdb.media_type);
-        setCredits(creditsData);
+        // 2a. Visual Metadata (Stills, Cast, etc.)
+        if (tmdb?.tmdb_id) {
+          fetchTasks.push(getTMDBCredits(tmdb.tmdb_id, tmdb.media_type).then(data => {
+            if (isMounted) setCredits(data);
+          }));
 
-        // Fetch Season details for Episode Stills
-        if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
-          const uniqueSeasons = [...new Set(videosList.map(v => v.season || 1))];
-          const seasonPromises = uniqueSeasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s));
-          const seasonsData = await Promise.all(seasonPromises);
-
-          const dataMap = {};
-          seasonsData.forEach((seasonData, index) => {
-            if (seasonData && seasonData.episodes) {
-              const sNum = uniqueSeasons[index];
-              seasonData.episodes.forEach(ep => {
-                dataMap[`${sNum}_${ep.episode_number}`] = {
-                  still_path: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
-                  name: ep.name
-                };
-              });
-            }
-          });
-          setEpisodeData(dataMap);
-        }
-      }
-
-      const seriesCheck = urlType === 'series' || (tmdb?.media_type === 'tv') || (!urlType && videosList.length > 1);
-      setActiveTab(seriesCheck ? 'episodes' : 'cast');
-
-      setLoading(false);
-    };
-    loadData();
-
-    // Fetch history if logged in
-    if (authUser) {
-      const loadHistory = async () => {
-        try {
-          const profiles = await fetchProfiles();
-          if (profiles.length > 0) {
-            const allHistories = await Promise.all(
-              profiles.map(p => fetchHistory(p.id))
-            );
+          // Fetch Episode Stills (Crucial for visuals)
+          if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
+            const uniqueSeasons = Array.from(new Set(videosList.map(v => v.season || 1)));
+            const seasonPromises = uniqueSeasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s));
             
+            Promise.all(seasonPromises).then(seasonsData => {
+              if (!isMounted) return;
+              const dataMap = {};
+              seasonsData.forEach((seasonData, index) => {
+                if (seasonData && seasonData.episodes) {
+                  const sNum = uniqueSeasons[index];
+                  seasonData.episodes.forEach(ep => {
+                    dataMap[`${sNum}_${ep.episode_number}`] = {
+                      still_path: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
+                      name: ep.name
+                    };
+                  });
+                }
+              });
+              setEpisodeData(dataMap);
+            }).catch(err => console.error("Error fetching season stills:", err));
+          }
+        }
+
+        // 2b. User Data (History, My List)
+        if (authUser) {
+          const userTask = fetchProfiles().then(async (profiles) => {
+            if (!isMounted || profiles.length === 0) return;
+            
+            const pid = profileId || profiles[0].id;
+            if (!profileId) setProfileId(pid);
+
+            const [allHistories, mylistData] = await Promise.all([
+              Promise.all(profiles.map(p => fetchHistory(p.id))),
+              fetchMyList(pid)
+            ]);
+
+            if (!isMounted) return;
+
+            // Mapping History
             const flatHistory = allHistories.flat();
             const newHistoryMap = {};
-            
-            // Deduplicate keeping newest
+            // Newer history should overwrite older items
             flatHistory.sort((a, b) => new Date(a.last_watched) - new Date(b.last_watched));
-            
             flatHistory.forEach(h => {
-               const progress = (h.position_ms / h.duration_ms) * 100;
-               if (h.position_ms >= 10000 && progress < 95) {
-                 newHistoryMap[h.media_path] = progress;
-               }
+              const progress = (h.position_ms / h.duration_ms) * 100;
+              if (h.position_ms >= 5000) newHistoryMap[h.media_path] = progress;
             });
-            
-            // Find last watched for THIS series/movie
-            const relevantHistory = flatHistory.filter(h => 
-              h.media_path.includes(decodedName) || 
-              h.series_title === decodedName || 
-              h.media_title === decodedName
-            ).sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
-            
-            if (relevantHistory.length > 0) {
-              const last = relevantHistory[0];
-              const matchingVideo = videosList.find(v => v.path === last.media_path);
-              if (matchingVideo) {
-                setLastWatchedMedia(matchingVideo);
-              }
+
+            // "Continue Watching" Logic
+            const relevant = flatHistory
+              .filter(h => h.media_path.includes(decodedName) || h.series_title === decodedName || h.media_title === decodedName)
+              .sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
+
+            if (relevant.length > 0) {
+              const last = relevant[0];
+              const match = videosList.find(v => v.path === last.media_path);
+              if (match) setLastWatchedMedia(match);
             }
-            
+
             setHistoryMap(newHistoryMap);
-          }
-        } catch (err) {
-          console.error("Error loading history in ContentDetail:", err);
+            setIsInMyList((mylistData || []).some(item => item.folder_name === decodedName));
+          });
+          fetchTasks.push(userTask);
         }
-      };
-      loadHistory();
+
+        await Promise.allSettled(fetchTasks);
+
+        if (isMounted) {
+          const isSeries = urlType === 'series' || (tmdb?.media_type === 'tv') || (!urlType && videosList.length > 1);
+          setActiveTab(isSeries ? 'episodes' : 'cast');
+        }
+
+      } catch (err) {
+        console.error("Error loading ContentDetail:", err);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    };
+
+    loadData();
+    return () => { isMounted = false; };
+  }, [decodedName, urlType, authUser, profileId]);
+
+  const handleToggleMyList = async () => {
+    if (!authUser) {
+      setShowLoginModal(true);
+      return;
     }
-  }, [decodedName, urlType, authUser]);
+    if (!profileId || isUpdatingList) return;
+
+    setIsUpdatingList(true);
+    try {
+      if (isInMyList) {
+        const success = await removeFromMyList(profileId, decodedName);
+        if (success) setIsInMyList(false);
+      } else {
+        const mediaType = urlType === 'series' || tmdbData?.media_type === 'tv' ? 'tv' : 'movie';
+        // Pass meta from tmdbData for the My List page to use
+        const meta = {
+          tmdb_poster_path: tmdbData?.poster_path,
+          tmdb_rating: tmdbData?.rating,
+          tmdb_title: tmdbData?.tmdb_title || decodedName
+        };
+        const success = await addToMyList(profileId, decodedName, mediaType, meta);
+        if (success) setIsInMyList(true);
+      }
+    } catch (err) {
+      console.error("Error updating My List:", err);
+    } finally {
+      setIsUpdatingList(false);
+    }
+  };
 
   const handleLoginSuccess = (data) => {
     setAuthUser({ username: data.username, role: data.role });
@@ -280,8 +330,12 @@ const ContentDetail = () => {
             <button className="bg-white/10 hover:bg-white/20 backdrop-blur text-white text-sm px-4 py-2.5 rounded flex items-center gap-2 border border-white/15 transition-all hover:scale-105 active:scale-95">
               <Share2 size={14} /> Share
             </button>
-            <button className="bg-white/10 hover:bg-white/20 backdrop-blur text-white text-sm px-4 py-2.5 rounded flex items-center gap-2 border border-white/15 transition-all hover:scale-105 active:scale-95">
-              <Clock size={14} /> Watch Later
+            <button 
+              onClick={handleToggleMyList}
+              disabled={isUpdatingList}
+              className={`${isInMyList ? 'bg-brand/20 text-brand border-brand/30' : 'bg-white/10 text-white border-white/15'} hover:bg-white/20 backdrop-blur text-sm px-4 py-2.5 rounded flex items-center gap-2 border transition-all hover:scale-105 active:scale-95`}
+            >
+              <Clock size={14} className={isInMyList ? 'fill-brand' : ''} /> {isInMyList ? 'In My List' : 'Watch Later'}
             </button>
           </div>
         </div>
@@ -362,6 +416,7 @@ const ContentDetail = () => {
         onClose={() => setShowLoginModal(false)}
         onLoginSuccess={handleLoginSuccess}
       />
+      <Footer />
     </div>
   );
 };

@@ -1,14 +1,16 @@
-import { Play, BookmarkPlus, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo, TMDB_GENRES } from '../services/api';
 
-export const MovieCard = React.memo(({ item, tag, isFirst, isLast, progress, variant = 'vertical' }) => {
+export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving }) => {
   const isHorizontal = variant === 'horizontal';
   const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
   const hoverTimeoutRef = useRef(null);
   const navigate = useNavigate();
+  const cardWidth = isHorizontal ? 260 : 190;
+  const posterHeight = isHorizontal ? 165 : 285;
 
   const folderName = item?.folder_name || item?.name || '';
   const mediaType = item?.type || 'movie';
@@ -48,8 +50,9 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast, progress, var
   }, [item, title]);
 
   const rawPoster = item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
-  const poster = rawPoster
-    ? (rawPoster.startsWith('http') ? rawPoster : `https://image.tmdb.org/t/p/w500${rawPoster}`)
+  const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
+  const poster = posterPath
+    ? (posterPath.startsWith('http') ? posterPath : `https://image.tmdb.org/t/p/w500${posterPath}`)
     : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop';
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
@@ -66,14 +69,32 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast, progress, var
 
   return (
     <div
-      className={`relative flex-none ${isHorizontal ? 'w-[200px] md:w-[250px]' : 'w-[150px] md:w-[185px]'} group cursor-pointer transition-all duration-300 shrink-0`}
-      style={{ zIndex: isHovered ? 50 : 1 }}
+      className={`relative flex-none transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)] 
+        ${isRemoving ? 'opacity-0 scale-75 translate-y-4 !w-0 !mr-[-1rem] pointer-events-none' : 'opacity-100 scale-100 translate-y-0'}
+        group cursor-pointer shrink-0`}
+      style={{ zIndex: isHovered ? 50 : 1, width: `${cardWidth}px`, minWidth: `${cardWidth}px` }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
       {/* Poster Container */}
-      <div onClick={handleNavigate} className={`w-full ${isHorizontal ? 'aspect-[16/10]' : 'aspect-[2/3]'} rounded overflow-hidden bg-[#1b1d22] relative border border-transparent group-hover:border-white/20 transition-colors duration-300`}>
-        <img src={poster} alt={title} loading="lazy" decoding="async" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+      <div
+        onClick={handleNavigate}
+        className="w-full rounded overflow-hidden bg-[#1b1d22] relative border border-transparent group-hover:border-white/20 transition-colors duration-300"
+        style={{ height: `${posterHeight}px` }}
+      >
+        <img 
+          src={poster} 
+          alt={title} 
+          loading="lazy" 
+          decoding="async" 
+          className={`w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 ${!rawPoster ? 'opacity-30 grayscale' : 'opacity-100'}`} 
+        />
+        
+        {!rawPoster && (
+          <div className="absolute inset-0 flex items-center justify-center p-4 text-center">
+            <span className="text-gray-400 text-sm font-bold line-clamp-3">{title}</span>
+          </div>
+        )}
 
         {/* Top Right Tag - Free */}
         {tag === 'Free' && (
@@ -108,15 +129,29 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast, progress, var
           )}
           {!isHorizontal && <span className="text-white text-[11px] font-medium tracking-wide">{bottomText}</span>}
         </div>
+
+        {/* Delete button (X) for Continue Watching / Horizontal variant */}
+        {isHorizontal && onDelete && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(item);
+            }}
+            className="absolute top-2 right-2 bg-black/60 hover:bg-black/90 text-white/70 hover:text-white p-1 rounded-full backdrop-blur-md border border-white/10 opacity-0 group-hover:opacity-100 transition-all z-20"
+            title="Remove from history"
+          >
+            <X size={14} strokeWidth={3} />
+          </button>
+        )}
       </div>
 
       {/* Title Below Poster */}
       <div className="mt-2 px-0.5">
-        <h3 className="text-[#e2e2e2] text-[15px] font-medium line-clamp-2 md:line-clamp-1 group-hover:text-[#00dc41] transition-colors">{title}</h3>
+        <h3 className="text-white text-[15px] font-bold line-clamp-2 transition-colors">{title}</h3>
       </div>
 
       {/* Hover Popup Effect for details on large screens */}
-      {isHovered && (
+      {isHovered && !isHorizontal && (
         <div
           className={`absolute top-1/2 -translate-y-[45%] ${isHorizontal ? 'w-[320px]' : 'w-[350px]'} bg-[#1a1c22] rounded-xl shadow-[0_30px_100px_rgba(0,0,0,0.95)] border border-white/10 hidden lg:block pb-3 z-[100] transform transition-all duration-300 animate-popup ${isFirst ? 'left-0 origin-left' : isLast ? 'right-0 origin-right' : 'left-1/2 -translate-x-1/2 origin-center'
             }`}
@@ -166,9 +201,9 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast, progress, var
       )}
     </div>
   );
-});
+};
 
-const MovieCarousel = React.memo(({ title, items, tagType, variant = 'vertical' }) => {
+const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, removingId }) => {
   const isHorizontal = variant === 'horizontal';
   const scrollRef = useRef(null);
 
@@ -187,7 +222,7 @@ const MovieCarousel = React.memo(({ title, items, tagType, variant = 'vertical' 
   };
 
   return (
-    <div className={`${isHorizontal ? 'mb-6' : 'mb-10'} px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-center hover:z-[60] z-10 transition-all`}>
+    <div className={`${isHorizontal ? 'mb-6' : 'mb-10'} px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-start transition-all`}>
       <div className="w-full flex items-center justify-between mb-4">
         <h2 className="text-[20px] md:text-[22px] font-bold text-[#f5f5f5] tracking-wide">{title}</h2>
         {/* Only show 'More' if not TOP 10 section to match image closely */}
@@ -216,26 +251,35 @@ const MovieCarousel = React.memo(({ title, items, tagType, variant = 'vertical' 
 
         <div
           ref={scrollRef}
-          className="flex gap-3 md:gap-4 overflow-x-auto overflow-y-clip no-scrollbar py-[100px] -my-[100px] px-1 scroll-smooth snap-x active:cursor-grabbing w-full"
+          className="flex flex-nowrap items-start gap-3 md:gap-4 no-scrollbar py-2 pb-4 px-1 w-full overflow-x-auto scroll-smooth snap-x"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
           {items?.length > 0 ? (
             items.map((item, idx) => (
-              <div key={item.id || item.folder_name || item.name || idx} className="snap-start shrink-0">
+              <div key={idx} className="snap-start shrink-0">
                 <MovieCard
                   item={item}
-                  tag={tagType === 'free' ? 'Free' : tagType === 'original' ? 'Original' : tagType === 'top' ? 'TOP 10' : null}
+                  tag={tagType === 'top' ? 'TOP 10' : null}
                   isFirst={idx === 0}
                   isLast={idx === items.length - 1}
                   progress={item.progress}
                   variant={variant}
+                  onDelete={variant === 'horizontal' ? (item) => onDelete && onDelete(item) : null}
+                  isRemoving={variant === 'horizontal' && !!removingId && removingId === item.media_path}
                 />
               </div>
             ))
           ) : (
             [...Array(8)].map((_, i) => (
-              <div key={i} className={`snap-start shrink-0 ${isHorizontal ? 'w-[200px] md:w-[250px]' : 'w-[150px] md:w-[185px]'} group cursor-wait`}>
-                <div className={`w-full ${isHorizontal ? 'aspect-[16/10]' : 'aspect-[2/3]'} bg-[#22252b]/60 rounded-md animate-pulse border border-white/5`}></div>
+              <div
+                key={i}
+                className="snap-start shrink-0 group cursor-wait"
+                style={{ width: `${isHorizontal ? 260 : 190}px`, minWidth: `${isHorizontal ? 260 : 190}px` }}
+              >
+                <div
+                  className="w-full bg-[#22252b]/60 rounded-md animate-pulse border border-white/5"
+                  style={{ height: `${isHorizontal ? 165 : 285}px` }}
+                ></div>
                 <div className="mt-2.5 h-4 w-3/4 bg-[#22252b]/60 rounded animate-pulse"></div>
               </div>
             ))
@@ -244,6 +288,6 @@ const MovieCarousel = React.memo(({ title, items, tagType, variant = 'vertical' 
       </div>
     </div>
   );
-});
+};
 
 export default MovieCarousel;
