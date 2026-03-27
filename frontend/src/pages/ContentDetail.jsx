@@ -3,7 +3,8 @@ import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout } from '../services/api';
+import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory } from '../services/api';
+import MovieCarousel from '../components/MovieCarousel';
 
 const ContentDetail = () => {
   const { folderName } = useParams();
@@ -25,6 +26,8 @@ const ContentDetail = () => {
     const role = localStorage.getItem('role');
     return username ? { username, role } : null;
   });
+  const [historyMap, setHistoryMap] = useState({});
+  const [lastWatchedMedia, setLastWatchedMedia] = useState(null);
 
   const isSeriesContent = urlType === 'series' ||
     (tmdbData?.media_type === 'tv') ||
@@ -80,7 +83,54 @@ const ContentDetail = () => {
       setLoading(false);
     };
     loadData();
-  }, [decodedName, urlType]);
+
+    // Fetch history if logged in
+    if (authUser) {
+      const loadHistory = async () => {
+        try {
+          const profiles = await fetchProfiles();
+          if (profiles.length > 0) {
+            const allHistories = await Promise.all(
+              profiles.map(p => fetchHistory(p.id))
+            );
+            
+            const flatHistory = allHistories.flat();
+            const newHistoryMap = {};
+            
+            // Deduplicate keeping newest
+            flatHistory.sort((a, b) => new Date(a.last_watched) - new Date(b.last_watched));
+            
+            flatHistory.forEach(h => {
+               const progress = (h.position_ms / h.duration_ms) * 100;
+               if (h.position_ms >= 10000 && progress < 95) {
+                 newHistoryMap[h.media_path] = progress;
+               }
+            });
+            
+            // Find last watched for THIS series/movie
+            const relevantHistory = flatHistory.filter(h => 
+              h.media_path.includes(decodedName) || 
+              h.series_title === decodedName || 
+              h.media_title === decodedName
+            ).sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
+            
+            if (relevantHistory.length > 0) {
+              const last = relevantHistory[0];
+              const matchingVideo = videosList.find(v => v.path === last.media_path);
+              if (matchingVideo) {
+                setLastWatchedMedia(matchingVideo);
+              }
+            }
+            
+            setHistoryMap(newHistoryMap);
+          }
+        } catch (err) {
+          console.error("Error loading history in ContentDetail:", err);
+        }
+      };
+      loadHistory();
+    }
+  }, [decodedName, urlType, authUser]);
 
   const handleLoginSuccess = (data) => {
     setAuthUser({ username: data.username, role: data.role });
@@ -218,14 +268,14 @@ const ContentDetail = () => {
           <div className="flex items-center gap-3 flex-wrap">
             <button
               onClick={() => {
-                const firstVid = videos[0];
-                const epParam = firstVid?.episode || 1;
-                const sParam = firstVid?.season || 1;
+                const target = lastWatchedMedia || videos[0] || { episode: 1, season: 1 };
+                const epParam = target.episode || 1;
+                const sParam = target.season || 1;
                 navigate(`/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`);
               }}
               className="bg-[#00dc41] hover:bg-[#00f048] text-black font-bold text-sm px-6 py-2.5 rounded flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.3)]"
             >
-              <Play fill="black" size={16} /> Play
+              <Play fill="black" size={16} /> {lastWatchedMedia ? 'Resume' : 'Play'}
             </button>
             <button className="bg-white/10 hover:bg-white/20 backdrop-blur text-white text-sm px-4 py-2.5 rounded flex items-center gap-2 border border-white/15 transition-all hover:scale-105 active:scale-95">
               <Share2 size={14} /> Share
@@ -282,6 +332,7 @@ const ContentDetail = () => {
                       index={idx}
                       posterFallback={posterPath}
                       tmdbData={epData}
+                      progress={historyMap[video.path]}
                       onPlay={() => {
                         const epParam = video.episode || idx + 1;
                         const sParam = video.season || 1;
@@ -316,7 +367,7 @@ const ContentDetail = () => {
 };
 
 /* ====== Episode Card ====== */
-const EpisodeCard = ({ video, index, posterFallback, tmdbData, onPlay }) => {
+const EpisodeCard = ({ video, index, posterFallback, tmdbData, onPlay, progress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const episodeNum = video.episode || index + 1;
   const name = tmdbData?.name || video.name || `Episode ${episodeNum}`;
@@ -339,6 +390,14 @@ const EpisodeCard = ({ video, index, posterFallback, tmdbData, onPlay }) => {
         <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-sm text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
           EP{episodeNum}
         </div>
+        {progress !== undefined && (
+          <div className="absolute bottom-0 left-0 w-full bg-white/20 h-[3px] overflow-hidden">
+            <div 
+              className="bg-[#00dc41] h-full transition-all duration-300" 
+              style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+            ></div>
+          </div>
+        )}
       </div>
       <p className="text-[13px] text-gray-300 group-hover:text-[#00dc41] line-clamp-1 transition-colors font-medium">
         {name}

@@ -352,3 +352,79 @@ export const fetchSubtitle = async (subtitlePath) => {
         return null;
     }
 };
+
+// ==========================================
+// PROFILES & HISTORY API
+// ==========================================
+
+export const fetchProfiles = async () => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/profiles`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) return [];
+        return await res.json();
+    } catch (error) {
+        console.error("Error fetching profiles:", error);
+        return [];
+    }
+};
+
+export const createProfile = async (id, name, avatar_seed) => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/profiles/add`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({ id, name, avatar_seed })
+        });
+        if (!res.ok) return false;
+        return true;
+    } catch (error) {
+        console.error("Error creating profile:", error);
+        return false;
+    }
+};
+
+export const fetchHistory = async (profileId) => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/history/get/${profileId}`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) return [];
+        return await res.json();
+    } catch (error) {
+        console.error("Error fetching history:", error);
+        return [];
+    }
+};
+
+export const saveHistory = async (profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, position_ms, duration_ms) => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/history/save`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({
+                profile_id,
+                media_path,
+                media_title,
+                series_title,
+                source,
+                still_path,
+                subtitle_path,
+                position_ms,
+                duration_ms
+            })
+        });
+        if (!res.ok) return false;
+        return true;
+    } catch (error) {
+        console.error("Error saving history:", error);
+        return false;
+    }
+};

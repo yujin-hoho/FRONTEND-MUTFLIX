@@ -8,7 +8,8 @@ import {
 } from 'lucide-react';
 import {
     fetchVideos, getStreamDetails, fetchSubtitle,
-    getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES
+    getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES,
+    fetchProfiles, createProfile, saveHistory, fetchHistory
 } from '../services/api';
 import { createSubtitleBlobUrl, revokeSubtitleBlobUrl } from '../utils/subtitleParser';
 import Navbar from '../components/Navbar';
@@ -50,6 +51,7 @@ const WatchPage = () => {
     const [videoLoading, setVideoLoading] = useState(false);
     const [videoError, setVideoError] = useState(null);
     const [activeSeason, setActiveSeason] = useState(urlSeason);
+    const [profileId, setProfileId] = useState(localStorage.getItem('mutflix_last_profile_id'));
 
     // Auth state for Navbar
     const [showLoginModal, setShowLoginModal] = useState(false);
@@ -95,6 +97,9 @@ const WatchPage = () => {
     const controlsTimeoutRef = useRef(null);
     const progressBarRef = useRef(null);
     const prevSubtitleUrl = useRef(null);
+    const [resumeTime, setResumeTime] = useState(0);
+    const hasSeekedRef = useRef(false);
+    const [showResumeToast, setShowResumeToast] = useState(null);
 
     // Derived
     const isSeriesContent = urlType === 'series' ||
@@ -103,6 +108,19 @@ const WatchPage = () => {
 
     const uniqueSeasons = [...new Set(videos.map(v => v.season || 1))].sort((a, b) => a - b);
     const filteredEpisodes = videos.filter(v => (v.season || 1) === activeSeason);
+
+    // ─── Derived values ────────────────────────────
+    const title = decodedName;
+    const rating = tmdbData?.rating;
+    const overview = tmdbData?.overview || '';
+    const year = (tmdbData?.date || '').substring(0, 4) || '';
+    const directorName = credits?.director || '';
+    const castList = credits?.cast || [];
+    const currentEpisodeNum = currentVideo?.episode || 1;
+    const currentEpData = episodeData[`${currentVideo?.season || 1}_${currentEpisodeNum}`];
+    const currentEpisodeName = currentEpData?.name || currentVideo?.name || `Episode ${currentEpisodeNum}`;
+    const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+    const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
 
     // ─── Load Data ──────────────────────────────────
     useEffect(() => {
@@ -159,6 +177,98 @@ const WatchPage = () => {
         };
         loadData();
     }, [decodedName, urlType]);
+
+    // ─── Fetch/Create Profile ───────────────────────
+    useEffect(() => {
+        if (!authUser || profileId) return;
+        
+        const setupProfile = async () => {
+            const profiles = await fetchProfiles();
+            if (profiles.length > 0) {
+                setProfileId(profiles[0].id);
+                localStorage.setItem('mutflix_last_profile_id', profiles[0].id);
+            } else {
+                const newId = `p_${Math.random().toString(36).substr(2, 9)}`;
+                const success = await createProfile(newId, 'Web User', 'bottts');
+                if (success) {
+                    setProfileId(newId);
+                    localStorage.setItem('mutflix_last_profile_id', newId);
+                }
+            }
+        };
+        setupProfile();
+    }, [authUser, profileId]);
+
+    // ─── Save History logic ─────────────────────────
+    const triggerSaveHistory = useCallback(async () => {
+        if (!profileId || !currentVideo || !videoRef.current) return;
+        
+        const video = videoRef.current;
+        if (!video.duration) return;
+
+        await saveHistory(
+            profileId,
+            currentVideo.path,
+            currentVideo.name || decodedName,
+            isSeriesContent ? decodedName : null,
+            currentVideo.source,
+            currentEpData?.still_path || tmdbData?.tmdb_poster_path,
+            currentVideo.subtitle_path,
+            Math.floor(video.currentTime * 1000),
+            Math.floor(video.duration * 1000)
+        );
+    }, [profileId, currentVideo, decodedName, isSeriesContent, currentEpData, tmdbData]);
+
+    // ─── Fetch Resume Position ─────────────────────
+    useEffect(() => {
+        if (!profileId || !currentVideo) return;
+        
+        const fetchResumePosition = async () => {
+            const history = await fetchHistory(profileId);
+            const entry = history.find(h => h.media_path === currentVideo.path);
+            if (entry && entry.position_ms >= 10000) {
+                const progress = (entry.position_ms / entry.duration_ms) * 100;
+                if (progress < 95) {
+                    setResumeTime(entry.position_ms / 1000);
+                } else {
+                    setResumeTime(0);
+                }
+            } else {
+                setResumeTime(0);
+            }
+        };
+        fetchResumePosition();
+    }, [profileId, currentVideo]);
+
+    // ─── Auto-Seek Logic ────────────────────────────
+    useEffect(() => {
+        // Reset seek tracker on video change
+        hasSeekedRef.current = false;
+    }, [currentVideo]);
+
+    useEffect(() => {
+        const video = videoRef.current;
+        if (video && duration > 0 && resumeTime > 0 && !hasSeekedRef.current) {
+            console.log(`[Resume] Seeking to ${resumeTime}s for ${currentVideo?.path}`);
+            video.currentTime = resumeTime;
+            hasSeekedRef.current = true;
+
+            const minutes = Math.floor(resumeTime / 60);
+            const seconds = Math.floor(resumeTime % 60);
+            setShowResumeToast(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+            setTimeout(() => setShowResumeToast(null), 3000);
+        }
+    }, [duration, resumeTime, currentVideo]);
+
+    useEffect(() => {
+        if (!isPlaying || !profileId) return;
+
+        const interval = setInterval(() => {
+            triggerSaveHistory();
+        }, 15000); // Save every 15s
+
+        return () => clearInterval(interval);
+    }, [isPlaying, profileId, triggerSaveHistory]);
 
     // ─── Load Stream when currentVideo changes ──────
     useEffect(() => {
@@ -364,6 +474,7 @@ const WatchPage = () => {
             video.play().catch(() => { });
         } else {
             video.pause();
+            triggerSaveHistory();
         }
     };
 
@@ -416,8 +527,6 @@ const WatchPage = () => {
         const video = videoRef.current;
         if (video) {
             setDuration(video.duration);
-            // DO NOT setVideoLoading(false) here because video might still be buffering Data.
-            // Wait for onCanPlay or onPlay to hide the spinner.
         }
     };
     const handleVideoError = () => {
@@ -485,18 +594,6 @@ const WatchPage = () => {
         return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
     };
 
-    // ─── Derived values ────────────────────────────
-    const title = decodedName;
-    const rating = tmdbData?.rating;
-    const overview = tmdbData?.overview || '';
-    const year = (tmdbData?.date || '').substring(0, 4) || '';
-    const directorName = credits?.director || '';
-    const castList = credits?.cast || [];
-    const currentEpisodeNum = currentVideo?.episode || 1;
-    const currentEpData = episodeData[`${currentVideo?.season || 1}_${currentEpisodeNum}`];
-    const currentEpisodeName = currentEpData?.name || currentVideo?.name || `Episode ${currentEpisodeNum}`;
-    const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
-    const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
 
     // ─── Loading state ─────────────────────────────
     if (loading) {
@@ -650,7 +747,6 @@ const WatchPage = () => {
                                                 videoRef.current.currentTime = time;
                                             }
                                             setCurrentTime(time);
-                                            setProgressPercent((time / (duration || 1)) * 100);
                                         }}
                                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 m-0 p-0"
                                     />

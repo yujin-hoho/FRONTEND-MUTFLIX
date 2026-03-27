@@ -3,7 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo, TMDB_GENRES } from '../services/api';
 
-export const MovieCard = React.memo(({ item, tag, isFirst, isLast }) => {
+export const MovieCard = React.memo(({ item, tag, isFirst, isLast, progress, variant = 'vertical' }) => {
+  const isHorizontal = variant === 'horizontal';
   const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
   const hoverTimeoutRef = useRef(null);
@@ -11,7 +12,18 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast }) => {
 
   const folderName = item?.folder_name || item?.name || '';
   const mediaType = item?.type || 'movie';
-  const handleNavigate = () => navigate(`/detail/${encodeURIComponent(folderName)}?type=${mediaType}`);
+  
+  const handleNavigate = () => {
+    if (progress !== undefined) {
+      // It's a Continue Watching card, go directly to WatchPage
+      const ep = item.episode || 1;
+      const s = item.season || 1;
+      const type = item.series_title ? 'series' : 'movie';
+      navigate(`/watch/${encodeURIComponent(folderName)}?ep=${ep}&s=${s}&type=${type}`);
+    } else {
+      navigate(`/detail/${encodeURIComponent(folderName)}?type=${mediaType}`);
+    }
+  };
 
   const handleMouseEnter = () => {
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
@@ -54,13 +66,13 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast }) => {
 
   return (
     <div
-      className="relative flex-none w-[150px] md:w-[185px] group cursor-pointer transition-all duration-300 shrink-0"
+      className={`relative flex-none ${isHorizontal ? 'w-[200px] md:w-[250px]' : 'w-[150px] md:w-[185px]'} group cursor-pointer transition-all duration-300 shrink-0`}
       style={{ zIndex: isHovered ? 50 : 1 }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
       {/* Poster Container */}
-      <div onClick={handleNavigate} className="w-full aspect-[2/3] rounded overflow-hidden bg-[#1b1d22] relative border border-transparent group-hover:border-white/20 transition-colors duration-300">
+      <div onClick={handleNavigate} className={`w-full ${isHorizontal ? 'aspect-[16/10]' : 'aspect-[2/3]'} rounded overflow-hidden bg-[#1b1d22] relative border border-transparent group-hover:border-white/20 transition-colors duration-300`}>
         <img src={poster} alt={title} loading="lazy" decoding="async" className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
 
         {/* Top Right Tag - Free */}
@@ -86,7 +98,15 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast }) => {
 
         {/* Bottom text inside poster (episodes/rating) */}
         <div className="absolute bottom-0 left-0 w-full pt-8 pb-1.5 px-2 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
-          <span className="text-white text-[11px] font-medium tracking-wide">{bottomText}</span>
+          {progress !== undefined && (
+            <div className="w-full bg-white/20 h-[3px] rounded-full mb-1.5 overflow-hidden">
+              <div 
+                className="bg-[#00dc41] h-full" 
+                style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+              ></div>
+            </div>
+          )}
+          {!isHorizontal && <span className="text-white text-[11px] font-medium tracking-wide">{bottomText}</span>}
         </div>
       </div>
 
@@ -98,11 +118,11 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast }) => {
       {/* Hover Popup Effect for details on large screens */}
       {isHovered && (
         <div
-          className={`absolute top-1/2 -translate-y-[45%] w-[350px] bg-[#1a1c22] rounded-xl shadow-[0_30px_100px_rgba(0,0,0,0.95)] border border-white/10 hidden lg:block pb-3 z-[100] transform transition-all duration-300 animate-popup ${isFirst ? 'left-0 origin-left' : isLast ? 'right-0 origin-right' : 'left-1/2 -translate-x-1/2 origin-center'
+          className={`absolute top-1/2 -translate-y-[45%] ${isHorizontal ? 'w-[320px]' : 'w-[350px]'} bg-[#1a1c22] rounded-xl shadow-[0_30px_100px_rgba(0,0,0,0.95)] border border-white/10 hidden lg:block pb-3 z-[100] transform transition-all duration-300 animate-popup ${isFirst ? 'left-0 origin-left' : isLast ? 'right-0 origin-right' : 'left-1/2 -translate-x-1/2 origin-center'
             }`}
           onClick={handleNavigate}
         >
-          <div className="relative w-full h-[190px] rounded-t-xl overflow-hidden">
+          <div className={`relative w-full ${isHorizontal ? 'h-[180px]' : 'h-[190px]'} rounded-t-xl overflow-hidden`}>
             <img src={poster} alt={title} loading="lazy" decoding="async" className="w-full h-full object-cover object-top" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#1a1c22] via-[#1a1c22]/40 to-transparent"></div>
 
@@ -148,7 +168,8 @@ export const MovieCard = React.memo(({ item, tag, isFirst, isLast }) => {
   );
 });
 
-const MovieCarousel = React.memo(({ title, items, tagType }) => {
+const MovieCarousel = React.memo(({ title, items, tagType, variant = 'vertical' }) => {
+  const isHorizontal = variant === 'horizontal';
   const scrollRef = useRef(null);
 
   const scrollLeft = () => {
@@ -166,7 +187,7 @@ const MovieCarousel = React.memo(({ title, items, tagType }) => {
   };
 
   return (
-    <div className="mb-10 px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-center hover:z-[60] z-10 transition-all">
+    <div className={`${isHorizontal ? 'mb-6' : 'mb-10'} px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-center hover:z-[60] z-10 transition-all`}>
       <div className="w-full flex items-center justify-between mb-4">
         <h2 className="text-[20px] md:text-[22px] font-bold text-[#f5f5f5] tracking-wide">{title}</h2>
         {/* Only show 'More' if not TOP 10 section to match image closely */}
@@ -180,17 +201,17 @@ const MovieCarousel = React.memo(({ title, items, tagType }) => {
         {/* Left Arrow Navigation */}
         <button
           onClick={scrollLeft}
-          className="absolute -left-5 md:-left-12 lg:-left-12 top-[40%] -translate-y-1/2 z-40 bg-[#16181db3] hover:bg-[#1a1c22f2] text-white/50 hover:text-white p-2 md:p-3 rounded-full opacity-0 group-hover/carousel:opacity-100 transition-all duration-300 hidden sm:flex items-center justify-center shadow-2xl backdrop-blur-md hover:scale-110"
+          className={`absolute -left-5 md:-left-12 lg:-left-12 ${isHorizontal ? 'top-[35%]' : 'top-[40%]'} -translate-y-1/2 z-40 bg-[#16181db3] hover:bg-[#1a1c22f2] text-white/50 hover:text-white p-2 md:p-3 rounded-full opacity-0 group-hover/carousel:opacity-100 transition-all duration-300 hidden sm:flex items-center justify-center shadow-2xl backdrop-blur-md hover:scale-110`}
         >
-          <ChevronLeft size={30} strokeWidth={2.5} />
+          <ChevronLeft size={isHorizontal ? 24 : 30} strokeWidth={2.5} />
         </button>
 
         {/* Right Arrow Navigation */}
         <button
           onClick={scrollRight}
-          className="absolute -right-5 md:-right-12 lg:-right-12 top-[40%] -translate-y-1/2 z-40 bg-[#16181db3] hover:bg-[#1a1c22f2] text-white/50 hover:text-white p-2 md:p-3 rounded-full opacity-0 group-hover/carousel:opacity-100 transition-all duration-300 hidden sm:flex items-center justify-center shadow-2xl backdrop-blur-md hover:scale-110"
+          className={`absolute -right-5 md:-right-12 lg:-right-12 ${isHorizontal ? 'top-[35%]' : 'top-[40%]'} -translate-y-1/2 z-40 bg-[#16181db3] hover:bg-[#1a1c22f2] text-white/50 hover:text-white p-2 md:p-3 rounded-full opacity-0 group-hover/carousel:opacity-100 transition-all duration-300 hidden sm:flex items-center justify-center shadow-2xl backdrop-blur-md hover:scale-110`}
         >
-          <ChevronRight size={30} strokeWidth={2.5} />
+          <ChevronRight size={isHorizontal ? 24 : 30} strokeWidth={2.5} />
         </button>
 
         <div
@@ -206,13 +227,15 @@ const MovieCarousel = React.memo(({ title, items, tagType }) => {
                   tag={tagType === 'free' ? 'Free' : tagType === 'original' ? 'Original' : tagType === 'top' ? 'TOP 10' : null}
                   isFirst={idx === 0}
                   isLast={idx === items.length - 1}
+                  progress={item.progress}
+                  variant={variant}
                 />
               </div>
             ))
           ) : (
             [...Array(8)].map((_, i) => (
-              <div key={i} className="snap-start shrink-0 w-[150px] md:w-[185px] group cursor-wait">
-                <div className="w-full aspect-[2/3] bg-[#22252b]/60 rounded-md animate-pulse border border-white/5"></div>
+              <div key={i} className={`snap-start shrink-0 ${isHorizontal ? 'w-[200px] md:w-[250px]' : 'w-[150px] md:w-[185px]'} group cursor-wait`}>
+                <div className={`w-full ${isHorizontal ? 'aspect-[16/10]' : 'aspect-[2/3]'} bg-[#22252b]/60 rounded-md animate-pulse border border-white/5`}></div>
                 <div className="mt-2.5 h-4 w-3/4 bg-[#22252b]/60 rounded animate-pulse"></div>
               </div>
             ))

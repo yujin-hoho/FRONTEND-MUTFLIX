@@ -4,7 +4,7 @@ import Navbar from '../components/Navbar';
 import HeroBanner from '../components/HeroBanner';
 import MovieCarousel from '../components/MovieCarousel';
 import LoginModal from '../components/LoginModal';
-import { fetchFolders, fetchContentReleases, logout, getTMDBInfo, TMDB_GENRES } from '../services/api';
+import { fetchFolders, fetchContentReleases, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -21,6 +21,7 @@ const Dashboard = () => {
   const [genreSections, setGenreSections] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [continueWatching, setContinueWatching] = useState([]);
   const [authUser, setAuthUser] = useState(() => {
     const username = localStorage.getItem('username');
     const role = localStorage.getItem('role');
@@ -82,6 +83,17 @@ const Dashboard = () => {
       .filter(k => tempGenreMap[k].length >= 4)
       .map(k => ({ title: k, items: tempGenreMap[k] }))
       .sort((a, b) => b.items.length - a.items.length);
+
+    // Top 10 section based on TMDB Rating
+    const top10Items = [...items]
+      .sort((a, b) => (b.tmdb_rating || 0) - (a.tmdb_rating || 0))
+      .slice(0, 10);
+    
+    const top10Section = { title: "Top 10", items: top10Items, tagType: "top" };
+    
+    // Replace first section or prepend Top 10
+    // The user explicitly wanted the first section (Daram/Drama) to become Top 10
+    sections = [top10Section, ...sections.filter(s => s.title !== "Trending" && s.title !== "Drama" && s.title !== "Daram")];
 
     if (sections.length === 0 && items.length > 0) {
       sections = [
@@ -196,13 +208,50 @@ const Dashboard = () => {
 
       if (fetchIdRef.current !== currentFetchId) return;
 
+      // NEW: Fetch history if logged in BEFORE hiding loader
+      if (authUser) {
+        try {
+          const profiles = await fetchProfiles();
+          if (profiles.length > 0 && fetchIdRef.current === currentFetchId) {
+            const allHistories = await Promise.all(
+              profiles.map(p => fetchHistory(p.id))
+            );
+            
+            if (fetchIdRef.current !== currentFetchId) return;
+
+            // Flatten and unique by media_path
+            const flatHistory = allHistories.flat();
+            const uniqueHistoryMap = new Map();
+            
+            flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
+            
+            flatHistory.forEach(h => {
+               const progress = (h.position_ms / h.duration_ms) * 100;
+               if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 10000 && progress < 95) {
+                 uniqueHistoryMap.set(h.media_path, {
+                   ...h,
+                   name: h.series_title || h.media_title,
+                   poster: h.still_path,
+                   folder_name: h.series_title || h.media_title,
+                   progress: progress
+                 });
+               }
+            });
+            
+            setContinueWatching(Array.from(uniqueHistoryMap.values()).slice(0, 15));
+          }
+        } catch (historyError) {
+          console.error("Error loading history in sync phase:", historyError);
+        }
+      }
+
       setLoading(false);
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);
       if (fetchIdRef.current === currentFetchId) setLoading(false);
     }
-  }, [processData, buildSections, enrichWithTMDB]);
+  }, [processData, buildSections, enrichWithTMDB, authUser]);
 
   useEffect(() => {
     loadData();
@@ -244,6 +293,16 @@ const Dashboard = () => {
                 title={genreSections[0].title}
                 items={genreSections[0].items}
                 tagType={genreSections[0].tagType || 'top'}
+              />
+            </div>
+          )}
+
+          {continueWatching.length > 0 && (
+            <div className="mb-12">
+              <MovieCarousel
+                title="Continue Watching"
+                items={continueWatching}
+                variant="horizontal"
               />
             </div>
           )}
