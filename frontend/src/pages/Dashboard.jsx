@@ -98,28 +98,53 @@ const Dashboard = () => {
     if (tmdbEnrichRef.current) return; // Already running
     tmdbEnrichRef.current = true;
 
-    const sampleForGenres = items.slice(0, 30);
     const resolvedItems = [...items]; // Copy so we can update in-place
+    const tmdbPromises = [];
+    let apiFetchCount = 0;
+    const MAX_API_CALLS = 40;
 
-    const tmdbPromises = sampleForGenres.map(async (item, idx) => {
+    for (let idx = 0; idx < items.length; idx++) {
+      const item = items[idx];
       const title = item.tmdb_title || item.folder_name || item.name;
-      if (!title) return;
+      if (!title) continue;
 
       const hasEnoughInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
-      if (hasEnoughInfo) return;
+      if (hasEnoughInfo) continue;
 
-      const data = await getTMDBInfo(title);
-      if (!data) return;
+      const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim();
+      const cacheKey = `mutflix_tmdb_info_${cleanTitle.toLowerCase()}`;
+      const cached = localStorage.getItem(cacheKey);
+      let data = null;
 
-      const resolvedItem = { ...item };
-      if (data.poster_path) resolvedItem.tmdb_poster_path = data.poster_path;
-      resolvedItem.tmdb_backdrop_path = data.backdrop_path || item.tmdb_backdrop_path;
-      resolvedItem.tmdb_genre_ids = data.genre_ids || (data.genres ? data.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
-      resolvedItem.tmdb_overview = data.overview || item.tmdb_overview;
-      resolvedItem.tmdb_rating = data.rating || item.tmdb_rating;
+      if (cached) {
+          try { data = JSON.parse(cached); } catch (e) { }
+      }
 
-      resolvedItems[idx] = resolvedItem;
-    });
+      if (data) {
+          const resolvedItem = { ...item };
+          if (data.poster_path) resolvedItem.tmdb_poster_path = data.poster_path;
+          resolvedItem.tmdb_backdrop_path = data.backdrop_path || item.tmdb_backdrop_path;
+          resolvedItem.tmdb_genre_ids = data.genre_ids || (data.genres ? data.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
+          resolvedItem.tmdb_overview = data.overview || item.tmdb_overview;
+          resolvedItem.tmdb_rating = data.rating || item.tmdb_rating;
+          resolvedItems[idx] = resolvedItem;
+      } else if (apiFetchCount < MAX_API_CALLS) {
+          apiFetchCount++;
+          tmdbPromises.push(
+              getTMDBInfo(title).then(apiData => {
+                  if (apiData) {
+                      const resolvedItem = { ...item };
+                      if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
+                      resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
+                      resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
+                      resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
+                      resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
+                      resolvedItems[idx] = resolvedItem;
+                  }
+              })
+          );
+      }
+    }
 
     await Promise.allSettled(tmdbPromises);
 
@@ -191,39 +216,44 @@ const Dashboard = () => {
       <main className="w-full animate-page-enter">
         <HeroBanner items={featuredList} />
         <div className="-mt-16 md:-mt-24 relative z-20 pb-12">
-          {genreSections.map((section, idx) => {
-            const crimeIdx = genreSections.findIndex(s => s.title === 'Crime');
-            const targetIdx = crimeIdx !== -1 ? crimeIdx : 1;
+          {genreSections.length > 0 && (
+            <div className="mb-4">
+              <MovieCarousel
+                title={genreSections[0].title}
+                items={genreSections[0].items}
+                tagType={genreSections[0].tagType || 'top'}
+              />
+            </div>
+          )}
 
-            return (
-              <div key={section.title} className="mb-4">
-                <MovieCarousel
-                  title={section.title}
-                  items={section.items}
-                  tagType={section.tagType || (idx === 0 ? 'top' : idx % 3 === 0 ? 'free' : null)}
-                />
-
-                {idx === targetIdx && (
-                  <div className="px-6 md:px-[60px] mb-4 -mt-2 w-full">
-                    <div className="flex gap-3 overflow-x-auto no-scrollbar">
-                      {QUICK_FILTERS.map(f => (
-                        <button
-                          key={f.label}
-                          onClick={() => navigate(f.path)}
-                          className="bg-[#1a1c22] hover:bg-[#2a2c33] text-gray-300 hover:text-white px-5 py-2.5 rounded-md text-[14px] font-medium whitespace-nowrap transition-colors border border-white/5 flex items-center gap-2"
-                        >
-                          {f.label === 'All Videos' && (
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
-                          )}
-                          {f.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+          {genreSections.length > 0 && (
+            <div className="px-6 md:px-[60px] mb-4 -mt-2 w-full">
+              <div className="flex gap-3 overflow-x-auto no-scrollbar">
+                {QUICK_FILTERS.map(f => (
+                  <button
+                    key={f.label}
+                    onClick={() => navigate(f.path)}
+                    className="bg-[#1a1c22] hover:bg-[#2a2c33] text-gray-300 hover:text-white px-5 py-2.5 rounded-md text-[14px] font-medium whitespace-nowrap transition-colors border border-white/5 flex items-center gap-2"
+                  >
+                    {f.label === 'All Videos' && (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+                    )}
+                    {f.label}
+                  </button>
+                ))}
               </div>
-            );
-          })}
+            </div>
+          )}
+
+          {genreSections.slice(1).map((section, idx) => (
+            <div key={section.title} className="mb-4">
+              <MovieCarousel
+                title={section.title}
+                items={section.items}
+                tagType={section.tagType || ((idx + 1) % 3 === 0 ? 'free' : null)}
+              />
+            </div>
+          ))}
         </div>
       </main>
 
