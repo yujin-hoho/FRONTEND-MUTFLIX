@@ -5,6 +5,7 @@ import HeroBanner from '../components/HeroBanner';
 import MovieCarousel from '../components/MovieCarousel';
 import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
+import LoadingScreen from '../components/LoadingScreen';
 import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
 
 const shuffleArray = (array) => {
@@ -200,12 +201,12 @@ const Dashboard = () => {
     const currentFetchId = ++fetchIdRef.current;
     
     // Helper to update dashboard state safely
-    const updateVisuals = (data, id) => {
+    const updateVisuals = (data, id, shouldStopLoading = false) => {
       if (id !== fetchIdRef.current) return;
       if (data && data.length > 0) {
         setFeaturedList(data.slice(0, 6));
         setGenreSections(buildSections(data));
-        setLoading(false);
+        if (shouldStopLoading) setLoading(false);
       }
     };
 
@@ -226,8 +227,9 @@ const Dashboard = () => {
 
       const shuffledData = processData(foldersResp);
 
-      // SHOW CONTENT INSTANTLY (even if empty, to stop shimmer/loading)
-      updateVisuals(shuffledData, currentFetchId);
+      // We no longer call updateVisuals with immediate loading exit here
+      // updateVisuals(shuffledData, currentFetchId);
+
       if (shuffledData.length === 0) {
         setLoading(false);
       }
@@ -273,11 +275,16 @@ const Dashboard = () => {
         } catch (e) { console.error("History fetch error:", e); }
       })() : Promise.resolve();
 
-      // Parallel background tasks
+      // Parallel background tasks - wait for them to finish before showing
       await Promise.allSettled([
         enrichWithTMDB(shuffledData, currentFetchId),
         historyPromise
       ]);
+
+      if (fetchIdRef.current === currentFetchId) {
+        // Now that enrichment is done, we can show the UI
+        setLoading(false);
+      }
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);
@@ -319,15 +326,11 @@ const Dashboard = () => {
 
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-darkBG flex flex-col items-center justify-center">
-        <div className="w-14 h-14 border-4 border-brand border-t-transparent rounded-full animate-spin mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   return (
-    <div className="min-h-screen bg-darkBG font-sans pb-20 overflow-x-hidden">
+    <div className="min-h-screen bg-darkBG font-sans flex flex-col overflow-x-hidden">
       <Navbar
         onMeClick={() => setShowLoginModal(true)}
         isLoggedIn={!!authUser}

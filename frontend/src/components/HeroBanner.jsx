@@ -1,14 +1,13 @@
-import { Play, BookmarkPlus } from 'lucide-react';
+import { Play, BookmarkPlus, Info } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 const HeroBanner = ({ items }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const navigate = useNavigate();
-
   const scrollRef = useRef(null);
 
-  // Auto rotate sync with native scroll
+  // Auto rotate
   useEffect(() => {
     if (!items || items.length <= 1) return;
     const interval = setInterval(() => {
@@ -20,11 +19,10 @@ const HeroBanner = ({ items }) => {
         });
       }
       setCurrentIndex(nextIndex);
-    }, 8000);
+    }, 10000); // Slower rotation (10s) to enjoy the zoom
     return () => clearInterval(interval);
   }, [items, currentIndex]);
 
-  // Handle manual scroll to update index
   const handleScroll = (e) => {
     const scrollLeft = e.target.scrollLeft;
     const width = e.target.offsetWidth;
@@ -44,10 +42,10 @@ const HeroBanner = ({ items }) => {
     setCurrentIndex(index);
   };
 
-  if (!items || items.length === 0) return <div className="h-[90vh] bg-darkBG animate-pulse w-full"></div>;
+  if (!items || items.length === 0) return <div className="h-[90vh] bg-[#0a0c10] animate-pulse w-full"></div>;
 
   return (
-    <div className="relative w-full h-[85vh] md:h-[95vh] bg-darkBG overflow-hidden group">
+    <div className="relative w-full h-[85vh] md:h-[95vh] bg-[#0a0c10] overflow-hidden">
       {/* Scrollable Container */}
       <div 
         ref={scrollRef}
@@ -63,60 +61,78 @@ const HeroBanner = ({ items }) => {
             
           const title = item.tmdb_title || item.folder_name || item.name || "Title";
           const rating = item.tmdb_rating;
-          const overview = item.tmdb_overview || "Description...";
+          const overview = item.tmdb_overview || "Explore this amazing title on Mutflix.";
           const year = (item.release_date || item.first_air_date || "2024").substring(0, 4);
+          const isActive = index === currentIndex;
 
           return (
             <div 
-              key={item.id || index}
-              className="relative shrink-0 w-full h-full snap-center overflow-hidden"
+              key={item.folder_name || index}
+              className="relative shrink-0 w-full h-full snap-center overflow-hidden group"
             >
-              {/* Image Layer */}
-              <div className="absolute inset-0 w-full h-full">
+              {/* Image Layer with Ken Burns Effect */}
+              <div className="absolute inset-0 w-full h-full overflow-hidden">
                 <img 
                   src={bgImage} 
                   alt={title} 
-                  className="w-full h-full object-cover object-[center_top]"
+                  className={`w-full h-full object-cover object-[center_top] transition-opacity duration-1000 ${isActive ? 'opacity-100 animate-ken-burns' : 'opacity-0'}`}
                 />
-                <div className="absolute inset-0 bg-gradient-to-r from-[#111319]/80 via-[#111319]/20 to-transparent"></div>
-                <div className="absolute inset-x-0 bottom-0 h-[50%] bg-gradient-to-t from-[#111319] via-[#111319]/40 to-transparent"></div>
+                
+                {/* Visual Depth Masks */}
+                <div className="absolute inset-x-0 bottom-0 h-[60%] bg-gradient-to-t from-[#0a0c10] via-[#0a0c10]/40 to-transparent"></div>
+                <div className="absolute inset-y-0 left-0 w-[50%] bg-gradient-to-r from-[#0a0c10]/80 via-[#0a0c10]/20 to-transparent"></div>
+                <div className="absolute inset-0 bg-black/20"></div>
               </div>
               
-              {/* Content Layer */}
-              <div className="relative z-10 flex flex-col justify-center h-full px-8 md:px-16 pt-20 pb-12 md:pb-32 max-w-[800px]">
-                <h1 className="text-4xl md:text-6xl font-black text-white mb-4 leading-tight tracking-tight drop-shadow-2xl">
+              {/* Content Layer with Staggered Animations */}
+              <div 
+                className={`relative z-10 flex flex-col justify-center h-full px-8 md:px-16 pt-20 pb-12 md:pb-32 max-w-[850px] transition-all duration-700 ${isActive ? 'translate-x-0 opacity-100' : '-translate-x-12 opacity-0'}`}
+              >
+                {/* Badge */}
+                <div className={`mb-4 w-max animate-reveal-right delay-100 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                  <div className="bg-brand/90 backdrop-blur-sm text-black text-[10px] md:text-[11px] font-black px-2.5 py-1 rounded-sm uppercase tracking-widest shadow-[0_0_20px_rgba(0,220,65,0.3)]">
+                    EXCLUSIVE FEATURED
+                  </div>
+                </div>
+
+                {/* Title */}
+                <h1 className={`text-4xl md:text-7xl font-black text-white mb-6 leading-[0.9] tracking-tighter drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] animate-reveal-right delay-200 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   {title}
                 </h1>
                 
-                <div className="flex flex-col gap-4 mb-6">
-                  <div className="bg-brand text-black text-[11px] font-black px-2 py-0.5 rounded-sm w-max uppercase tracking-wider">
-                    Featured
+                {/* Meta Info */}
+                <div className={`flex items-center gap-4 mb-8 animate-reveal-right delay-300 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[#00dc41] font-black text-xl drop-shadow-[0_0_8px_rgba(0,220,65,0.4)]">★ {rating > 0 ? Number(rating).toFixed(1) : '8.5'}</span>
                   </div>
-                  
-                  <div className="flex items-center gap-3 text-sm text-gray-300 font-medium tracking-wide">
-                    <span className="text-[#00dc41] font-bold text-lg">★ {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
-                    <span className="text-gray-600">|</span>
-                    <span>{year}</span>
-                    <span className="text-gray-600">|</span>
-                    <span>17+</span>
-                    <span className="text-gray-600">|</span>
-                    <span>{item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'Episodes' : 'Movie'}</span>
-                  </div>
+                  <div className="w-[1px] h-4 bg-white/20"></div>
+                  <span className="text-white font-bold text-sm tracking-widest uppercase">{year}</span>
+                  <div className="w-[1px] h-4 bg-white/20"></div>
+                  <span className="border border-white/40 px-2 py-0.5 rounded text-[10px] text-white font-black uppercase tracking-widest">Ultra HD</span>
+                  <div className="w-[1px] h-4 bg-white/20"></div>
+                  <span className="text-gray-300 font-bold text-sm">
+                    {item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'TV Series' : 'Movie'}
+                  </span>
                 </div>
                 
-                <p className="text-white/90 text-[15px] mb-10 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-xl pr-4 drop-shadow-lg">
-                  "{overview}"
+                {/* Description */}
+                <p className={`text-white/80 text-[15px] md:text-[17px] mb-12 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-2xl font-medium pr-8 drop-shadow-md animate-reveal-right delay-400 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                  {overview}
                 </p>
                 
-                <div className="flex gap-4">
+                {/* Actions */}
+                <div className={`flex items-center gap-4 animate-reveal-right delay-500 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   <button 
-                    onClick={() => navigate(`/detail/${encodeURIComponent(title)}?type=${item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'series' : 'movie'}`)}
-                    className="bg-brand hover:brightness-[1.15] text-white rounded-full h-[54px] w-[54px] flex items-center justify-center transition-all hover:scale-110 active:scale-95 shadow-[0_0_25px_rgba(0,220,65,0.5)]"
+                    onClick={() => navigate(`/detail/${encodeURIComponent(item.folder_name || title)}?type=${item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'series' : 'movie'}`)}
+                    className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-black px-8 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95 shadow-[0_10px_30px_rgba(0,220,65,0.4)] group/play"
                   >
-                    <Play fill="black" size={26} className="ml-1 text-black" />
+                    <Play fill="black" size={20} className="group-hover/play:scale-110 transition-transform" />
+                    Watch Now
                   </button>
-                  <button className="bg-white/10 hover:bg-white/20 backdrop-blur-md text-white rounded-full h-[54px] w-[54px] border border-white/20 flex items-center justify-center transition-all hover:scale-110 active:scale-95">
-                    <BookmarkPlus size={26} />
+                  
+                  <button className="flex items-center gap-3 bg-white/5 hover:bg-white/10 backdrop-blur-xl text-white px-8 py-4 rounded-xl border border-white/10 font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95">
+                    <BookmarkPlus size={20} />
+                    My List
                   </button>
                 </div>
               </div>
@@ -125,16 +141,16 @@ const HeroBanner = ({ items }) => {
         })}
       </div>
       
-      {/* Rotation Indicators - Centered and Scrollable if needed */}
+      {/* Rotation Indicators */}
       {items && items.length > 1 && (
-        <div className="absolute bottom-10 left-0 right-0 z-20 flex justify-center px-8">
-          <div className="flex gap-2.5 overflow-x-auto no-scrollbar max-w-full pb-1">
+        <div className="absolute bottom-12 left-0 right-0 z-20 flex justify-center px-8">
+          <div className="flex gap-3 bg-black/20 backdrop-blur-md px-4 py-3 rounded-full border border-white/5">
             {items.map((_, idx) => (
               <div 
                 key={idx} 
                 onClick={() => scrollToBanner(idx)}
-                className={`h-1.5 cursor-pointer transition-all duration-[400ms] rounded-full shrink-0 ${
-                  idx === currentIndex ? 'w-10 bg-brand shadow-[0_0_10px_rgba(0,220,65,0.6)]' : 'w-5 bg-white/20 hover:bg-white/40'
+                className={`h-1 cursor-pointer transition-all duration-[500ms] rounded-full shrink-0 ${
+                  idx === currentIndex ? 'w-12 bg-white' : 'w-4 bg-white/20 hover:bg-white/40'
                 }`}
               />
             ))}
@@ -144,4 +160,5 @@ const HeroBanner = ({ items }) => {
     </div>
   );
 };
+
 export default HeroBanner;

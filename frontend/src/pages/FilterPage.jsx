@@ -3,6 +3,8 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
 import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout } from '../services/api';
+import Footer from '../components/Footer';
+import LoadingScreen from '../components/LoadingScreen';
 
 const REGIONS = ['All regions', 'Chinese Mainland', 'South Korea', 'Indonesia', 'Thailand', 'Taiwan', 'Japan', 'Malaysia', 'America', 'UK'];
 const CATEGORIES = ['All Genres', 'Youth', 'Mystery', 'Costume', 'Urban', 'Romance', 'Sweet Love', 'Marriage', 'Drama', 'Comedy', 'Family', 'Friendship', 'Fantasy', 'Crime', 'War', 'Novel Adaptation', 'Contemporary', 'Ancient', 'Variety Show'];
@@ -137,7 +139,7 @@ const FilterPage = () => {
           return resolved;
         });
         setAllResolved(quickResolved);
-        setLoading(false);
+        // setLoading(false); // We now wait for enrichment below
 
         // PHASE 2: Enrich with TMDB data in background
         const toResolve = uniqueDataList.slice(0, 80);
@@ -179,6 +181,7 @@ const FilterPage = () => {
         });
 
         setAllResolved(finalResolved);
+        setLoading(false); // Ready!
       } catch (e) {
         console.error(e);
         setLoading(false);
@@ -187,8 +190,10 @@ const FilterPage = () => {
     loadData();
   }, []);
 
-  return (
-    <div className="min-h-screen bg-darkBG font-sans pb-20 overflow-x-hidden pt-24 animate-page-enter">
+    if (loading) return <LoadingScreen />;
+
+    return (
+    <div className="min-h-screen bg-darkBG font-sans flex flex-col overflow-x-hidden pt-24 animate-page-enter">
       <Navbar
         onMeClick={() => setShowLoginModal(true)}
         isLoggedIn={!!authUser}
@@ -282,6 +287,7 @@ const FilterPage = () => {
           )}
         </div>
       </div>
+      <Footer />
     </div>
   );
 };

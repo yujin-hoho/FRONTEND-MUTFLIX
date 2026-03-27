@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo, TMDB_GENRES } from '../services/api';
 
-export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving }) => {
+export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0 }) => {
   const isHorizontal = variant === 'horizontal';
   const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
@@ -28,13 +28,11 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   };
 
   const handleMouseEnter = () => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-    hoverTimeoutRef.current = setTimeout(() => setIsHovered(true), 350);
+    // Detail popup removed per user request
   };
 
   const handleMouseLeave = () => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-    setIsHovered(false);
+    // Detail popup removed per user request
   };
 
   const title = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
@@ -71,8 +69,13 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
     <div
       className={`relative flex-none transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)] 
         ${isRemoving ? 'opacity-0 scale-75 translate-y-4 !w-0 !mr-[-1rem] pointer-events-none' : 'opacity-100 scale-100 translate-y-0'}
-        group cursor-pointer shrink-0`}
-      style={{ zIndex: isHovered ? 50 : 1, width: `${cardWidth}px`, minWidth: `${cardWidth}px` }}
+        animate-poster-reveal group cursor-pointer shrink-0`}
+      style={{ 
+        zIndex: isHovered ? 50 : 1, 
+        width: `${cardWidth}px`, 
+        minWidth: `${cardWidth}px`,
+        animationDelay: `${delay * 105}ms`
+      }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
@@ -150,55 +153,7 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
         <h3 className="text-white text-[15px] font-bold line-clamp-2 transition-colors">{title}</h3>
       </div>
 
-      {/* Hover Popup Effect for details on large screens */}
-      {isHovered && !isHorizontal && (
-        <div
-          className={`absolute top-1/2 -translate-y-[45%] ${isHorizontal ? 'w-[320px]' : 'w-[350px]'} bg-[#1a1c22] rounded-xl shadow-[0_30px_100px_rgba(0,0,0,0.95)] border border-white/10 hidden lg:block pb-3 z-[100] transform transition-all duration-300 animate-popup ${isFirst ? 'left-0 origin-left' : isLast ? 'right-0 origin-right' : 'left-1/2 -translate-x-1/2 origin-center'
-            }`}
-          onClick={handleNavigate}
-        >
-          <div className={`relative w-full ${isHorizontal ? 'h-[180px]' : 'h-[190px]'} rounded-t-xl overflow-hidden`}>
-            <img src={poster} alt={title} loading="lazy" decoding="async" className="w-full h-full object-cover object-top" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#1a1c22] via-[#1a1c22]/40 to-transparent"></div>
-
-            <button
-              className="absolute bottom-3 right-14 bg-white/10 backdrop-blur text-white border border-white/20 rounded-full p-2 shadow-lg hover:bg-white/20 transition"
-              onClick={(e) => { e.stopPropagation(); /* Add to List Action */ }}
-            >
-              <BookmarkPlus size={18} />
-            </button>
-            <button
-              className="absolute bottom-3 right-3 bg-[#00dc41] text-black rounded-full p-2 shadow-[0_0_15px_rgba(0,220,65,0.4)] hover:scale-105 hover:bg-[#00f048] transition"
-              onClick={(e) => { e.stopPropagation(); /* Play Action */ }}
-            >
-              <Play fill="black" size={18} className="ml-0.5" />
-            </button>
-          </div>
-
-          <div className="p-4 pt-3">
-            <h3 className="text-white font-bold text-[18px] mb-2 line-clamp-1">{title}</h3>
-            <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-2.5 font-medium">
-              <span className="text-[#00dc41] font-bold text-[13px]">★ {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
-              <span className="px-0.5">|</span>
-              <span className="border border-gray-600 px-1 rounded-sm text-[10px]">13+</span>
-              <span className="px-0.5">|</span>
-              <span>{year}</span>
-              <span className="px-0.5">|</span>
-              <span>{isSeries ? '30 Episodes' : 'Movie'}</span>
-            </div>
-
-            <div className="flex items-center gap-1.5 text-[10px] text-gray-400 mb-3 font-semibold">
-              {genres.map((g, i) => (
-                <span key={i} className="bg-white/5 py-1 px-1.5 rounded hover:text-white transition cursor-pointer">{g}</span>
-              ))}
-            </div>
-
-            <p className="text-[#a0a0a0] text-xs line-clamp-4 leading-relaxed mt-1">
-              {overview}
-            </p>
-          </div>
-        </div>
-      )}
+      {/* Detail popup removed per user request */}
     </div>
   );
 };
@@ -266,6 +221,7 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
                   variant={variant}
                   onDelete={variant === 'horizontal' ? (item) => onDelete && onDelete(item) : null}
                   isRemoving={variant === 'horizontal' && !!removingId && removingId === item.media_path}
+                  delay={idx}
                 />
               </div>
             ))
