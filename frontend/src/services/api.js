@@ -114,6 +114,7 @@ export const getTMDBInfo = async (title) => {
                 overview: details.overview || bestResult.overview,
                 date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
                 genres: details.genres || [],
+                genre_ids: (details.genres || []).map(g => g.id),
                 total_episodes: details.number_of_episodes || null,
                 total_seasons: details.number_of_seasons || null,
                 runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),

@@ -162,7 +162,7 @@ const FilterPage = () => {
             tmdbData = await getTMDBInfo(title);
           }
 
-          const srcGenreIds = tmdbData?.genre_ids || item.tmdb_genre_ids;
+          const srcGenreIds = tmdbData?.genre_ids || (tmdbData?.genres ? tmdbData.genres.map(g => g.id) : null) || item.tmdb_genre_ids;
           const parsedCategories = srcGenreIds ? srcGenreIds.map(id => TMDB_GENRES[id]).filter(Boolean) : [];
 
           const resolvedItem = {

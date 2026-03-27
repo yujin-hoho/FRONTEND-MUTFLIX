@@ -114,7 +114,7 @@ const Dashboard = () => {
       const resolvedItem = { ...item };
       if (data.poster_path) resolvedItem.tmdb_poster_path = data.poster_path;
       resolvedItem.tmdb_backdrop_path = data.backdrop_path || item.tmdb_backdrop_path;
-      resolvedItem.tmdb_genre_ids = data.genre_ids || item.tmdb_genre_ids || [];
+      resolvedItem.tmdb_genre_ids = data.genre_ids || (data.genres ? data.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
       resolvedItem.tmdb_overview = data.overview || item.tmdb_overview;
       resolvedItem.tmdb_rating = data.rating || item.tmdb_rating;
 
