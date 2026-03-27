@@ -92,10 +92,10 @@ const ContentDetail = () => {
 
   const title = decodedName;
   const rating = tmdbData?.rating;
-  const overview = tmdbData?.overview || "An exciting story awaits in this premium content. Explore the world of drama, action, and romance in this captivating production.";
-  const year = (tmdbData?.date || "2025").substring(0, 4);
-  const totalEpisodes = videos.length || 36;
-  const directorName = credits?.director || 'Staff';
+  const overview = tmdbData?.overview || "No description available for this title.";
+  const year = tmdbData?.date ? tmdbData.date.substring(0, 4) : "";
+  const totalEpisodes = tmdbData?.total_episodes || videos.length;
+  const directorName = credits?.director || 'Unknown';
   const castList = credits?.cast || [];
   const castNames = castList.map(c => c.name).slice(0, 8).join(', ') || 'Cast information unavailable';
 
@@ -159,22 +159,30 @@ const ContentDetail = () => {
           <div className="flex items-center gap-2 text-sm text-gray-300 font-medium mb-3 flex-wrap">
             <span className="text-[#00dc41] font-bold">★ {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
             <span className="text-gray-600">|</span>
-            <span className="border border-gray-600 px-1.5 rounded-sm text-[11px]">13+</span>
+            <span className="border border-gray-600 px-1.5 rounded-sm text-[11px]">
+              {tmdbData?.media_type === 'movie' ? 'Movie' : (tmdbData?.total_seasons ? `${tmdbData.total_seasons} Seasons` : 'TV Series')}
+            </span>
             <span className="text-gray-600">|</span>
             <span>{year}</span>
             {isSeriesContent && (
               <>
                 <span className="text-gray-600">|</span>
-                <span>Updated to {Math.min(videos.length || 20, totalEpisodes)}/Total {totalEpisodes} Episodes</span>
+                <span>Updated to {videos.length}/Total {totalEpisodes} Episodes</span>
+              </>
+            )}
+            {tmdbData?.runtime && (
+              <>
+                <span className="text-gray-600">|</span>
+                <span>{tmdbData.runtime} min</span>
               </>
             )}
           </div>
 
           {/* Genre Tags */}
           <div className="flex items-center gap-2 mb-4 flex-wrap">
-            {tmdbData?.genre_ids ? tmdbData.genre_ids.map((id, idx) => (
+            {tmdbData?.genres && tmdbData.genres.length > 0 ? tmdbData.genres.map((genre, idx) => (
               <span key={idx} className="bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition border border-white/10">
-                Genre
+                {genre.name}
               </span>
             )) : ['Drama', 'Romance', 'Comedy', 'Action'].slice(0, 3).map(genre => (
               <span key={genre} className="bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition border border-white/10">
@@ -237,8 +245,8 @@ const ContentDetail = () => {
               key={tab}
               onClick={() => setActiveTab(tab.toLowerCase())}
               className={`py-3.5 text-sm font-medium border-b-2 transition-all ${activeTab === tab.toLowerCase()
-                  ? 'text-white border-[#00dc41]'
-                  : 'text-gray-500 border-transparent hover:text-gray-300'
+                ? 'text-white border-[#00dc41]'
+                : 'text-gray-500 border-transparent hover:text-gray-300'
                 }`}
             >
               {tab}

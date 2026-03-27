@@ -9,11 +9,75 @@ export const TMDB_GENRES = {
 const getToken = () => localStorage.getItem('token') || '';
 
 // Jangan kirim header auth kalau token kosong.
-// Beberapa backend menganggap header auth yang ada-tapi-kosong sebagai invalid.
 const getAuthHeaders = () => {
     const token = getToken();
     return token ? { 'x-access-token': token } : {};
 };
+
+// ==========================================
+// 2-TIER CLIENT CACHE (in-memory + sessionStorage)
+// ==========================================
+// Tier 1: In-memory — instant for SPA navigation (~0ms)
+// Tier 2: sessionStorage — persists across soft navigations (~1ms)
+// TTL: 5 minutes — backend BG worker refreshes every 30 min anyway
+
+const _memCache = {};
+const _memCacheTs = {};
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function cacheGet(key) {
+    // Tier 1: memory
+    if (_memCache[key] && (Date.now() - _memCacheTs[key]) < CACHE_TTL) {
+        return _memCache[key];
+    }
+    // Tier 2: sessionStorage
+    try {
+        const raw = sessionStorage.getItem(`mutflix_${key}`);
+        if (raw) {
+            const { data, ts } = JSON.parse(raw);
+            if ((Date.now() - ts) < CACHE_TTL) {
+                _memCache[key] = data;
+                _memCacheTs[key] = ts;
+                return data;
+            }
+        }
+    } catch { /* ignore */ }
+    return null;
+}
+
+function cacheSet(key, data) {
+    _memCache[key] = data;
+    _memCacheTs[key] = Date.now();
+    try {
+        sessionStorage.setItem(`mutflix_${key}`, JSON.stringify({ data, ts: Date.now() }));
+    } catch { /* quota exceeded, ignore */ }
+}
+
+// Stale-While-Revalidate: return cached data instantly, refresh in background
+// onUpdate callback is called when fresh data arrives (so components can re-render)
+async function cachedFetch(key, fetchFn, onUpdate) {
+    const cached = cacheGet(key);
+    if (cached) {
+        // Return cached immediately, refresh in background
+        fetchFn().then(fresh => {
+            if (fresh && !fresh.__error) {
+                cacheSet(key, fresh);
+                if (onUpdate) onUpdate(fresh);
+            }
+        }).catch(() => { });
+        return cached;
+    }
+    // No cache — fetch synchronously
+    const data = await fetchFn();
+    if (data && !data.__error) {
+        cacheSet(key, data);
+    }
+    return data;
+}
+
+// ==========================================
+// TMDB API (with localStorage cache — long-lived, immutable data)
+// ==========================================
 
 // Mengambil info dari TMDB jika backend tidak mengirimkan poster
 export const getTMDBInfo = async (title) => {
@@ -23,23 +87,41 @@ export const getTMDBInfo = async (title) => {
     try {
         const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim();
         const query = encodeURIComponent(cleanTitle);
+
+        const cacheKey = `mutflix_tmdb_info_${cleanTitle.toLowerCase()}`;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+            try { return JSON.parse(cached); } catch (e) { }
+        }
+
         const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${query}&language=en-US`);
         const data = await res.json();
 
         if (data.results && data.results.length > 0) {
             const bestResult = data.results.find(i => i.poster_path || i.backdrop_path) || data.results[0];
-            return {
+            const type = bestResult.media_type === 'movie' ? 'movie' : 'tv';
+            
+            // Second fetch for full details (genres, runtime, total episodes)
+            const detailRes = await fetch(`https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US`);
+            const details = await detailRes.json();
+
+            const result = {
                 tmdb_id: bestResult.id,
-                media_type: bestResult.media_type, // 'movie' or 'tv'
-                poster_path: bestResult.poster_path,
-                backdrop_path: bestResult.backdrop_path,
-                rating: bestResult.vote_average,
-                overview: bestResult.overview,
-                date: bestResult.release_date || bestResult.first_air_date,
-                genre_ids: bestResult.genre_ids || [],
-                origin_country: bestResult.origin_country || [],
-                original_language: bestResult.original_language
+                media_type: type,
+                poster_path: details.poster_path || bestResult.poster_path,
+                backdrop_path: details.backdrop_path || bestResult.backdrop_path,
+                rating: details.vote_average || bestResult.vote_average,
+                overview: details.overview || bestResult.overview,
+                date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
+                genres: details.genres || [],
+                total_episodes: details.number_of_episodes || null,
+                total_seasons: details.number_of_seasons || null,
+                runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
+                origin_country: details.origin_country || bestResult.origin_country || [],
+                original_language: details.original_language || bestResult.original_language
             };
+            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+            return result;
         }
         return null;
     } catch (e) {
@@ -48,16 +130,21 @@ export const getTMDBInfo = async (title) => {
     }
 };
 
-// Mengambil data cast/crew dari TMDB
 export const getTMDBCredits = async (tmdbId, mediaType) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
     if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
 
     try {
+        const cacheKey = `mutflix_tmdb_credits_${tmdbId}_${mediaType}`;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+            try { return JSON.parse(cached); } catch (e) { }
+        }
+
         const type = mediaType === 'movie' ? 'movie' : 'tv';
         const res = await fetch(`https://api.themoviedb.org/3/${type}/${tmdbId}/credits?api_key=${tmdbKey}&language=en-US`);
         const data = await res.json();
-        return {
+        const result = {
             cast: (data.cast || []).slice(0, 20).map(c => ({
                 id: c.id,
                 name: c.name,
@@ -66,6 +153,8 @@ export const getTMDBCredits = async (tmdbId, mediaType) => {
             })),
             director: (data.crew || []).find(c => c.job === 'Director')?.name || null
         };
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+        return result;
     } catch (e) {
         console.error("TMDB credits fetch error:", e);
         return null;
@@ -76,16 +165,28 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
     if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
     try {
+        const cacheKey = `mutflix_tmdb_season_${tmdbId}_${seasonNumber}`;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+            try { return JSON.parse(cached); } catch (e) { }
+        }
+
         const response = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
         if (!response.ok) return null;
-        return await response.json();
+        const result = await response.json();
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+        return result;
     } catch (error) {
         console.error("Error fetching TMDB season details:", error);
         return null;
     }
 };
 
-export const fetchContentReleases = async () => {
+// ==========================================
+// CONTENT API (with stale-while-revalidate cache)
+// ==========================================
+
+const _fetchContentReleasesRaw = async () => {
     try {
         const res = await fetch(`${BASE_URL}/api/content-releases`, {
             headers: getAuthHeaders()
@@ -101,7 +202,7 @@ export const fetchContentReleases = async () => {
     }
 };
 
-export const fetchFolders = async () => {
+const _fetchFoldersRaw = async () => {
     try {
         const res = await fetch(`${BASE_URL}/api/folders`, {
             headers: getAuthHeaders()
@@ -117,6 +218,10 @@ export const fetchFolders = async () => {
     }
 };
 
+// Cached versions — return instantly from cache, refresh in background
+export const fetchContentReleases = (onUpdate) => cachedFetch('content_releases', _fetchContentReleasesRaw, onUpdate);
+export const fetchFolders = (onUpdate) => cachedFetch('folders', _fetchFoldersRaw, onUpdate);
+
 export const fetchVideos = async (folderName) => {
     try {
         const res = await fetch(`${BASE_URL}/api/videos/${encodeURIComponent(folderName)}`, {
@@ -130,6 +235,23 @@ export const fetchVideos = async (folderName) => {
     } catch (error) {
         console.error("Error fetching videos:", error);
         return { videos: [], has_season_folders: false };
+    }
+};
+
+// ==========================================
+// SERVER-SIDE SEARCH API
+// ==========================================
+export const searchContent = async (query) => {
+    if (!query || query.trim().length < 1) return [];
+    try {
+        const res = await fetch(`${BASE_URL}/api/search?q=${encodeURIComponent(query.trim())}`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) return [];
+        return await res.json();
+    } catch (error) {
+        console.error("Error searching content:", error);
+        return [];
     }
 };
 

@@ -47,6 +47,39 @@ export function srtToVtt(srtContent) {
   return 'WEBVTT\n\n' + content;
 }
 
+export function shiftTime(timeString, delaySeconds) {
+  timeString = timeString.replace(',', '.');
+  const parts = timeString.split(':');
+  let h = 0, m = 0, s = 0;
+  if (parts.length === 3) {
+    h = parseInt(parts[0], 10);
+    m = parseInt(parts[1], 10);
+    s = parseFloat(parts[2]);
+  } else {
+    m = parseInt(parts[0], 10);
+    s = parseFloat(parts[1]);
+  }
+  let totalSeconds = (h * 3600) + (m * 60) + s + delaySeconds;
+  if (totalSeconds < 0) totalSeconds = 0.001;
+
+  const newH = Math.floor(totalSeconds / 3600);
+  const newM = Math.floor((totalSeconds % 3600) / 60);
+  const newS = (totalSeconds % 60);
+  const sFixed = newS.toFixed(3);
+  const sParts = sFixed.split('.');
+
+  const pad = (num) => String(num).padStart(2, '0');
+  return `${pad(newH)}:${pad(newM)}:${pad(sParts[0])}.${sParts[1]}`;
+}
+
+export function shiftSubtitleTimes(content, delaySeconds) {
+  if (!delaySeconds) return content;
+  // Regex matches VTT and SRT: 00:00:00,000 or 00:00:00.000 or 00:00.000
+  return content.replace(/(\d{2}:\d{2}:\d{2}[,\.]\d{3})/g, (match) => {
+    return shiftTime(match, delaySeconds);
+  });
+}
+
 /**
  * Convert subtitle content (auto-detecting SRT vs VTT) to a Blob URL
  * suitable for use as a <track> src.

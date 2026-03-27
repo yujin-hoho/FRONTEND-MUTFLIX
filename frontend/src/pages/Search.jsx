@@ -2,22 +2,21 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { fetchFolders, fetchContentReleases, getTMDBInfo, logout } from '../services/api';
+import { searchContent, getTMDBInfo, logout } from '../services/api';
 
 const Search = () => {
   const [searchParams] = useSearchParams();
   const query = searchParams.get('q') || '';
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [totalItems, setTotalItems] = useState(0);
-  
+
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [authUser, setAuthUser] = useState(() => {
     const username = localStorage.getItem('username');
     const role = localStorage.getItem('role');
     return username ? { username, role } : null;
   });
-  
+
   const handleLogout = () => {
     logout();
     setAuthUser(null);
@@ -30,106 +29,42 @@ const Search = () => {
       return;
     }
 
-    const loadAndSearch = async () => {
+    const doSearch = async () => {
       setLoading(true);
       try {
-        // 1. Fetch all data
-        const [foldersResp, releasesResp] = await Promise.all([
-          fetchFolders(),
-          fetchContentReleases()
-        ]);
+        // Use server-side search (inverted index — instant)
+        const serverResults = await searchContent(query);
 
-        // 2. Extract folders (shape: { series: [...], movies: [...] })
-        let foldersData = [];
-        if (Array.isArray(foldersResp)) {
-          foldersData = foldersResp;
-        } else if (foldersResp && typeof foldersResp === 'object') {
-          const movies = foldersResp.movies || [];
-          const series = foldersResp.series || [];
-          foldersData = [...movies, ...series];
-        }
+        // PHASE 1: Show results immediately
+        const mappedResults = serverResults.map(item => ({
+          ...item,
+          folder_name: item.folder_name || item.name,
+          media_type: item.type === 'tv' ? 'tv' : (item.type || 'movie')
+        }));
 
-        // 3. Extract releases (shape: array)
-        let releasesData = Array.isArray(releasesResp) ? releasesResp : [];
-
-        // 4. Build unified list — prefer releases (richer data) over folders
-        // Key by the primary identifier (folder_name or name)
-        const itemMap = new Map();
-        
-        // Add releases first (they have tmdb_title, poster, etc.)
-        releasesData.forEach(item => {
-          const key = (item.folder_name || '').toLowerCase().trim();
-          if (key) itemMap.set(key, item);
-        });
-        
-        // Add folders — only if not already in map from releases
-        foldersData.forEach(item => {
-          const key = (item.name || '').toLowerCase().trim();
-          if (key && !itemMap.has(key)) {
-            // Normalize fields to match release structure
-            itemMap.set(key, { 
-              ...item, 
-              folder_name: item.name,
-              media_type: item.type === 'tv' ? 'tv' : 'movie'
-            });
+        // Deduplicate mappedResults based on folder_name to avoid duplicate React keys
+        const uniqueResults = [];
+        const seenNames = new Set();
+        for (const item of mappedResults) {
+          const name = item.folder_name || item.name;
+          if (name && !seenNames.has(name)) {
+            seenNames.add(name);
+            uniqueResults.push(item);
           }
-        });
+        }
+        setResults(uniqueResults);
+        const finalMappedResults = uniqueResults;
+        setLoading(false);
 
-        const allItems = Array.from(itemMap.values());
-        setTotalItems(allItems.length);
-
-        // 5. Search with simple, reliable substring matching
-        const q = query.toLowerCase().trim();
-        
-        const scored = allItems
-          .map(item => {
-            const folderName = (item.folder_name || '').toLowerCase();
-            const tmdbTitle = (item.tmdb_title || '').toLowerCase();
-            const name = (item.name || '').toLowerCase();
-            const overview = (item.tmdb_overview || '').toLowerCase();
-            
-            // Score: higher = better match
-            let score = 0;
-            
-            // Exact match on any name field
-            if (folderName === q || tmdbTitle === q || name === q) {
-              score = 100;
-            }
-            // Starts with query
-            else if (folderName.startsWith(q) || tmdbTitle.startsWith(q) || name.startsWith(q)) {
-              score = 80;
-            }
-            // Contains query as substring
-            else if (folderName.includes(q) || tmdbTitle.includes(q) || name.includes(q)) {
-              score = 60;
-            }
-            // Word-level matching: check if all query words appear somewhere
-            else {
-              const queryWords = q.split(/\s+/).filter(w => w.length > 1);
-              const haystack = `${folderName} ${tmdbTitle} ${name} ${overview}`;
-              const matchCount = queryWords.filter(w => haystack.includes(w)).length;
-              if (matchCount === queryWords.length) {
-                score = 40; // All words match
-              } else if (matchCount > 0) {
-                score = 20 * (matchCount / queryWords.length); // Partial word match
-              }
-            }
-
-            return { item, score };
-          })
-          .filter(({ score }) => score > 0)
-          .sort((a, b) => b.score - a.score);
-
-        // 6. Resolve TMDB info for top results (for poster display)
-        const topResults = scored.slice(0, 50);
-        const resolved = await Promise.all(
-          topResults.map(async ({ item }) => {
-            // Skip if already has poster
+        // PHASE 2: Enrich top results with TMDB posters (background)
+        const topToEnrich = finalMappedResults.slice(0, 20);
+        const enriched = await Promise.all(
+          topToEnrich.map(async (item) => {
             if (item.tmdb_poster_path) return item;
-            
+
             const title = item.tmdb_title || item.folder_name || item.name;
             if (!title) return item;
-            
+
             try {
               const tmdbData = await getTMDBInfo(title);
               if (tmdbData) {
@@ -140,27 +75,37 @@ const Search = () => {
                   tmdb_overview: tmdbData.overview || item.tmdb_overview,
                 };
               }
-            } catch (e) { /* skip */ }
+            } catch { /* skip */ }
             return item;
           })
         );
 
-        setResults(resolved);
+        // Merge enriched back
+        const enrichedMap = new Map();
+        enriched.forEach(item => {
+          const name = item.folder_name || item.name;
+          if (name) enrichedMap.set(name, item);
+        });
+        const finalResults = finalMappedResults.map(item => {
+          const name = item.folder_name || item.name;
+          return enrichedMap.get(name) || item;
+        });
+
+        setResults(finalResults);
       } catch (e) {
         console.error('Search error:', e);
         setResults([]);
-      } finally {
         setLoading(false);
       }
     };
 
-    loadAndSearch();
+    doSearch();
   }, [query]);
 
   return (
     <div className="min-h-screen bg-darkBG font-sans pb-20 overflow-x-hidden pt-24 animate-page-enter">
-      <Navbar 
-        onMeClick={() => setShowLoginModal(true)} 
+      <Navbar
+        onMeClick={() => setShowLoginModal(true)}
         isLoggedIn={!!authUser}
         username={authUser?.username}
         onLogout={handleLogout}
@@ -170,12 +115,12 @@ const Search = () => {
           Search Results for "{query}"
         </h1>
         <p className="text-gray-500 text-sm mb-6">
-          {loading ? 'Searching...' : `${results.length} results found from ${totalItems} items`}
+          {loading ? 'Searching...' : `${results.length} results found`}
         </p>
-        
+
         {loading ? (
           <div className="flex justify-center mt-20">
-             <div className="w-10 h-10 border-4 border-brand border-t-transparent rounded-full animate-spin"></div>
+            <div className="w-10 h-10 border-4 border-brand border-t-transparent rounded-full animate-spin"></div>
           </div>
         ) : results.length > 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
@@ -196,3 +141,4 @@ const Search = () => {
 };
 
 export default Search;
+
