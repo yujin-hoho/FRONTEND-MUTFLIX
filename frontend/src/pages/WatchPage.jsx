@@ -69,7 +69,7 @@ const WatchPage = () => {
         const saved = localStorage.getItem('mutflix_sub_settings');
         return saved ? JSON.parse(saved) : {
             fontSize: 24,
-            fontFamily: 'Inter, sans-serif',
+            fontFamily: 'Poppins, sans-serif',
             backgroundOpacity: 0.7,
             backgroundColor: '#000000',
             textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
@@ -269,6 +269,29 @@ const WatchPage = () => {
 
         return () => clearInterval(interval);
     }, [isPlaying, profileId, triggerSaveHistory]);
+
+    // Save on tab close / navigation
+    useEffect(() => {
+        const handleUnload = () => {
+            if (profileId && currentVideo && videoRef.current) {
+                triggerSaveHistory();
+            }
+        };
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') {
+                handleUnload();
+            }
+        };
+
+        window.addEventListener('beforeunload', handleUnload);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        
+        return () => {
+            window.removeEventListener('beforeunload', handleUnload);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, [profileId, currentVideo, triggerSaveHistory]);
 
     // ─── Load Stream when currentVideo changes ──────
     useEffect(() => {
@@ -854,7 +877,7 @@ const WatchPage = () => {
                                                         onChange={(e) => setSubSettings({ ...subSettings, fontFamily: e.target.value })}
                                                         className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[12px] text-white outline-none focus:border-[#00dc41]"
                                                     >
-                                                        <option value="Inter, sans-serif">Sans-Serif</option>
+                                                        <option value="Poppins, sans-serif">Sans-Serif (Poppins)</option>
                                                         <option value="'Courier New', Courier, monospace">Monospace</option>
                                                         <option value="'Times New Roman', Times, serif">Serif</option>
                                                     </select>

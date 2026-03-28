@@ -46,12 +46,25 @@ function cacheGet(key) {
 }
 
 function cacheSet(key, data) {
+    if (!data || data.__error) return; // [FIX] Never cache error objects
     _memCache[key] = data;
     _memCacheTs[key] = Date.now();
     try {
         sessionStorage.setItem(`mutflix_${key}`, JSON.stringify({ data, ts: Date.now() }));
-    } catch { /* quota exceeded, ignore */ }
+    } catch { /* ignore */ }
 }
+
+export const cacheClear = () => {
+    // Clear memory
+    Object.keys(_memCache).forEach(k => delete _memCache[k]);
+    Object.keys(_memCacheTs).forEach(k => delete _memCacheTs[k]);
+    // Clear session storage
+    try {
+        Object.keys(sessionStorage).forEach(k => {
+            if (k.startsWith('mutflix_')) sessionStorage.removeItem(k);
+        });
+    } catch { /* ignore */ }
+};
 
 // Stale-While-Revalidate: return cached data instantly, refresh in background
 // onUpdate callback is called when fresh data arrives (so components can re-render)
@@ -60,6 +73,7 @@ async function cachedFetch(key, fetchFn, onUpdate) {
     if (cached) {
         // Return cached immediately, refresh in background
         fetchFn().then(fresh => {
+            // Only update if fresh data is valid
             if (fresh && !fresh.__error) {
                 cacheSet(key, fresh);
                 if (onUpdate) onUpdate(fresh);
@@ -186,25 +200,6 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
     }
 };
 
-// ==========================================
-// CONTENT API (with stale-while-revalidate cache)
-// ==========================================
-
-const _fetchContentReleasesRaw = async () => {
-    try {
-        const res = await fetch(`${BASE_URL}/api/content-releases`, {
-            headers: getAuthHeaders()
-        });
-        if (!res.ok) {
-            if (res.status === 401) return { __error: true, status: 401 };
-            throw new Error(`Network error (${res.status})`);
-        }
-        return await res.json();
-    } catch (error) {
-        console.error("Error fetching content releases:", error);
-        return [];
-    }
-};
 
 const _fetchFoldersRaw = async () => {
     try {
@@ -212,18 +207,17 @@ const _fetchFoldersRaw = async () => {
             headers: getAuthHeaders()
         });
         if (!res.ok) {
-            if (res.status === 401) return { __error: true, status: 401 };
+            if (res.status === 401) return { __error: true, status: 401, movies: [], series: [] };
             throw new Error(`Network error (${res.status})`);
         }
         return await res.json();
     } catch (error) {
         console.error("Error fetching folders:", error);
-        return [];
+        return { __error: true, movies: [], series: [] };
     }
 };
 
 // Cached versions — return instantly from cache, refresh in background
-export const fetchContentReleases = (onUpdate) => cachedFetch('content_releases', _fetchContentReleasesRaw, onUpdate);
 export const fetchFolders = (onUpdate) => cachedFetch('folders', _fetchFoldersRaw, onUpdate);
 
 export const fetchVideos = async (folderName) => {
@@ -311,6 +305,7 @@ export const logout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('username');
     localStorage.removeItem('role');
+    cacheClear(); // [FIX] Wiped cached data on logout
 };
 
 export const isLoggedIn = () => !!localStorage.getItem('token');
@@ -425,6 +420,92 @@ export const saveHistory = async (profile_id, media_path, media_title, series_ti
         return true;
     } catch (error) {
         console.error("Error saving history:", error);
+        return false;
+    }
+};
+
+// ==========================================
+// MY LIST (WATCHLIST) API
+// ==========================================
+
+export const fetchMyList = async (profileId) => {
+    if (!profileId) return [];
+    try {
+        const res = await fetch(`${BASE_URL}/api/mylist?profile_id=${profileId}`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) return [];
+        const data = await res.json();
+        return Array.isArray(data) ? data : [];
+    } catch (error) {
+        console.error("Error fetching mylist:", error);
+        return [];
+    }
+};
+
+export const addToMyList = async (profileId, folderName, mediaType, meta, status = 'plan_to_watch') => {
+    if (!profileId || !folderName) return false;
+    try {
+        const res = await fetch(`${BASE_URL}/api/mylist/add`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({
+                profile_id: profileId,
+                folder_name: folderName,
+                media_type: mediaType,
+                meta: meta,
+                status: status
+            })
+        });
+        return res.ok;
+    } catch (error) {
+        console.error("Error adding to mylist:", error);
+        return false;
+    }
+};
+
+export const removeFromMyList = async (profileId, folderName) => {
+    if (!profileId || !folderName) return false;
+    try {
+        const res = await fetch(`${BASE_URL}/api/mylist/remove`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({
+                profile_id: profileId,
+                folder_name: folderName
+            })
+        });
+        return res.ok;
+    } catch (error) {
+        console.error("Error removing from mylist:", error);
+        return false;
+    }
+};
+
+export const updateMyListStatus = async (profileId, folderName, status) => {
+    if (!profileId || !folderName) return false;
+    try {
+        const res = await fetch(`${BASE_URL}/api/mylist/update-status`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({
+                profile_id: profileId,
+                folder_name: folderName,
+                status: status
+            })
+        });
+        return res.ok;
+    } catch (error) {
+        console.error("Error updating mylist status:", error);
         return false;
     }
 };

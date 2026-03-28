@@ -4,7 +4,7 @@ import Navbar from '../components/Navbar';
 import HeroBanner from '../components/HeroBanner';
 import MovieCarousel from '../components/MovieCarousel';
 import LoginModal from '../components/LoginModal';
-import { fetchFolders, fetchContentReleases, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory } from '../services/api';
+import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -13,6 +13,18 @@ const shuffleArray = (array) => {
     [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
   }
   return newArr;
+};
+
+const getSafeArray = (resp, type) => {
+  if (!resp || typeof resp.then === 'function') return [];
+  if (Array.isArray(resp)) return resp;
+  
+  // Handle the object structure from /api/folders
+  if (type === 'folders') {
+    return [...(resp.movies || []), ...(resp.series || [])];
+  }
+  
+  return [];
 };
 
 const Dashboard = () => {
@@ -28,6 +40,14 @@ const Dashboard = () => {
     return username ? { username, role } : null;
   });
   const [celebrities, setCelebrities] = useState([]);
+  const [hiddenHistory, setHiddenHistory] = useState(() => {
+    try {
+      const saved = localStorage.getItem('mutflix_hidden_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) { return []; }
+  });
+  const [removingItemPath, setRemovingItemPath] = useState(null);
+
   const fetchIdRef = useRef(0);
 
   const QUICK_FILTERS = [
@@ -39,24 +59,10 @@ const Dashboard = () => {
     { label: 'Variety Show', path: '/filter?category=Variety Show' },
   ];
 
-  // Process raw folders+releases into display data
-  const processData = useCallback((foldersResp, releasesResp) => {
-    let foldersData = [];
-    if (foldersResp && typeof foldersResp === 'object' && !Array.isArray(foldersResp)) {
-      foldersData = [...(foldersResp.movies || []), ...(foldersResp.series || [])];
-    } else if (Array.isArray(foldersResp)) {
-      foldersData = foldersResp;
-    }
-
-    let releasesData = Array.isArray(releasesResp) ? releasesResp : (releasesResp?.data || []);
-
-    let allData = [...releasesData, ...foldersData];
-    const uniqueDataMap = new Map();
-    allData.forEach(item => {
-      const name = item.tmdb_title || item.folder_name || item.name;
-      if (name && !uniqueDataMap.has(name)) uniqueDataMap.set(name, item);
-    });
-    return shuffleArray(Array.from(uniqueDataMap.values()));
+  // Process raw folders into display data
+  const processData = useCallback((foldersResp) => {
+    const foldersData = getSafeArray(foldersResp, 'folders');
+    return shuffleArray(foldersData);
   }, []);
 
   // Build genre sections from items (with or without TMDB data)
@@ -72,7 +78,8 @@ const Dashboard = () => {
       } else {
         genres.slice(0, 2).forEach(g => {
           if (!tempGenreMap[g]) tempGenreMap[g] = [];
-          if (!tempGenreMap[g].find(i => (i.folder_name || i.name) === (item.folder_name || item.name))) {
+          const itemName = (item.folder_name || item.name || '').trim().toLowerCase();
+          if (itemName && !tempGenreMap[g].find(i => (i.folder_name || i.name || '').trim().toLowerCase() === itemName)) {
             tempGenreMap[g].push(item);
           }
         });
@@ -188,28 +195,44 @@ const Dashboard = () => {
     setFeaturedList(resolvedItems.slice(0, 6));
     setGenreSections(buildSections(resolvedItems));
   }, [buildSections]);
-
   const loadData = useCallback(async () => {
     const currentFetchId = ++fetchIdRef.current;
+    
+    // Helper to update dashboard state safely
+    const updateVisuals = (data, id) => {
+      if (id !== fetchIdRef.current) return;
+      if (data && data.length > 0) {
+        setFeaturedList(data.slice(0, 6));
+        setGenreSections(buildSections(data));
+        setLoading(false);
+      }
+    };
+
     try {
       setLoading(true);
 
-      const [foldersResp, releasesResp] = await Promise.all([
-        fetchFolders(),
-        fetchContentReleases()
-      ]);
+      const foldersResp = await fetchFolders((fresh) => {
+        const data = processData(fresh);
+        updateVisuals(data, currentFetchId);
+      });
 
       if (fetchIdRef.current !== currentFetchId) return;
 
-      const shuffledData = processData(foldersResp, releasesResp);
+      // Check for unauthorized error
+      if (foldersResp?.status === 401) {
+        console.warn("Unauthorized API access - dashboard items may be limited.");
+      }
 
-      // Fetch TMDB data before resolving load state to ensure posters are ready
-      await enrichWithTMDB(shuffledData, currentFetchId);
+      const shuffledData = processData(foldersResp);
 
-      if (fetchIdRef.current !== currentFetchId) return;
+      // SHOW CONTENT INSTANTLY (even if empty, to stop shimmer/loading)
+      updateVisuals(shuffledData, currentFetchId);
+      if (shuffledData.length === 0) {
+        setLoading(false);
+      }
 
-      // NEW: Fetch history if logged in BEFORE hiding loader
-      if (authUser) {
+      // BACKGROUND TASKS: Always fetch history if user is logged in, and enrich metadata
+      const historyPromise = authUser ? (async () => {
         try {
           const profiles = await fetchProfiles();
           if (profiles.length > 0 && fetchIdRef.current === currentFetchId) {
@@ -219,15 +242,13 @@ const Dashboard = () => {
             
             if (fetchIdRef.current !== currentFetchId) return;
 
-            // Flatten and unique by media_path
             const flatHistory = allHistories.flat();
             const uniqueHistoryMap = new Map();
-            
             flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
             
             flatHistory.forEach(h => {
                const progress = (h.position_ms / h.duration_ms) * 100;
-               if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 10000 && progress < 95) {
+               if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && progress < 95) {
                  uniqueHistoryMap.set(h.media_path, {
                    ...h,
                    name: h.series_title || h.media_title,
@@ -238,14 +259,24 @@ const Dashboard = () => {
                }
             });
             
-            setContinueWatching(Array.from(uniqueHistoryMap.values()).slice(0, 15));
+            setContinueWatching(
+              Array.from(uniqueHistoryMap.values())
+                .filter(h => !hiddenHistory.includes(h.media_path))
+                // Extra safety: deduplicate by folder_name (title) for the UI
+                .filter((item, index, self) => 
+                  index === self.findIndex((t) => (t.folder_name === item.folder_name))
+                )
+                .slice(0, 15)
+            );
           }
-        } catch (historyError) {
-          console.error("Error loading history in sync phase:", historyError);
-        }
-      }
+        } catch (e) { console.error("History fetch error:", e); }
+      })() : Promise.resolve();
 
-      setLoading(false);
+      // Parallel background tasks
+      await Promise.allSettled([
+        enrichWithTMDB(shuffledData, currentFetchId),
+        historyPromise
+      ]);
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);
@@ -258,14 +289,33 @@ const Dashboard = () => {
   }, [loadData]);
 
   const handleLoginSuccess = (data) => {
+    cacheClear(); // Clear any "Token missing" cached errors
     setAuthUser({ username: data.username, role: data.role });
     loadData();
   };
 
   const handleLogout = () => {
     logout();
-    setAuthUser(null);
+    navigate('/');
   };
+
+  const handleDeleteHistory = async (item) => {
+    if (!item.media_path) return;
+    
+    // Satisfying deletion effect:
+    setRemovingItemPath(item.media_path);
+    
+    // Delay actual removal to allow animation to play
+    setTimeout(() => {
+      const newHidden = [...hiddenHistory, item.media_path];
+      setHiddenHistory(newHidden);
+      localStorage.setItem('mutflix_hidden_history', JSON.stringify(newHidden));
+      
+      setContinueWatching(prev => prev.filter(h => h.media_path !== item.media_path));
+      setRemovingItemPath(null);
+    }, 400); // match animation duration
+  };
+
 
   if (loading) {
     return (
@@ -284,9 +334,10 @@ const Dashboard = () => {
         onLogout={handleLogout}
       />
 
-      <main className="w-full animate-page-enter">
+      <main className="w-full pt-20">
         <HeroBanner items={featuredList} />
-        <div className="-mt-16 md:-mt-24 relative z-20 pb-12">
+
+        <div className="mt-10 pb-12">
           {genreSections.length > 0 && (
             <div className="mb-4">
               <MovieCarousel
@@ -297,12 +348,15 @@ const Dashboard = () => {
             </div>
           )}
 
+          {/* Continue Watching should appear under Top 10 */}
           {continueWatching.length > 0 && (
-            <div className="mb-12">
+            <div className="mb-8 -mt-2">
               <MovieCarousel
                 title="Continue Watching"
                 items={continueWatching}
                 variant="horizontal"
+                onDelete={handleDeleteHistory}
+                removingId={removingItemPath}
               />
             </div>
           )}
@@ -328,40 +382,6 @@ const Dashboard = () => {
 
           {genreSections.slice(1).map((section, idx) => (
             <React.Fragment key={section.title}>
-              {idx === 2 && (
-                <div className="px-6 md:px-[60px] py-4 md:py-8 w-full flex justify-center mt-2 mb-6 cursor-pointer animate-fade-in-up">
-                  <div className="w-full max-w-[1100px] h-auto bg-gradient-to-r from-brand/20 via-[#111319] to-[#111319] border border-brand/20 rounded-2xl flex flex-col md:flex-row items-center justify-between p-6 px-6 md:px-12 hover:border-brand/40 transition-colors shadow-2xl relative overflow-hidden group">
-                    <div className="absolute top-0 right-0 w-64 h-full bg-brand/5 blur-[50px] -z-10 group-hover:bg-brand/10 transition-colors rounded-full"></div>
-
-                    <div className="flex flex-col md:flex-row items-center gap-5 md:gap-7 z-10 w-full md:w-auto text-center md:text-left mb-6 md:mb-0">
-                      <div className="w-[50px] h-[60px] bg-brand/10 rounded-full flex items-center justify-center shrink-0 mx-auto md:mx-0 group-hover:scale-110 transition-transform shadow-[0_0_15px_rgba(0,220,65,0.15)]">
-                        <svg className="w-8 h-8 text-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
-                          <line x1="12" y1="18" x2="12.01" y2="18"></line>
-                        </svg>
-                      </div>
-                      <div>
-                        <h3 className="text-white font-black text-xl md:text-2xl tracking-wide mb-1.5 uppercase drop-shadow-lg">Download MUTFLIX App</h3>
-                        <p className="text-gray-400 text-sm md:text-[15px] font-medium max-w-[600px]">Watch your favorite movies and series anytime, anywhere with the best premium experience.</p>
-                      </div>
-                    </div>
-
-                    <a
-                      href="https://drive.google.com/drive/folders/16sQCGO3jGX1uUJ-gH2BbZh92LG2B3yfF?usp=drive_link"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="bg-brand text-black font-extrabold uppercase tracking-widest text-[13px] md:text-[14px] px-8 py-4 rounded-full hover:bg-white active:scale-95 transition-all flex items-center gap-2.5 shadow-[0_0_20px_rgba(0,220,65,0.4)] z-10 w-full md:w-auto justify-center hover:shadow-[0_0_25px_rgba(255,255,255,0.4)]"
-                    >
-                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                        <polyline points="7 10 12 15 17 10"></polyline>
-                        <line x1="12" y1="15" x2="12" y2="3"></line>
-                      </svg>
-                      Install Now
-                    </a>
-                  </div>
-                </div>
-              )}
               <div className="mb-4">
                 <MovieCarousel
                   title={section.title}

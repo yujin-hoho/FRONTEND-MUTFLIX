@@ -38,6 +38,7 @@
 body {
   background-color: #111319;
   color: white;
+  font-family: 'Poppins', sans-serif;
   -ms-overflow-style: none; /* IE and Edge */
   scrollbar-width: none; /* Firefox */
   margin: 0;
@@ -286,7 +287,7 @@ video::cue {
   background: rgba(0, 0, 0, 0.7);
   color: #fff;
   font-size: 1.1em;
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  font-family: 'Poppins', sans-serif;
   line-height: 1.4;
   padding: 2px 6px;
   border-radius: 2px;
