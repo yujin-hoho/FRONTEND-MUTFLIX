@@ -14,6 +14,8 @@ import {
 import { createSubtitleBlobUrl, revokeSubtitleBlobUrl } from '../utils/subtitleParser';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
+import Footer from '../components/Footer';
+import LoadingScreen from '../components/LoadingScreen';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 
@@ -620,11 +622,7 @@ const WatchPage = () => {
 
     // ─── Loading state ─────────────────────────────
     if (loading) {
-        return (
-            <div className="min-h-screen bg-[#0a0b0f] flex flex-col items-center justify-center">
-                <div className="w-14 h-14 border-4 border-[#00dc41] border-t-transparent rounded-full animate-spin mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
-            </div>
-        );
+        return <LoadingScreen />;
     }
 
     return (
@@ -1170,6 +1168,7 @@ const WatchPage = () => {
                 onClose={() => setShowLoginModal(false)}
                 onLoginSuccess={handleLoginSuccess}
             />
+            <Footer />
         </div >
     );
 };

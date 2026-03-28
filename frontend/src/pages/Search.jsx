@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
 import { searchContent, getTMDBInfo, logout, fetchFolders } from '../services/api';
+import Footer from '../components/Footer';
+import LoadingScreen from '../components/LoadingScreen';
 
 const Search = () => {
   const [searchParams] = useSearchParams();
@@ -101,7 +103,7 @@ const Search = () => {
         }
         setResults(uniqueResults);
         const finalMappedResults = uniqueResults;
-        setLoading(false);
+        // setLoading(false); // We now wait for enrichment below
 
         // PHASE 2: Enrich top results with TMDB posters (background)
         const topToEnrich = finalMappedResults.slice(0, 20);
@@ -139,6 +141,7 @@ const Search = () => {
         });
 
         setResults(finalResults);
+        setLoading(false); // Now we are ready!
       } catch (e) {
         console.error('Search error:', e);
         setResults([]);
@@ -150,7 +153,7 @@ const Search = () => {
   }, [query]);
 
   return (
-    <div className="min-h-screen bg-darkBG font-sans pb-20 overflow-x-hidden pt-24 animate-page-enter">
+    <div className="min-h-screen bg-darkBG font-sans flex flex-col overflow-x-hidden pt-24 animate-page-enter">
       <Navbar
         onMeClick={() => setShowLoginModal(true)}
         isLoggedIn={!!authUser}
@@ -166,9 +169,7 @@ const Search = () => {
         </p>
 
         {loading ? (
-          <div className="flex justify-center mt-20">
-            <div className="w-10 h-10 border-4 border-brand border-t-transparent rounded-full animate-spin"></div>
-          </div>
+          <LoadingScreen />
         ) : results.length > 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
             {results.map((item, idx) => (
@@ -183,6 +184,7 @@ const Search = () => {
           </div>
         )}
       </div>
+      <Footer />
     </div>
   );
 };

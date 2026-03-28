@@ -5,6 +5,8 @@ import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
 import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList } from '../services/api';
 import MovieCarousel from '../components/MovieCarousel';
+import Footer from '../components/Footer';
+import LoadingScreen from '../components/LoadingScreen';
 
 const ContentDetail = () => {
   const { folderName } = useParams();
@@ -211,15 +213,11 @@ const ContentDetail = () => {
   const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-[#111319] flex flex-col items-center justify-center">
-        <div className="w-14 h-14 border-4 border-[#00dc41] border-t-transparent rounded-full animate-spin mt-[-10vh] shadow-[0_0_15px_rgba(0,220,65,0.3)]"></div>
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   return (
-    <div className="min-h-screen bg-[#111319] font-sans text-white overflow-x-hidden animate-page-enter">
+    <div className="min-h-screen bg-[#111319] font-sans text-white flex flex-col overflow-x-hidden animate-page-enter">
       <Navbar
         onMeClick={() => setShowLoginModal(true)}
         isLoggedIn={!!authUser}
@@ -415,6 +413,7 @@ const ContentDetail = () => {
         onClose={() => setShowLoginModal(false)}
         onLoginSuccess={handleLoginSuccess}
       />
+      <Footer />
     </div>
   );
 };

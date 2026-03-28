@@ -1,16 +1,28 @@
-import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo, TMDB_GENRES } from '../services/api';
 
-export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving }) => {
+const tmdbOptsFromItem = (item) => {
+  if (!item?.tmdb_query) return {};
+  const o = {
+    query: item.tmdb_query,
+    mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+  };
+  if (item.override_year != null && item.override_year !== '') o.year = Number(item.override_year);
+  if (item.override_region) o.region = item.override_region;
+  if (item.include_adult) o.includeAdult = true;
+  return o;
+};
+
+export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster }) => {
   const isHorizontal = variant === 'horizontal';
   const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
   const hoverTimeoutRef = useRef(null);
   const navigate = useNavigate();
-  const cardWidth = isHorizontal ? 220 : 160;
-  const posterHeight = isHorizontal ? 140 : 240;
+  const cardWidth = isHorizontal ? 260 : 190;
+  const posterHeight = isHorizontal ? 165 : 285;
 
   const folderName = item?.folder_name || item?.name || '';
   const mediaType = item?.type || 'movie';
@@ -28,24 +40,21 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   };
 
   const handleMouseEnter = () => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-    hoverTimeoutRef.current = setTimeout(() => setIsHovered(true), 350);
+    // Detail popup removed per user request
   };
 
   const handleMouseLeave = () => {
-    if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
-    setIsHovered(false);
+    // Detail popup removed per user request
   };
 
   const title = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
 
   useEffect(() => {
-    // Only fetch if original poster is missing
-    if (title !== 'Loading...' && !item.tmdb_poster_path && !item.poster && !tmdbData) {
-      getTMDBInfo(title).then(data => {
-        if (data) setTmdbData(data);
-      });
-    }
+    if (title === 'Loading...' || item.tmdb_poster_path || item.poster || tmdbData) return;
+    const searchTitle = item.tmdb_query || title;
+    getTMDBInfo(searchTitle, tmdbOptsFromItem(item)).then((data) => {
+      if (data) setTmdbData(data);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item, title]);
 
@@ -71,8 +80,13 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
     <div
       className={`relative flex-none transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)] 
         ${isRemoving ? 'opacity-0 scale-75 translate-y-4 !w-0 !mr-[-1rem] pointer-events-none' : 'opacity-100 scale-100 translate-y-0'}
-        group cursor-pointer shrink-0`}
-      style={{ zIndex: isHovered ? 50 : 1, width: `${cardWidth}px`, minWidth: `${cardWidth}px` }}
+        animate-poster-reveal group cursor-pointer shrink-0`}
+      style={{ 
+        zIndex: isHovered ? 50 : 1, 
+        width: `${cardWidth}px`, 
+        minWidth: `${cardWidth}px`,
+        animationDelay: `${delay * 105}ms`
+      }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
@@ -117,6 +131,20 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
           </div>
         )}
 
+        {isAdmin && onEditPoster && progress === undefined && folderName && (
+          <button
+            type="button"
+            title="Edit poster (TMDB)"
+            onClick={(e) => {
+              e.stopPropagation();
+              onEditPoster({ ...item, name: item.name || item.folder_name, folder_name: folderName });
+            }}
+            className={`absolute z-[32] p-1.5 rounded-md bg-black/70 hover:bg-black/90 text-white/90 border border-white/15 opacity-0 group-hover:opacity-100 transition-opacity ${tag === 'TOP 10' ? 'top-9 right-2' : 'top-2 right-2'}`}
+          >
+            <Pencil size={14} strokeWidth={2.5} />
+          </button>
+        )}
+
         {/* Bottom text inside poster (episodes/rating) */}
         <div className="absolute bottom-0 left-0 w-full pt-8 pb-1.5 px-2 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
           {progress !== undefined && (
@@ -147,63 +175,15 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
 
       {/* Title Below Poster */}
       <div className="mt-2 px-0.5">
-        <h3 className="text-yellow-400 text-[15px] font-bold line-clamp-2 transition-colors">{title}</h3>
+        <h3 className="text-white text-[15px] font-bold line-clamp-2 transition-colors">{title}</h3>
       </div>
 
-      {/* Hover Popup Effect for details on large screens */}
-      {isHovered && !isHorizontal && (
-        <div
-          className={`absolute top-1/2 -translate-y-[45%] ${isHorizontal ? 'w-[320px]' : 'w-[350px]'} bg-[#1a1c22] rounded-xl shadow-[0_30px_100px_rgba(0,0,0,0.95)] border border-white/10 hidden lg:block pb-3 z-[100] transform transition-all duration-300 animate-popup ${isFirst ? 'left-0 origin-left' : isLast ? 'right-0 origin-right' : 'left-1/2 -translate-x-1/2 origin-center'
-            }`}
-          onClick={handleNavigate}
-        >
-          <div className={`relative w-full ${isHorizontal ? 'h-[180px]' : 'h-[190px]'} rounded-t-xl overflow-hidden`}>
-            <img src={poster} alt={title} loading="lazy" decoding="async" className="w-full h-full object-cover object-top" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#1a1c22] via-[#1a1c22]/40 to-transparent"></div>
-
-            <button
-              className="absolute bottom-3 right-14 bg-white/10 backdrop-blur text-white border border-white/20 rounded-full p-2 shadow-lg hover:bg-white/20 transition"
-              onClick={(e) => { e.stopPropagation(); /* Add to List Action */ }}
-            >
-              <BookmarkPlus size={18} />
-            </button>
-            <button
-              className="absolute bottom-3 right-3 bg-[#00dc41] text-black rounded-full p-2 shadow-[0_0_15px_rgba(0,220,65,0.4)] hover:scale-105 hover:bg-[#00f048] transition"
-              onClick={(e) => { e.stopPropagation(); /* Play Action */ }}
-            >
-              <Play fill="black" size={18} className="ml-0.5" />
-            </button>
-          </div>
-
-          <div className="p-4 pt-3">
-            <h3 className="text-white font-bold text-[18px] mb-2 line-clamp-1">{title}</h3>
-            <div className="flex items-center gap-1.5 text-[11px] text-gray-400 mb-2.5 font-medium">
-              <span className="text-[#00dc41] font-bold text-[13px]">★ {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
-              <span className="px-0.5">|</span>
-              <span className="border border-gray-600 px-1 rounded-sm text-[10px]">13+</span>
-              <span className="px-0.5">|</span>
-              <span>{year}</span>
-              <span className="px-0.5">|</span>
-              <span>{isSeries ? '30 Episodes' : 'Movie'}</span>
-            </div>
-
-            <div className="flex items-center gap-1.5 text-[10px] text-gray-400 mb-3 font-semibold">
-              {genres.map((g, i) => (
-                <span key={i} className="bg-white/5 py-1 px-1.5 rounded hover:text-white transition cursor-pointer">{g}</span>
-              ))}
-            </div>
-
-            <p className="text-[#a0a0a0] text-xs line-clamp-4 leading-relaxed mt-1">
-              {overview}
-            </p>
-          </div>
-        </div>
-      )}
+      {/* Detail popup removed per user request */}
     </div>
   );
 };
 
-const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, removingId }) => {
+const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, removingId, isAdmin, onEditPoster }) => {
   const isHorizontal = variant === 'horizontal';
   const scrollRef = useRef(null);
 
@@ -266,6 +246,9 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
                   variant={variant}
                   onDelete={variant === 'horizontal' ? (item) => onDelete && onDelete(item) : null}
                   isRemoving={variant === 'horizontal' && !!removingId && removingId === item.media_path}
+                  delay={idx}
+                  isAdmin={isAdmin}
+                  onEditPoster={onEditPoster}
                 />
               </div>
             ))
@@ -274,11 +257,11 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
               <div
                 key={i}
                 className="snap-start shrink-0 group cursor-wait"
-                style={{ width: `${isHorizontal ? 220 : 160}px`, minWidth: `${isHorizontal ? 220 : 160}px` }}
+                style={{ width: `${isHorizontal ? 260 : 190}px`, minWidth: `${isHorizontal ? 260 : 190}px` }}
               >
                 <div
                   className="w-full bg-[#22252b]/60 rounded-md animate-pulse border border-white/5"
-                  style={{ height: `${isHorizontal ? 140 : 240}px` }}
+                  style={{ height: `${isHorizontal ? 165 : 285}px` }}
                 ></div>
                 <div className="mt-2.5 h-4 w-3/4 bg-[#22252b]/60 rounded animate-pulse"></div>
               </div>

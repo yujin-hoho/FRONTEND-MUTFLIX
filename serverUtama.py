@@ -12,6 +12,7 @@ import datetime
 import traceback
 import signal
 import uuid
+import copy
 from functools import wraps, lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -1018,6 +1019,7 @@ def set_tmdb_override(current_user):
             """, (folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
         
         conn.commit()
+        _response_cache.pop('resp_folders', None)  # Response cache serialized; clients get merged overrides on next GET
         print(f"[TMDB-OVERRIDE] Admin {current_user['username']} set override: '{folder_name}' -> '{tmdb_query}' ({media_type}, year={override_year}, lang={override_language}, adult={include_adult}, region={override_region})", flush=True)
         return orjson_jsonify({'success': True, 'folder_name': folder_name, 'tmdb_query': tmdb_query})
     except Exception as e:
@@ -1044,6 +1046,46 @@ def delete_tmdb_override(current_user, folder_name):
         return orjson_jsonify({'error': str(e)}, 500)
     finally:
         release_db_connection(conn, db_type)
+
+
+def _merge_tmdb_overrides_into_folders(all_c):
+    """
+    Sisipkan metadata override TMDB dari DB ke setiap item (match key: item['name'] == folder_name).
+    Mem-cache daftar folder tetap tanpa override; merge dilakukan pada setiap response GET /api/folders.
+    """
+    if not all_c:
+        return all_c
+    conn, db_type = None, None
+    try:
+        conn, db_type = get_db_connection()
+        select_cols = 'folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region'
+        if db_type == 'postgres':
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(f'SELECT {select_cols} FROM tmdb_overrides')
+            rows = [dict(r) for r in cur.fetchall()]
+        else:
+            import sqlite3
+            conn.row_factory = sqlite3.Row
+            rows = [dict(r) for r in conn.execute(f'SELECT {select_cols} FROM tmdb_overrides').fetchall()]
+        by_name = {r['folder_name']: r for r in rows}
+        for cat in ('series', 'movies'):
+            for item in all_c.get(cat) or []:
+                name = item.get('name')
+                if not name or name not in by_name:
+                    continue
+                o = by_name[name]
+                item['tmdb_query'] = o['tmdb_query']
+                item['tmdb_override_media_type'] = (o.get('media_type') or 'tv').strip()
+                item['override_year'] = o.get('override_year')
+                item['override_region'] = o.get('override_region')
+                item['override_language'] = o.get('override_language')
+                ia = o.get('include_adult')
+                item['include_adult'] = bool(ia) if ia is not None else False
+    except Exception as e:
+        print(f"[TMDB-OVERRIDE] merge into folders failed: {e}", flush=True)
+    finally:
+        release_db_connection(conn, db_type)
+    return all_c
 
 # ==========================================
 # INTRO MARKERS API (Skip Intro - Admin only write)
@@ -2401,9 +2443,12 @@ def add_no_cache_headers(response): response.headers['Cache-Control'] = 'no-cach
 def get_folders(current_user):
     force = request.args.get('refresh', 'false').lower() == 'true'; key = "folders_list"
     if not force:
-        # RAM first → pre-serialized response (~0.01ms)
+        # RAM first → pre-serialized response (~0.01ms); merge TMDB overrides dari DB per request
         cached = mem_get(key)
-        if cached: return add_cache_headers(orjson_jsonify(cached, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
+        if cached:
+            payload = copy.deepcopy(cached)
+            _merge_tmdb_overrides_into_folders(payload)
+            return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
@@ -2449,9 +2494,14 @@ def get_folders(current_user):
         mem_set(key, all_c)
         _response_cache.pop('resp_folders', None)  # Invalidate old serialized
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
-        return add_cache_headers(orjson_jsonify(all_c, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
+        payload = copy.deepcopy(all_c)
+        _merge_tmdb_overrides_into_folders(payload)
+        return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
     stale = mem_get(key)
-    if stale: return add_cache_headers(orjson_jsonify(stale, cache_key='resp_folders'), max_age=60)
+    if stale:
+        payload = copy.deepcopy(stale)
+        _merge_tmdb_overrides_into_folders(payload)
+        return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=60)
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
 
 @app.route("/api/videos/<path:folder_name>")

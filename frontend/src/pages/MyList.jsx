@@ -4,6 +4,8 @@ import { ChevronLeft, Trash2, CheckCircle2, Clock, PlayCircle, Film, Tv, Play, I
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
 import { fetchMyList, removeFromMyList, updateMyListStatus, fetchProfiles, logout, getTMDBInfo, fetchHistory } from '../services/api';
+import Footer from '../components/Footer';
+import LoadingScreen from '../components/LoadingScreen';
 
 const MyList = () => {
     const navigate = useNavigate();
@@ -138,7 +140,7 @@ const MyList = () => {
 
     if (!authUser) {
         return (
-            <div className="min-h-screen bg-[#0a0b0f] text-white flex flex-col items-center justify-center p-6 text-center">
+        <div className="min-h-screen bg-[#0a0b0f] text-white flex flex-col items-center justify-center p-6 text-center">
                 <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-6">
                     <Clock size={40} className="text-gray-500" />
                 </div>
@@ -151,12 +153,13 @@ const MyList = () => {
                     Log In Now
                 </button>
                 <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} onLoginSuccess={handleLoginSuccess} />
+                <Footer />
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen bg-[#0a0b0f] text-[#f5f5f5] font-sans pb-20">
+        <div className="min-h-screen bg-[#0a0b0f] text-[#f5f5f5] font-sans flex flex-col">
             <Navbar 
                 onMeClick={() => setShowLoginModal(true)} 
                 isLoggedIn={!!authUser} 
@@ -210,14 +213,7 @@ const MyList = () => {
                 </div>
 
                 {loading ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 md:gap-8">
-                        {[...Array(12)].map((_, i) => (
-                            <div key={i} className="flex flex-col gap-3 animate-pulse">
-                                <div className="bg-[#1a1c22] rounded-2xl aspect-[2/3]"></div>
-                                <div className="h-4 w-3/4 bg-[#1a1c22] rounded mx-1"></div>
-                            </div>
-                        ))}
-                    </div>
+                    <LoadingScreen />
                 ) : filteredList.length > 0 ? (
                     <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-5 xl:grid-cols-6 gap-6 md:gap-8">
                         {filteredList.map((item, idx) => (
@@ -248,6 +244,7 @@ const MyList = () => {
             </main>
 
             <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} onLoginSuccess={handleLoginSuccess} />
+            <Footer />
         </div>
     );
 };
