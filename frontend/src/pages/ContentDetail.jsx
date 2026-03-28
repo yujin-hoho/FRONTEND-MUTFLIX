@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
@@ -38,10 +38,32 @@ const ContentDetail = () => {
     (tmdbData?.media_type === 'tv') ||
     (!urlType && videos.length > 1);
 
+  const uniqueSeasons = useMemo(
+    () => [...new Set(videos.map(v => v.season || 1))].sort((a, b) => a - b),
+    [videos]
+  );
+  const [detailSeason, setDetailSeason] = useState(1);
+  const episodesForSeason = useMemo(
+    () => videos.filter(v => (v.season || 1) === detailSeason),
+    [videos, detailSeason]
+  );
+
+  useEffect(() => {
+    if (videos.length === 0) return;
+    setDetailSeason((prev) => (uniqueSeasons.includes(prev) ? prev : uniqueSeasons[0]));
+  }, [videos, uniqueSeasons]);
+
+  useEffect(() => {
+    if (lastWatchedMedia) {
+      setDetailSeason(lastWatchedMedia.season || 1);
+    }
+  }, [lastWatchedMedia]);
+
   useEffect(() => {
     let isMounted = true;
     const loadData = async () => {
       setLoading(true);
+      setLastWatchedMedia(null);
       try {
         // Step 1: Fetch Basic Info (Videos + TMDB)
         const [videosResp, tmdb] = await Promise.all([
@@ -360,8 +382,27 @@ const ContentDetail = () => {
         {/* ====== EPISODES TAB ====== */}
         {activeTab === 'episodes' && (
           <div>
+            {isSeriesContent && uniqueSeasons.length > 1 && (
+              <div className="flex items-center gap-2 mb-4 overflow-x-auto no-scrollbar pb-1">
+                {uniqueSeasons.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setDetailSeason(s)}
+                    className={`px-3 py-1.5 rounded-full text-[12px] font-bold transition whitespace-nowrap ${detailSeason === s
+                      ? 'bg-white/10 text-white'
+                      : 'bg-transparent text-gray-500 hover:text-white'
+                      }`}
+                  >
+                    Season {s}
+                  </button>
+                ))}
+              </div>
+            )}
             <h3 className="text-gray-400 text-sm font-medium mb-4">
-              Episodes {videos.length > 0 ? `1-${videos.length}` : '1'}
+              {isSeriesContent && uniqueSeasons.length > 1
+                ? `Season ${detailSeason} · ${episodesForSeason.length} episode${episodesForSeason.length === 1 ? '' : 's'}`
+                : `Episodes ${videos.length > 0 ? `1–${videos.length}` : '—'}`}
             </h3>
             {loading ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
@@ -374,11 +415,11 @@ const ContentDetail = () => {
               </div>
             ) : videos.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                {videos.map((video, idx) => {
+                {episodesForSeason.map((video, idx) => {
                   const epData = episodeData[`${video.season || 1}_${video.episode || idx + 1}`];
                   return (
                     <EpisodeCard
-                      key={idx}
+                      key={video.path || `${video.season}_${video.episode}_${idx}`}
                       video={video}
                       index={idx}
                       posterFallback={posterPath}

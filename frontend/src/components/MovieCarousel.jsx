@@ -1,7 +1,7 @@
 import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo, TMDB_GENRES } from '../services/api';
+import { getTMDBInfo, TMDB_GENRES, fetchVideos } from '../services/api';
 
 const tmdbOptsFromItem = (item) => {
   if (!item?.tmdb_query) return {};
@@ -27,11 +27,22 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   const folderName = item?.folder_name || item?.name || '';
   const mediaType = item?.type || 'movie';
   
-  const handleNavigate = () => {
+  const handleNavigate = async () => {
     if (progress !== undefined) {
-      // It's a Continue Watching card, go directly to WatchPage
-      const ep = item.episode || 1;
-      const s = item.season || 1;
+      let ep = item.episode ?? 1;
+      let s = item.season ?? 1;
+      if (item.media_path && folderName && (item.season == null || item.episode == null)) {
+        try {
+          const resp = await fetchVideos(decodeURIComponent(folderName));
+          const hit = (resp?.videos || []).find((v) => v.path === item.media_path);
+          if (hit) {
+            ep = hit.episode ?? ep;
+            s = hit.season ?? s;
+          }
+        } catch {
+          /* keep defaults */
+        }
+      }
       const type = item.series_title ? 'series' : 'movie';
       navigate(`/watch/${encodeURIComponent(folderName)}?ep=${ep}&s=${s}&type=${type}`);
     } else {

@@ -4,7 +4,7 @@ import {
     ArrowLeft, Play, Pause, Volume2, VolumeX,
     Maximize, Minimize, Subtitles, Settings,
     SkipForward, SkipBack, ChevronDown, ChevronUp,
-    User, Loader2
+    User, Loader2, Languages
 } from 'lucide-react';
 import {
     fetchVideos, getStreamDetails, fetchSubtitle,
@@ -50,6 +50,10 @@ const WatchPage = () => {
     const [showSubtitles, setShowSubtitles] = useState(true);
     const [playbackRate, setPlaybackRate] = useState(1);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
+    /** Trek audio native dari file (multi-audio MP4/MOV); dukungan browser bervariasi (Chrome/Edge/Safari umumnya OK). */
+    const [audioTrackList, setAudioTrackList] = useState([]);
+    const [selectedAudioIndex, setSelectedAudioIndex] = useState(0);
+    const [showAudioMenu, setShowAudioMenu] = useState(false);
     const [videoLoading, setVideoLoading] = useState(false);
     const [videoError, setVideoError] = useState(null);
     const [activeSeason, setActiveSeason] = useState(urlSeason);
@@ -217,7 +221,9 @@ const WatchPage = () => {
             currentEpData?.still_path || tmdbData?.tmdb_poster_path,
             currentVideo.subtitle_path,
             Math.floor(video.currentTime * 1000),
-            Math.floor(video.duration * 1000)
+            Math.floor(video.duration * 1000),
+            isSeriesContent ? (currentVideo.season ?? null) : null,
+            isSeriesContent ? (currentVideo.episode ?? null) : null
         );
     }, [profileId, currentVideo, decodedName, isSeriesContent, currentEpData, tmdbData]);
 
@@ -303,6 +309,9 @@ const WatchPage = () => {
         const loadStream = async () => {
             setVideoLoading(true);
             setVideoError(null);
+            setAudioTrackList([]);
+            setSelectedAudioIndex(0);
+            setShowAudioMenu(false);
 
             // Revoke old subtitle blob URL
             if (prevSubtitleUrl.current) {
@@ -536,6 +545,62 @@ const WatchPage = () => {
         setShowSpeedMenu(false);
     };
 
+    const syncAudioTracksFromVideo = useCallback(() => {
+        const v = videoRef.current;
+        if (!v || typeof v.audioTracks === 'undefined' || v.audioTracks == null) {
+            setAudioTrackList([]);
+            return;
+        }
+        const n = v.audioTracks.length;
+        if (n === 0) {
+            setAudioTrackList([]);
+            return;
+        }
+        const tracks = [];
+        let enabledIdx = 0;
+        for (let i = 0; i < n; i++) {
+            const t = v.audioTracks[i];
+            const lang = t.language || '';
+            const raw = (t.label && String(t.label).trim()) || '';
+            const label = raw || (lang ? lang.toUpperCase() : `Audio ${i + 1}`);
+            tracks.push({ index: i, label, language: lang });
+            if (t.enabled) enabledIdx = i;
+        }
+        setAudioTrackList(tracks);
+        setSelectedAudioIndex(enabledIdx);
+    }, []);
+
+    const selectAudioTrack = (index) => {
+        const v = videoRef.current;
+        if (!v?.audioTracks || index < 0 || index >= v.audioTracks.length) return;
+        for (let i = 0; i < v.audioTracks.length; i++) {
+            v.audioTracks[i].enabled = i === index;
+        }
+        setSelectedAudioIndex(index);
+        setShowAudioMenu(false);
+    };
+
+    /** Audio ter-embed: browser sering mengisi audioTracks setelah metadata — poll singkat + event */
+    useEffect(() => {
+        if (!currentVideo?.path) return;
+        const v = videoRef.current;
+        if (!v) return;
+        const sync = () => syncAudioTracksFromVideo();
+        const onMedia = () => sync();
+        v.addEventListener('loadeddata', onMedia);
+        v.addEventListener('canplaythrough', onMedia);
+        const delays = [0, 50, 150, 400, 1000, 2000, 3500].map((ms) => setTimeout(sync, ms));
+        const poll = setInterval(sync, 200);
+        const stopPollTimer = setTimeout(() => clearInterval(poll), 6000);
+        return () => {
+            delays.forEach(clearTimeout);
+            clearInterval(poll);
+            clearTimeout(stopPollTimer);
+            v.removeEventListener('loadeddata', onMedia);
+            v.removeEventListener('canplaythrough', onMedia);
+        };
+    }, [currentVideo?.path, syncAudioTracksFromVideo]);
+
     // ─── Video event handlers ──────────────────────
     const handleTimeUpdate = () => {
         const video = videoRef.current;
@@ -553,6 +618,7 @@ const WatchPage = () => {
         if (video) {
             setDuration(video.duration);
         }
+        syncAudioTracksFromVideo();
     };
     const handleVideoError = () => {
         const video = videoRef.current;
@@ -570,6 +636,9 @@ const WatchPage = () => {
         if (video && video.paused && !isPlaying) {
             video.play().catch(() => { });
         }
+        syncAudioTracksFromVideo();
+        requestAnimationFrame(() => syncAudioTracksFromVideo());
+        setTimeout(syncAudioTracksFromVideo, 150);
     };
 
     // ─── Episode switching ─────────────────────────
@@ -588,7 +657,7 @@ const WatchPage = () => {
 
     const playNextEpisode = () => {
         if (!currentVideo) return;
-        const currentIdx = videos.findIndex(v => v === currentVideo);
+        const currentIdx = videos.findIndex((v) => v === currentVideo);
         if (currentIdx < videos.length - 1) {
             playEpisode(videos[currentIdx + 1]);
         }
@@ -596,7 +665,7 @@ const WatchPage = () => {
 
     const playPrevEpisode = () => {
         if (!currentVideo) return;
-        const currentIdx = videos.findIndex(v => v === currentVideo);
+        const currentIdx = videos.findIndex((v) => v === currentVideo);
         if (currentIdx > 0) {
             playEpisode(videos[currentIdx - 1]);
         }
@@ -654,6 +723,7 @@ const WatchPage = () => {
                             onPlay={handleVideoPlay}
                             onPause={handleVideoPause}
                             onLoadedMetadata={handleLoadedMetadata}
+                            onLoadedData={() => syncAudioTracksFromVideo()}
                             onError={handleVideoError}
                             onWaiting={handleWaiting}
                             onCanPlay={handleCanPlay}
@@ -910,10 +980,52 @@ const WatchPage = () => {
                                             </div>
                                         </div>
 
+                                        {/* Audio ter-embed di file: pakai API browser video.audioTracks (bukan file terpisah) */}
+                                        {audioTrackList.length > 1 && (
+                                            <div className="relative">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setShowAudioMenu(!showAudioMenu);
+                                                        setShowSpeedMenu(false);
+                                                    }}
+                                                    className={`transition text-[13px] font-medium flex items-center gap-1 max-w-[160px] truncate ${showAudioMenu ? 'text-[#00dc41]' : 'text-white/70 hover:text-[#00dc41]'}`}
+                                                    title="Pilih trek audio (embedded)"
+                                                >
+                                                    <Languages size={15} className="shrink-0 opacity-90" />
+                                                    <span className="truncate">{audioTrackList[selectedAudioIndex]?.label || 'Audio'}</span>
+                                                </button>
+                                                {showAudioMenu && (
+                                                    <div className="absolute bottom-full right-0 mb-3 bg-[#1a1c22]/95 backdrop-blur-md rounded-lg border border-white/10 py-1 shadow-xl min-w-[160px] max-h-48 overflow-y-auto z-50">
+                                                        {audioTrackList.map((t) => (
+                                                            <button
+                                                                type="button"
+                                                                key={t.index}
+                                                                onClick={() => selectAudioTrack(t.index)}
+                                                                className={`block w-full text-left px-3 py-1.5 text-[12px] transition ${selectedAudioIndex === t.index
+                                                                    ? 'text-[#00dc41] bg-[#00dc41]/10 font-bold'
+                                                                    : 'text-gray-300 hover:bg-white/5 hover:text-white'
+                                                                    }`}
+                                                            >
+                                                                {t.label}
+                                                                {t.language ? (
+                                                                    <span className="text-gray-500 font-normal ml-1">({t.language})</span>
+                                                                ) : null}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
                                         {/* Speed */}
                                         <div className="relative">
                                             <button
-                                                onClick={() => setShowSpeedMenu(!showSpeedMenu)}
+                                                type="button"
+                                                onClick={() => {
+                                                    setShowSpeedMenu(!showSpeedMenu);
+                                                    setShowAudioMenu(false);
+                                                }}
                                                 className={`transition text-[13px] font-medium ${playbackRate !== 1 ? 'text-[#00dc41]' : 'text-white/70 hover:text-[#00dc41]'}`}
                                             >
                                                 {playbackRate.toFixed(1)}X

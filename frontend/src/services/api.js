@@ -576,7 +576,7 @@ export const fetchHistory = async (profileId) => {
     }
 };
 
-export const saveHistory = async (profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, position_ms, duration_ms) => {
+export const saveHistory = async (profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, position_ms, duration_ms, season = null, episode = null) => {
     try {
         const res = await fetch(`${BASE_URL}/api/history/save`, {
             method: 'POST',
@@ -593,7 +593,9 @@ export const saveHistory = async (profile_id, media_path, media_title, series_ti
                 still_path,
                 subtitle_path,
                 position_ms,
-                duration_ms
+                duration_ms,
+                season,
+                episode
             })
         });
         if (!res.ok) return false;
