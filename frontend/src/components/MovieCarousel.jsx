@@ -49,14 +49,33 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
 
   const title = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
 
+  /** Berubah saat admin edit query TMDB — harus refetch, jangan pakai tmdbData lama */
+  const tmdbFetchSignature = [
+    item?.tmdb_query ?? '',
+    item?.tmdb_override_media_type ?? '',
+    item?.override_year ?? '',
+    item?.override_region ?? '',
+    item?.include_adult ? '1' : '0',
+    item?.name ?? '',
+    item?.folder_name ?? '',
+  ].join('|');
+
   useEffect(() => {
-    if (title === 'Loading...' || item.tmdb_poster_path || item.poster || tmdbData) return;
+    if (title === 'Loading...') return;
+    if (item.tmdb_poster_path || item.poster) {
+      setTmdbData(null);
+      return;
+    }
+    setTmdbData(null);
+    let cancelled = false;
     const searchTitle = item.tmdb_query || title;
     getTMDBInfo(searchTitle, tmdbOptsFromItem(item)).then((data) => {
-      if (data) setTmdbData(data);
+      if (!cancelled && data) setTmdbData(data);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item, title]);
+    return () => {
+      cancelled = true;
+    };
+  }, [title, tmdbFetchSignature, item.tmdb_poster_path, item.poster]);
 
   const rawPoster = item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
@@ -236,7 +255,10 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
         >
           {items?.length > 0 ? (
             items.map((item, idx) => (
-              <div key={idx} className="snap-start shrink-0">
+              <div
+                key={item.folder_name || item.name || item.media_path || `row-${idx}`}
+                className="snap-start shrink-0"
+              >
                 <MovieCard
                   item={item}
                   tag={tagType === 'top' ? 'TOP 10' : null}

@@ -124,6 +124,7 @@ const Dashboard = () => {
     let genreSections = genreRowsForMin(4);
     if (genreSections.length === 0) genreSections = genreRowsForMin(3);
     if (genreSections.length === 0) genreSections = genreRowsForMin(2);
+    if (genreSections.length === 0) genreSections = genreRowsForMin(1);
 
     const top10Items = [...items]
       .sort((a, b) => (b.tmdb_rating || 0) - (a.tmdb_rating || 0))
@@ -132,7 +133,8 @@ const Dashboard = () => {
     const top10Section = { title: 'Top 10', items: top10Items, tagType: 'top' };
     const sections = [top10Section, ...genreSections];
 
-    return sections.slice(0, 8);
+    // Top 10 + lebih banyak baris genre (sebelumnya 8 total = hanya ~7 genre)
+    return sections.slice(0, 22);
   }, []);
 
   // Phase 2: TMDB enrichment
@@ -140,7 +142,7 @@ const Dashboard = () => {
     const resolvedItems = [...items]; // Copy so we can update in-place
     const tmdbPromises = [];
     let apiFetchCount = 0;
-    const MAX_API_CALLS = 40;
+    const MAX_API_CALLS = 120;
 
     const tmdbOptsFromItem = (it) => {
       if (!it.tmdb_query) return {};
@@ -154,33 +156,48 @@ const Dashboard = () => {
       return o;
     };
 
-    for (let idx = 0; idx < items.length; idx++) {
+    const enrichPriority = (it) => {
+      if (it.tmdb_query) return -1;
+      const hasGenres = Array.isArray(it.tmdb_genre_ids) && it.tmdb_genre_ids.length > 0;
+      const hasPoster = !!it.tmdb_poster_path;
+      if (!hasGenres && !hasPoster) return 0;
+      if (!hasGenres) return 1;
+      return 3;
+    };
+
+    const candidateIndices = items
+      .map((item, idx) => ({ item, idx }))
+      .filter(({ item }) => {
+        const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
+        if (!searchTitle) return false;
+        const hasOverride = !!item.tmdb_query;
+        const hasBaseInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
+        return !(hasBaseInfo && !hasOverride);
+      })
+      .sort((a, b) => enrichPriority(a.item) - enrichPriority(b.item))
+      .map(({ idx }) => idx);
+
+    for (const idx of candidateIndices) {
+      if (apiFetchCount >= MAX_API_CALLS) break;
       const item = items[idx];
       const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
-      if (!searchTitle) continue;
 
-      const hasOverride = !!item.tmdb_query;
-      const hasBaseInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
-      if (hasBaseInfo && !hasOverride) continue;
-
-      if (apiFetchCount < MAX_API_CALLS) {
-        apiFetchCount++;
-        const opts = tmdbOptsFromItem(item);
-        tmdbPromises.push(
-          getTMDBInfo(searchTitle, opts).then(apiData => {
-            if (apiData) {
-              const resolvedItem = { ...item };
-              if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
-              resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
-              resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
-              resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
-              resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
-              resolvedItem.tmdb_cast = apiData.cast || [];
-              resolvedItems[idx] = resolvedItem;
-            }
-          })
-        );
-      }
+      apiFetchCount++;
+      const opts = tmdbOptsFromItem(item);
+      tmdbPromises.push(
+        getTMDBInfo(searchTitle, opts).then(apiData => {
+          if (apiData) {
+            const resolvedItem = { ...item };
+            if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
+            resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
+            resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
+            resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
+            resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
+            resolvedItem.tmdb_cast = apiData.cast || [];
+            resolvedItems[idx] = resolvedItem;
+          }
+        })
+      );
     }
 
     await Promise.allSettled(tmdbPromises);
@@ -244,8 +261,10 @@ const Dashboard = () => {
           flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
 
           flatHistory.forEach(h => {
-            const progress = (h.position_ms / h.duration_ms) * 100;
-            if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && progress < 95) {
+            const dur = Number(h.duration_ms) || 0;
+            const progress = dur > 0 ? (Number(h.position_ms) / dur) * 100 : 0;
+            const okProgress = Number.isFinite(progress);
+            if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && okProgress && progress < 95) {
               uniqueHistoryMap.set(h.media_path, {
                 ...h,
                 name: h.series_title || h.media_title,
@@ -275,7 +294,10 @@ const Dashboard = () => {
 
       if (fetchIdRef.current !== currentFetchId) return;
 
-      if (!enrichResult) return;
+      if (!enrichResult) {
+        if (fetchIdRef.current === currentFetchId) setLoading(false);
+        return;
+      }
 
       await preloadDashboardImages(enrichResult.resolvedItems, cwList, enrichResult.topActors);
 

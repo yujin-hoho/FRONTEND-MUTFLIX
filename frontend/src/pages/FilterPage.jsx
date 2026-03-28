@@ -9,6 +9,101 @@ import LoadingScreen from '../components/LoadingScreen';
 const REGIONS = ['All regions', 'Chinese Mainland', 'South Korea', 'Indonesia', 'Thailand', 'Taiwan', 'Japan', 'Malaysia', 'America', 'UK'];
 const CATEGORIES = ['All Genres', 'Youth', 'Mystery', 'Costume', 'Urban', 'Romance', 'Sweet Love', 'Marriage', 'Drama', 'Comedy', 'Family', 'Friendship', 'Fantasy', 'Crime', 'War', 'Novel Adaptation', 'Contemporary', 'Ancient', 'Variety Show'];
 
+/** Genre TMDB yang dipakai untuk acara varietas / non-scripted (TV + beberapa film) */
+const VARIETY_TMDB_GENRE_IDS = new Set([99, 10402, 10763, 10764, 10767]);
+
+const VARIETY_TITLE_PATTERNS = [
+  /\bvariety\b/i,
+  /\breality\b/i,
+  /talk\s*show/i,
+  /talkshow/i,
+  /game\s*show/i,
+  /survival/i,
+  /weekly\s+idol/i,
+  /running\s+man/i,
+  /knowing\s+bros/i,
+  /knowing\s+brother/i,
+  /infinite\s+challenge/i,
+  /we\s+got\s+married/i,
+  /strong\s+heart/i,
+  /music\s+bank/i,
+  /inkigayo/i,
+  /show!?\s*music\s*core/i,
+  /produce\s*101/i,
+  /produce\s*x\s*101/i,
+  /street\s+woman/i,
+  /queendom\b/i,
+  /road\s+to\s+kingdom/i,
+  /kingdom\s*:\s*legendary\s+war/i,
+  /2\s*days\s*1\s*night/i,
+  /new\s+journey\s+to\s+the\s+west/i,
+  /workman\b/i,
+  /busted\b/i,
+  /village\s+survival/i,
+  /hangout\s+with\s+yoo/i,
+  /the\s+genius\b/i,
+  /the\s+voice\b/i,
+  /master\s*chef/i,
+  /big\s+brother\b/i,
+  /amazing\s+race/i,
+  /golden\s+bell/i,
+  /1\s*night\s*2\s*days/i,
+  /happy\s+together\b/i,
+  /family\s+outing\b/i,
+  /superman\s+is\s+back/i,
+  /return\s+of\s+superman/i,
+  /home\s+alone\b/i,
+  /i\s*live\s+alone/i,
+  /running\s+youth/i,
+  /youth\s+over\s+flowers/i,
+  /三时三餐|爸爸去哪儿|快乐大本营|天天向上|非诚勿扰|奔跑吧|极限挑战|密室|大侦探|脱口秀|演唱会/,
+  /综艺/,
+  /真人秀/,
+];
+
+const inferTmdbMediaType = (item) => {
+  if (item.media_type === 'movie' || item.type === 'movie') return 'movie';
+  if (item.media_type === 'tv' || item.type === 'series' || item.type === 'tv') return 'tv';
+  if (item.episodes || item.first_air_date) return 'tv';
+  return undefined;
+};
+
+const itemMatchesVarietyShow = (item) => {
+  const ids = item.tmdb_genre_ids;
+  if (Array.isArray(ids) && ids.some((id) => VARIETY_TMDB_GENRE_IDS.has(Number(id)))) return true;
+
+  const cats = item.parsedCategories || [];
+  const varietyLabels = ['Talk', 'Reality', 'Documentary', 'News', 'Music'];
+  if (varietyLabels.some((l) => cats.includes(l))) return true;
+
+  const label = `${item.folder_name || ''} ${item.name || ''} ${item.tmdb_title || ''}`;
+  const labelLower = label.toLowerCase();
+  if (label.trim() && VARIETY_TITLE_PATTERNS.some((re) => re.test(labelLower))) return true;
+
+  return false;
+};
+
+/** Pool agar semua item bisa di-enrich tanpa membanjiri TMDB sekaligus */
+const TMDB_FILTER_CONCURRENCY = 5;
+const MAX_TMDB_ENRICH_FILTER = 500;
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (!items.length) return [];
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) break;
+      results[i] = await mapper(items[i], i);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
+  return results;
+}
+
 const getRegionMapping = (item) => {
   const lang = item.original_language || '';
   const countries = item.origin_country || [];
@@ -30,6 +125,7 @@ const getRegionMapping = (item) => {
 const filterItems = (resolved, activeType, activeRegion, activeCategory) => {
   let filtered = resolved;
 
+  // "All" (default): jangan filter tipe — ini yang diharapkan untuk /filter & "All Videos"
   if (activeType === 'Movie') {
     filtered = filtered.filter(item => item.media_type === 'movie' || item.type === 'movie' || (!item.episodes && !item.first_air_date));
   } else if (activeType === 'Drama') {
@@ -37,7 +133,7 @@ const filterItems = (resolved, activeType, activeRegion, activeCategory) => {
   } else if (activeType === 'Anime') {
     filtered = filtered.filter(item => item.parsedCategories?.includes('Animation'));
   } else if (activeType === 'Variety Show') {
-    filtered = filtered.filter(item => item.parsedCategories?.includes('Talk') || item.parsedCategories?.includes('Reality') || item.parsedCategories?.includes('Documentary'));
+    filtered = filtered.filter(itemMatchesVarietyShow);
   }
 
   if (activeRegion !== 'All regions') {
@@ -62,7 +158,7 @@ const filterItems = (resolved, activeType, activeRegion, activeCategory) => {
         return cats.includes('History') || cats.includes('War');
       }
       if (activeCategory === 'Variety Show') {
-        return cats.includes('Talk') || cats.includes('Reality') || cats.includes('Documentary');
+        return itemMatchesVarietyShow(item);
       }
       if (activeCategory === 'Novel Adaptation') {
         return cats.includes('Drama') || cats.includes('Fantasy');
@@ -78,7 +174,7 @@ const FilterPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
-  const activeType = searchParams.get('type') || 'Drama';
+  const activeType = searchParams.get('type') || 'All';
   const activeRegion = searchParams.get('region') || 'All regions';
   const activeCategory = searchParams.get('category') || 'All Genres';
   const [results, setResults] = useState([]);
@@ -101,6 +197,8 @@ const FilterPage = () => {
     const newParams = new URLSearchParams(searchParams);
     if (value === 'All regions' || value === 'All Genres') {
       newParams.delete(type);
+    } else if (type === 'type' && value === 'All') {
+      newParams.delete('type');
     } else {
       newParams.set(type, value);
     }
@@ -141,44 +239,64 @@ const FilterPage = () => {
         setAllResolved(quickResolved);
         // setLoading(false); // We now wait for enrichment below
 
-        // PHASE 2: Enrich with TMDB data in background
-        const toResolve = uniqueDataList.slice(0, 80);
-        const enriched = await Promise.all(toResolve.map(async (item) => {
-          const title = item.tmdb_title || item.folder_name || item.name;
-          if (!title) return { ...item, parsedCategories: [], parsedRegion: 'Other' };
+        // PHASE 2: Enrich seluruh daftar (urutan tetap). TV tanpa metadata diprioritaskan; max 500 hit TMDB per load.
+        const needFetchIndices = uniqueDataList
+          .map((item, i) => ({ i, item }))
+          .filter(({ item }) => !(item.tmdb_poster_path && item.tmdb_genre_ids));
+        needFetchIndices.sort((a, b) => {
+          const at = inferTmdbMediaType(a.item) === 'tv' ? 0 : 1;
+          const bt = inferTmdbMediaType(b.item) === 'tv' ? 0 : 1;
+          return at - bt;
+        });
+        const mayCallTmdb = new Set(
+          needFetchIndices.slice(0, MAX_TMDB_ENRICH_FILTER).map(({ i }) => i)
+        );
 
-          const hasEnoughInfo = item.tmdb_poster_path && item.tmdb_genre_ids;
-          let tmdbData = null;
-          if (!hasEnoughInfo) {
-            tmdbData = await getTMDBInfo(title);
+        const enriched = await mapWithConcurrency(
+          uniqueDataList,
+          TMDB_FILTER_CONCURRENCY,
+          async (item, index) => {
+            const title = item.tmdb_title || item.folder_name || item.name;
+            if (!title) {
+              const srcGenreIds = item.tmdb_genre_ids;
+              const parsedCategories = srcGenreIds
+                ? srcGenreIds.map((id) => TMDB_GENRES[id]).filter(Boolean)
+                : [];
+              const r = { ...item, parsedCategories };
+              r.parsedRegion = getRegionMapping(r);
+              return r;
+            }
+
+            const mediaType = inferTmdbMediaType(item);
+            const hasEnoughInfo = item.tmdb_poster_path && item.tmdb_genre_ids;
+            let tmdbData = null;
+            if (!hasEnoughInfo && mayCallTmdb.has(index)) {
+              tmdbData = await getTMDBInfo(title, mediaType ? { mediaType } : {});
+            }
+
+            const srcGenreIds =
+              tmdbData?.genre_ids ||
+              (tmdbData?.genres ? tmdbData.genres.map((g) => g.id) : null) ||
+              item.tmdb_genre_ids;
+            const parsedCategories = srcGenreIds
+              ? srcGenreIds.map((id) => TMDB_GENRES[id]).filter(Boolean)
+              : [];
+
+            const resolvedItem = {
+              ...item,
+              tmdb_poster_path: tmdbData?.poster_path || item.tmdb_poster_path,
+              tmdb_rating: tmdbData?.rating || item.tmdb_rating,
+              tmdb_genre_ids: srcGenreIds,
+              original_language: tmdbData?.original_language || item.original_language,
+              origin_country: tmdbData?.origin_country || item.origin_country,
+              parsedCategories,
+            };
+            resolvedItem.parsedRegion = getRegionMapping(resolvedItem);
+            return resolvedItem;
           }
+        );
 
-          const srcGenreIds = tmdbData?.genre_ids || (tmdbData?.genres ? tmdbData.genres.map(g => g.id) : null) || item.tmdb_genre_ids;
-          const parsedCategories = srcGenreIds ? srcGenreIds.map(id => TMDB_GENRES[id]).filter(Boolean) : [];
-
-          const resolvedItem = {
-            ...item,
-            tmdb_poster_path: tmdbData?.poster_path || item.tmdb_poster_path,
-            tmdb_rating: tmdbData?.rating || item.tmdb_rating,
-            tmdb_genre_ids: srcGenreIds,
-            original_language: tmdbData?.original_language || item.original_language,
-            origin_country: tmdbData?.origin_country || item.origin_country,
-            parsedCategories
-          };
-          resolvedItem.parsedRegion = getRegionMapping(resolvedItem);
-          return resolvedItem;
-        }));
-
-        // Merge enriched items back into full list
-        const enrichedMap = new Map();
-        enriched.forEach(item => {
-          const name = item.tmdb_title || item.folder_name || item.name;
-          if (name) enrichedMap.set(name, item);
-        });
-        const finalResolved = uniqueDataList.map(item => {
-          const name = item.tmdb_title || item.folder_name || item.name;
-          return enrichedMap.get(name) || { ...item, parsedCategories: [], parsedRegion: 'Other' };
-        });
+        const finalResolved = enriched;
 
         setAllResolved(finalResolved);
         setLoading(false); // Ready!
@@ -204,7 +322,7 @@ const FilterPage = () => {
       <div className="px-6 md:px-[60px] pb-12 w-full max-w-[1400px] mx-auto">
         {/* Type Tabs */}
         <div className="flex gap-8 mb-6 border-b border-white/10 w-full overflow-x-auto no-scrollbar">
-          {['Drama', 'Movie', 'Variety Show', 'Anime'].map(t => {
+          {['All', 'Drama', 'Movie', 'Variety Show', 'Anime'].map(t => {
             const isActive = activeType === t;
             return (
               <button
