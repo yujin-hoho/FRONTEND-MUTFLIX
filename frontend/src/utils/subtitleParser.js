@@ -84,9 +84,10 @@ export function shiftSubtitleTimes(content, delaySeconds) {
  * Convert subtitle content (auto-detecting SRT vs VTT) to a Blob URL
  * suitable for use as a <track> src.
  * @param {string} textContent - Raw subtitle text (SRT or VTT)
+ * @param {number} delaySeconds - Optional delay in seconds (supports negatives)
  * @returns {string} Blob URL for the VTT content
  */
-export function createSubtitleBlobUrl(textContent) {
+export function createSubtitleBlobUrl(textContent, delaySeconds = 0) {
   if (!textContent) return null;
 
   let vttContent;
@@ -98,6 +99,11 @@ export function createSubtitleBlobUrl(textContent) {
     if (!vttContent.startsWith('WEBVTT')) {
       vttContent = 'WEBVTT\n\n' + vttContent;
     }
+  }
+
+  // Apply delay if specified
+  if (delaySeconds !== 0) {
+    vttContent = shiftSubtitleTimes(vttContent, delaySeconds);
   }
 
   const blob = new Blob([vttContent], { type: 'text/vtt' });

@@ -904,7 +904,7 @@ const WatchPage = () => {
                                                         </div>
                                                     </div>
                                                     <input
-                                                        type="range" min="-50" max="50" step="0.5"
+                                                        type="range" min="-150" max="150" step="0.5"
                                                         value={subSettings.delay}
                                                         onChange={(e) => setSubSettings({ ...subSettings, delay: parseFloat(e.target.value) })}
                                                         className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#00dc41]"
