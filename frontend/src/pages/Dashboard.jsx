@@ -6,7 +6,8 @@ import MovieCarousel from '../components/MovieCarousel';
 import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
-import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
+import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
+import { fetchFoldersFresh, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -29,6 +30,33 @@ const getSafeArray = (resp, type) => {
   return [];
 };
 
+const backdropOrPosterUrl = (item) => {
+  const raw = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster;
+  if (!raw) return null;
+  return raw.startsWith('http') ? raw : `https://image.tmdb.org/t/p/w780${raw}`;
+};
+
+/** Tunggu asset visual utama agar tidak tampil dashboard kosong/peluru sebelum gambar siap */
+const preloadDashboardImages = async (resolvedItems, continueWatchingItems, topActors = []) => {
+  const urls = [];
+  const push = (u) => {
+    if (u && typeof u === 'string') urls.push(u);
+  };
+  resolvedItems.slice(0, 8).forEach((item) => push(backdropOrPosterUrl(item)));
+  continueWatchingItems.slice(0, 8).forEach((h) => {
+    if (h.poster && String(h.poster).startsWith('http')) push(h.poster);
+    else push(backdropOrPosterUrl(h));
+  });
+  topActors.slice(0, 12).forEach((a) => push(a.profile_path));
+  const unique = [...new Set(urls)];
+  await Promise.all(unique.map((url) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => resolve();
+    img.src = url;
+  })));
+};
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const [featuredList, setFeaturedList] = useState([]);
@@ -49,8 +77,10 @@ const Dashboard = () => {
     } catch (e) { return []; }
   });
   const [removingItemPath, setRemovingItemPath] = useState(null);
+  const [posterEditItem, setPosterEditItem] = useState(null);
 
   const fetchIdRef = useRef(0);
+  const isAdmin = authUser?.role === 'admin';
 
   const QUICK_FILTERS = [
     { label: 'All Videos', path: '/filter' },
@@ -67,50 +97,40 @@ const Dashboard = () => {
     return shuffleArray(foldersData);
   }, []);
 
-  // Build genre sections from items (with or without TMDB data)
+  // Hanya baris genre TMDB (tanpa Trending / New Releases / Discover).
+  // Item tanpa tmdb_genre_ids tidak masuk map genre (tetap bisa di Hero & Top 10).
   const buildSections = useCallback((items) => {
     const tempGenreMap = {};
     items.forEach(item => {
       const genreIds = item.tmdb_genre_ids || [];
       const genres = genreIds.map(id => TMDB_GENRES[id]).filter(Boolean);
+      if (genres.length === 0) return;
 
-      if (genres.length === 0) {
-        if (!tempGenreMap["Trending"]) tempGenreMap["Trending"] = [];
-        tempGenreMap["Trending"].push(item);
-      } else {
-        genres.slice(0, 2).forEach(g => {
-          if (!tempGenreMap[g]) tempGenreMap[g] = [];
-          const itemName = (item.folder_name || item.name || '').trim().toLowerCase();
-          if (itemName && !tempGenreMap[g].find(i => (i.folder_name || i.name || '').trim().toLowerCase() === itemName)) {
-            tempGenreMap[g].push(item);
-          }
-        });
-      }
+      genres.slice(0, 2).forEach(g => {
+        if (!tempGenreMap[g]) tempGenreMap[g] = [];
+        const itemName = (item.folder_name || item.name || '').trim().toLowerCase();
+        if (itemName && !tempGenreMap[g].find(i => (i.folder_name || i.name || '').trim().toLowerCase() === itemName)) {
+          tempGenreMap[g].push(item);
+        }
+      });
     });
 
-    let sections = Object.keys(tempGenreMap)
-      .filter(k => tempGenreMap[k].length >= 4)
-      .map(k => ({ title: k, items: tempGenreMap[k] }))
-      .sort((a, b) => b.items.length - a.items.length);
+    const genreRowsForMin = (min) =>
+      Object.keys(tempGenreMap)
+        .filter((k) => tempGenreMap[k].length >= min)
+        .map((k) => ({ title: k, items: tempGenreMap[k] }))
+        .sort((a, b) => b.items.length - a.items.length);
 
-    // Top 10 section based on TMDB Rating
+    let genreSections = genreRowsForMin(4);
+    if (genreSections.length === 0) genreSections = genreRowsForMin(3);
+    if (genreSections.length === 0) genreSections = genreRowsForMin(2);
+
     const top10Items = [...items]
       .sort((a, b) => (b.tmdb_rating || 0) - (a.tmdb_rating || 0))
       .slice(0, 10);
-    
-    const top10Section = { title: "Top 10", items: top10Items, tagType: "top" };
-    
-    // Replace first section or prepend Top 10
-    // The user explicitly wanted the first section (Daram/Drama) to become Top 10
-    sections = [top10Section, ...sections.filter(s => s.title !== "Trending" && s.title !== "Drama" && s.title !== "Daram")];
 
-    if (sections.length === 0 && items.length > 0) {
-      sections = [
-        { title: "Trending", items: items.slice(0, 10), tagType: "top" },
-        { title: "New Releases", items: items.slice(10, 20), tagType: "free" },
-        { title: "Discover", items: items.slice(20, 30) }
-      ];
-    }
+    const top10Section = { title: 'Top 10', items: top10Items, tagType: 'top' };
+    const sections = [top10Section, ...genreSections];
 
     return sections.slice(0, 8);
   }, []);
@@ -122,35 +142,32 @@ const Dashboard = () => {
     let apiFetchCount = 0;
     const MAX_API_CALLS = 40;
 
+    const tmdbOptsFromItem = (it) => {
+      if (!it.tmdb_query) return {};
+      const o = {
+        query: it.tmdb_query,
+        mediaType: it.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+      };
+      if (it.override_year != null && it.override_year !== '') o.year = Number(it.override_year);
+      if (it.override_region) o.region = it.override_region;
+      if (it.include_adult) o.includeAdult = true;
+      return o;
+    };
+
     for (let idx = 0; idx < items.length; idx++) {
       const item = items[idx];
-      const title = item.tmdb_title || item.folder_name || item.name;
-      if (!title) continue;
+      const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
+      if (!searchTitle) continue;
 
+      const hasOverride = !!item.tmdb_query;
       const hasBaseInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
+      if (hasBaseInfo && !hasOverride) continue;
 
-      const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim();
-      const cacheKey = `mutflix_tmdb_info_${cleanTitle.toLowerCase()}`;
-      const cached = localStorage.getItem(cacheKey);
-      let data = null;
-
-      if (cached) {
-        try { data = JSON.parse(cached); } catch (e) { }
-      }
-
-      if (data) {
-        const resolvedItem = { ...item };
-        if (data.poster_path) resolvedItem.tmdb_poster_path = data.poster_path;
-        resolvedItem.tmdb_backdrop_path = data.backdrop_path || item.tmdb_backdrop_path;
-        resolvedItem.tmdb_genre_ids = data.genre_ids || (data.genres ? data.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
-        resolvedItem.tmdb_overview = data.overview || item.tmdb_overview;
-        resolvedItem.tmdb_rating = data.rating || item.tmdb_rating;
-        resolvedItem.tmdb_cast = data.cast || [];
-        resolvedItems[idx] = resolvedItem;
-      } else if (!hasBaseInfo && apiFetchCount < MAX_API_CALLS) {
+      if (apiFetchCount < MAX_API_CALLS) {
         apiFetchCount++;
+        const opts = tmdbOptsFromItem(item);
         tmdbPromises.push(
-          getTMDBInfo(title).then(apiData => {
+          getTMDBInfo(searchTitle, opts).then(apiData => {
             if (apiData) {
               const resolvedItem = { ...item };
               if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
@@ -168,7 +185,7 @@ const Dashboard = () => {
 
     await Promise.allSettled(tmdbPromises);
 
-    if (fetchIdRef.current !== currentFetchId) return;
+    if (fetchIdRef.current !== currentFetchId) return null;
 
     // Extract celebrities and count appearances
     const castCounts = {};
@@ -191,32 +208,16 @@ const Dashboard = () => {
     const poolSize = Math.min(sortedActors.length, 40);
     const topActors = shuffleArray(sortedActors.slice(0, poolSize)).slice(0, 15);
 
-    setCelebrities(topActors);
-
-    // Rebuild sections with enriched data
-    setFeaturedList(resolvedItems.slice(0, 6));
-    setGenreSections(buildSections(resolvedItems));
+    return { resolvedItems, topActors };
   }, [buildSections]);
   const loadData = useCallback(async () => {
     const currentFetchId = ++fetchIdRef.current;
     
-    // Helper to update dashboard state safely
-    const updateVisuals = (data, id, shouldStopLoading = false) => {
-      if (id !== fetchIdRef.current) return;
-      if (data && data.length > 0) {
-        setFeaturedList(data.slice(0, 6));
-        setGenreSections(buildSections(data));
-        if (shouldStopLoading) setLoading(false);
-      }
-    };
-
     try {
       setLoading(true);
 
-      const foldersResp = await fetchFolders((fresh) => {
-        const data = processData(fresh);
-        updateVisuals(data, currentFetchId);
-      });
+      // fetchFoldersFresh: tunggu network dulu (bukan cache dulu) agar UI tidak stuck kosong.
+      const foldersResp = await fetchFoldersFresh();
 
       if (fetchIdRef.current !== currentFetchId) return;
 
@@ -227,70 +228,70 @@ const Dashboard = () => {
 
       const shuffledData = processData(foldersResp);
 
-      // We no longer call updateVisuals with immediate loading exit here
-      // updateVisuals(shuffledData, currentFetchId);
-
-      if (shuffledData.length === 0) {
-        setLoading(false);
-      }
-
-      // BACKGROUND TASKS: Always fetch history if user is logged in, and enrich metadata
       const historyPromise = authUser ? (async () => {
         try {
           const profiles = await fetchProfiles();
-          if (profiles.length > 0 && fetchIdRef.current === currentFetchId) {
-            const allHistories = await Promise.all(
-              profiles.map(p => fetchHistory(p.id))
-            );
-            
-            if (fetchIdRef.current !== currentFetchId) return;
+          if (profiles.length === 0 || fetchIdRef.current !== currentFetchId) return [];
 
-            const flatHistory = allHistories.flat();
-            const uniqueHistoryMap = new Map();
-            flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
-            
-            flatHistory.forEach(h => {
-               const progress = (h.position_ms / h.duration_ms) * 100;
-               if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && progress < 95) {
-                 uniqueHistoryMap.set(h.media_path, {
-                   ...h,
-                   name: h.series_title || h.media_title,
-                   poster: h.still_path,
-                   folder_name: h.series_title || h.media_title,
-                   progress: progress
-                 });
-               }
-            });
-            
-            setContinueWatching(
-              Array.from(uniqueHistoryMap.values())
-                .filter(h => !hiddenHistory.includes(h.media_path))
-                // Extra safety: deduplicate by folder_name (title) for the UI
-                .filter((item, index, self) => 
-                  index === self.findIndex((t) => (t.folder_name === item.folder_name))
-                )
-                .slice(0, 15)
-            );
-          }
-        } catch (e) { console.error("History fetch error:", e); }
-      })() : Promise.resolve();
+          const allHistories = await Promise.all(
+            profiles.map(p => fetchHistory(p.id))
+          );
 
-      // Parallel background tasks - wait for them to finish before showing
-      await Promise.allSettled([
+          if (fetchIdRef.current !== currentFetchId) return [];
+
+          const flatHistory = allHistories.flat();
+          const uniqueHistoryMap = new Map();
+          flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
+
+          flatHistory.forEach(h => {
+            const progress = (h.position_ms / h.duration_ms) * 100;
+            if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && progress < 95) {
+              uniqueHistoryMap.set(h.media_path, {
+                ...h,
+                name: h.series_title || h.media_title,
+                poster: h.still_path,
+                folder_name: h.series_title || h.media_title,
+                progress: progress
+              });
+            }
+          });
+
+          return Array.from(uniqueHistoryMap.values())
+            .filter(h => !hiddenHistory.includes(h.media_path))
+            .filter((item, index, self) =>
+              index === self.findIndex((t) => (t.folder_name === item.folder_name))
+            )
+            .slice(0, 15);
+        } catch (e) {
+          console.error("History fetch error:", e);
+          return [];
+        }
+      })() : Promise.resolve([]);
+
+      const [enrichResult, cwList] = await Promise.all([
         enrichWithTMDB(shuffledData, currentFetchId),
         historyPromise
       ]);
 
-      if (fetchIdRef.current === currentFetchId) {
-        // Now that enrichment is done, we can show the UI
-        setLoading(false);
-      }
+      if (fetchIdRef.current !== currentFetchId) return;
+
+      if (!enrichResult) return;
+
+      await preloadDashboardImages(enrichResult.resolvedItems, cwList, enrichResult.topActors);
+
+      if (fetchIdRef.current !== currentFetchId) return;
+
+      setCelebrities(enrichResult.topActors);
+      setFeaturedList(enrichResult.resolvedItems.slice(0, 6));
+      setGenreSections(buildSections(enrichResult.resolvedItems));
+      setContinueWatching(cwList);
+      setLoading(false);
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);
       if (fetchIdRef.current === currentFetchId) setLoading(false);
     }
-  }, [processData, buildSections, enrichWithTMDB, authUser]);
+  }, [processData, buildSections, enrichWithTMDB, authUser, hiddenHistory]);
 
   useEffect(() => {
     loadData();
@@ -338,16 +339,22 @@ const Dashboard = () => {
         onLogout={handleLogout}
       />
 
-      <main className="w-full pt-20">
-        <HeroBanner items={featuredList} />
+      <main className="w-full pt-0">
+        <HeroBanner
+          items={featuredList}
+          isAdmin={isAdmin}
+          onEditPoster={(it) => setPosterEditItem(it)}
+        />
 
-        <div className="mt-10 pb-12">
+        <div className="mt-4 pb-12">
           {genreSections.length > 0 && (
             <div className="mb-4">
               <MovieCarousel
                 title={genreSections[0].title}
                 items={genreSections[0].items}
                 tagType={genreSections[0].tagType || 'top'}
+                isAdmin={isAdmin}
+                onEditPoster={(it) => setPosterEditItem(it)}
               />
             </div>
           )}
@@ -361,12 +368,13 @@ const Dashboard = () => {
                 variant="horizontal"
                 onDelete={handleDeleteHistory}
                 removingId={removingItemPath}
+                isAdmin={false}
               />
             </div>
           )}
 
           {genreSections.length > 0 && (
-            <div className="px-6 md:px-[60px] mb-4 -mt-2 w-full">
+            <div className="px-6 md:px-[60px] mb-6 -mt-2 w-full">
               <div className="flex gap-3 overflow-x-auto no-scrollbar">
                 {QUICK_FILTERS.map(f => (
                   <button
@@ -391,6 +399,8 @@ const Dashboard = () => {
                   title={section.title}
                   items={section.items}
                   tagType={section.tagType || ((idx + 1) % 3 === 0 ? 'free' : null)}
+                  isAdmin={isAdmin}
+                  onEditPoster={(it) => setPosterEditItem(it)}
                 />
               </div>
 
@@ -407,6 +417,13 @@ const Dashboard = () => {
         onClose={() => setShowLoginModal(false)}
         onLoginSuccess={handleLoginSuccess}
       />
+      {posterEditItem && (
+        <TmdbPosterEditModal
+          item={posterEditItem}
+          onClose={() => setPosterEditItem(null)}
+          onSaved={() => loadData()}
+        />
+      )}
       <Footer />
     </div>
   );

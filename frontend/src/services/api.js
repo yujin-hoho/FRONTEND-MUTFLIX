@@ -5,6 +5,33 @@ export const TMDB_GENRES = {
     10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"
 };
 
+/** ISO 3166-1 alpha-2 — TMDB origin / production filter (optional) */
+export const TMDB_ORIGIN_COUNTRIES = [
+    { code: '', label: '— (optional)' },
+    { code: 'KR', label: 'South Korea' },
+    { code: 'CN', label: 'China' },
+    { code: 'TW', label: 'Taiwan' },
+    { code: 'HK', label: 'Hong Kong' },
+    { code: 'JP', label: 'Japan' },
+    { code: 'US', label: 'United States' },
+    { code: 'GB', label: 'United Kingdom' },
+    { code: 'TH', label: 'Thailand' },
+    { code: 'ID', label: 'Indonesia' },
+    { code: 'MY', label: 'Malaysia' },
+    { code: 'SG', label: 'Singapore' },
+    { code: 'PH', label: 'Philippines' },
+    { code: 'VN', label: 'Vietnam' },
+    { code: 'IN', label: 'India' },
+    { code: 'FR', label: 'France' },
+    { code: 'DE', label: 'Germany' },
+    { code: 'ES', label: 'Spain' },
+    { code: 'IT', label: 'Italy' },
+    { code: 'BR', label: 'Brazil' },
+    { code: 'MX', label: 'Mexico' },
+    { code: 'CA', label: 'Canada' },
+    { code: 'AU', label: 'Australia' },
+];
+
 // Token hanya dari localStorage (login flow)
 const getToken = () => localStorage.getItem('token') || '';
 
@@ -93,59 +120,196 @@ async function cachedFetch(key, fetchFn, onUpdate) {
 // TMDB API (with localStorage cache — long-lived, immutable data)
 // ==========================================
 
-// Mengambil info dari TMDB jika backend tidak mengirimkan poster
-export const getTMDBInfo = async (title) => {
+/** Hapus cache poster TMDB di browser (setelah admin mengubah override) */
+export const clearAllTmdbInfoLocalCache = () => {
+    try {
+        Object.keys(localStorage).forEach((k) => {
+            if (k.startsWith('mutflix_tmdb_info_')) localStorage.removeItem(k);
+        });
+    } catch { /* ignore */ }
+};
+
+/**
+ * Mengambil info dari TMDB. Gunakan options jika ada override dari server (admin).
+ * @param {string} title - judul fallback / folder
+ * @param {object} [options]
+ * @param {string} [options.query] - query pencarian TMDB (override judul)
+ * @param {'movie'|'tv'} [options.mediaType]
+ * @param {number|null} [options.year] - tahun rilis (movie) atau tahun tayang (tv)
+ * @param {string|null} [options.region] - kode negara ISO 3166-1 (opsional)
+ * @param {boolean} [options.includeAdult]
+ */
+export const getTMDBInfo = async (title, options = {}) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-    if (!tmdbKey || !title || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
+    if (!tmdbKey || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
+
+    const queryText = (options.query || title || '').replace(/\(\d{4}\)/g, '').trim();
+    if (!queryText) return null;
+
+    const mediaType = options.mediaType;
+    const year = options.year != null && options.year !== '' ? Number(options.year) : null;
+    const region = (options.region || '').trim() || null;
+    const includeAdult = !!options.includeAdult;
+
+    const cacheKey = `mutflix_tmdb_info_${queryText.toLowerCase()}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+        try { return JSON.parse(cached); } catch (e) { /* continue */ }
+    }
+
+    const pickTvWithRegion = (results, reg) => {
+        if (!reg || !results?.length) return results?.[0];
+        const hit = results.find((r) => r.origin_country && r.origin_country.includes(reg));
+        return hit || results[0];
+    };
+
+    const pickMovieWithRegion = async (results, reg) => {
+        if (!reg || !results?.length) return results[0];
+        for (const r of results.slice(0, 8)) {
+            try {
+                const dr = await fetch(`https://api.themoviedb.org/3/movie/${r.id}?api_key=${tmdbKey}&language=en-US`);
+                const d = await dr.json();
+                const ok = (d.production_countries || []).some((c) => c.iso_3166_1 === reg);
+                if (ok) return r;
+            } catch { /* next */ }
+        }
+        return results[0];
+    };
 
     try {
-        const cleanTitle = title.replace(/\(\d{4}\)/g, '').trim();
-        const query = encodeURIComponent(cleanTitle);
+        let data;
+        const q = encodeURIComponent(queryText);
+        const adult = includeAdult ? 'true' : 'false';
 
-        const cacheKey = `mutflix_tmdb_info_${cleanTitle.toLowerCase()}`;
-        const cached = localStorage.getItem(cacheKey);
-        if (cached) {
-            try { return JSON.parse(cached); } catch (e) { }
-        }
-
-        const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${query}&language=en-US`);
-        const data = await res.json();
-
-        if (data.results && data.results.length > 0) {
-            const bestResult = data.results.find(i => i.poster_path || i.backdrop_path) || data.results[0];
-            const type = bestResult.media_type === 'movie' ? 'movie' : 'tv';
-            
-            // Second fetch for full details (genres, runtime, total episodes, cast)
-            const detailRes = await fetch(`https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
+        if (mediaType === 'movie') {
+            let url = `https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
+            if (year != null && !Number.isNaN(year)) url += `&year=${year}`;
+            const res = await fetch(url);
+            data = await res.json();
+            if (!data.results?.length) return null;
+            let best = data.results.find((i) => i.poster_path || i.backdrop_path) || data.results[0];
+            if (region) best = await pickMovieWithRegion(data.results, region);
+            const detailRes = await fetch(`https://api.themoviedb.org/3/movie/${best.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
             const details = await detailRes.json();
-
             const result = {
-                tmdb_id: bestResult.id,
-                media_type: type,
-                poster_path: details.poster_path || bestResult.poster_path,
-                backdrop_path: details.backdrop_path || bestResult.backdrop_path,
-                rating: details.vote_average || bestResult.vote_average,
-                overview: details.overview || bestResult.overview,
-                date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
+                tmdb_id: best.id,
+                media_type: 'movie',
+                poster_path: details.poster_path || best.poster_path,
+                backdrop_path: details.backdrop_path || best.backdrop_path,
+                rating: details.vote_average || best.vote_average,
+                overview: details.overview || best.overview,
+                date: details.release_date || best.release_date,
                 genres: details.genres || [],
-                genre_ids: (details.genres || []).map(g => g.id),
-                cast: details.credits?.cast 
-                    ? details.credits.cast.slice(0, 15).map(c => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
+                genre_ids: (details.genres || []).map((g) => g.id),
+                cast: details.credits?.cast
+                    ? details.credits.cast.slice(0, 15).map((c) => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
                     : [],
-                total_episodes: details.number_of_episodes || null,
-                total_seasons: details.number_of_seasons || null,
-                runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
-                origin_country: details.origin_country || bestResult.origin_country || [],
-                original_language: details.original_language || bestResult.original_language
+                total_episodes: null,
+                total_seasons: null,
+                runtime: details.runtime,
+                origin_country: details.production_countries?.map((c) => c.iso_3166_1) || [],
+                original_language: details.original_language
             };
             try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
             return result;
         }
-        return null;
+
+        if (mediaType === 'tv') {
+            let url = `https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
+            if (year != null && !Number.isNaN(year)) url += `&first_air_date_year=${year}`;
+            const res = await fetch(url);
+            data = await res.json();
+            if (!data.results?.length) return null;
+            const pool = data.results;
+            const withPoster = pool.filter((i) => i.poster_path || i.backdrop_path);
+            const searchPool = withPoster.length ? withPoster : pool;
+            let best = region
+                ? pickTvWithRegion(searchPool, region)
+                : (searchPool.find((i) => i.poster_path || i.backdrop_path) || searchPool[0]);
+            if (!best) best = pool[0];
+            const detailRes = await fetch(`https://api.themoviedb.org/3/tv/${best.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
+            const details = await detailRes.json();
+            const result = {
+                tmdb_id: best.id,
+                media_type: 'tv',
+                poster_path: details.poster_path || best.poster_path,
+                backdrop_path: details.backdrop_path || best.backdrop_path,
+                rating: details.vote_average || best.vote_average,
+                overview: details.overview || best.overview,
+                date: details.first_air_date || details.last_air_date || best.first_air_date,
+                genres: details.genres || [],
+                genre_ids: (details.genres || []).map((g) => g.id),
+                cast: details.credits?.cast
+                    ? details.credits.cast.slice(0, 15).map((c) => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
+                    : [],
+                total_episodes: details.number_of_episodes || null,
+                total_seasons: details.number_of_seasons || null,
+                runtime: details.episode_run_time ? details.episode_run_time[0] : null,
+                origin_country: details.origin_country || best.origin_country || [],
+                original_language: details.original_language || best.original_language
+            };
+            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+            return result;
+        }
+
+        // Default: search/multi
+        const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`);
+        data = await res.json();
+        if (!data.results?.length) return null;
+
+        const filtered = data.results.filter((i) => i.media_type === 'movie' || i.media_type === 'tv');
+        const pool = filtered.length ? filtered : data.results;
+        let bestResult = pool.find((i) => i.poster_path || i.backdrop_path) || pool[0];
+        const mt = bestResult.media_type === 'movie' ? 'movie' : 'tv';
+        if (region && mt === 'tv' && bestResult.origin_country) {
+            bestResult = pickTvWithRegion(pool.filter((i) => i.media_type === 'tv'), region) || bestResult;
+        }
+        if (region && mt === 'movie') {
+            const movies = pool.filter((i) => i.media_type === 'movie');
+            if (movies.length) bestResult = await pickMovieWithRegion(movies, region);
+        }
+
+        const type = bestResult.media_type === 'movie' ? 'movie' : 'tv';
+        const detailRes = await fetch(`https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
+        const details = await detailRes.json();
+
+        const result = {
+            tmdb_id: bestResult.id,
+            media_type: type,
+            poster_path: details.poster_path || bestResult.poster_path,
+            backdrop_path: details.backdrop_path || bestResult.backdrop_path,
+            rating: details.vote_average || bestResult.vote_average,
+            overview: details.overview || bestResult.overview,
+            date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
+            genres: details.genres || [],
+            genre_ids: (details.genres || []).map((g) => g.id),
+            cast: details.credits?.cast
+                ? details.credits.cast.slice(0, 15).map((c) => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
+                : [],
+            total_episodes: details.number_of_episodes || null,
+            total_seasons: details.number_of_seasons || null,
+            runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
+            origin_country: details.origin_country || bestResult.origin_country || [],
+            original_language: details.original_language || bestResult.original_language
+        };
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+        return result;
     } catch (e) {
-        console.error("TMDB fetch error:", e);
+        console.error('TMDB fetch error:', e);
         return null;
     }
+};
+
+/** Simpan override query TMDB (admin — backend menyimpan di tmdb_overrides) */
+export const saveTmdbOverride = async (payload) => {
+    const res = await fetch(`${BASE_URL}/api/tmdb-overrides`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || data.message || 'Save failed');
+    return data;
 };
 
 export const getTMDBCredits = async (tmdbId, mediaType) => {
@@ -219,6 +383,22 @@ const _fetchFoldersRaw = async () => {
 
 // Cached versions — return instantly from cache, refresh in background
 export const fetchFolders = (onUpdate) => cachedFetch('folders', _fetchFoldersRaw, onUpdate);
+
+/**
+ * Daftar folder untuk layar utama: selalu tunggu network dulu, lalu update cache.
+ * Menghindari bug SWR di mana cache kosong/stale dipakai sekali jadi, fetch background sukses
+ * tapi komponen tidak re-render (tanpa onUpdate) sehingga harus refresh manual.
+ */
+export const fetchFoldersFresh = async () => {
+    const data = await _fetchFoldersRaw();
+    if (data && !data.__error) {
+        cacheSet('folders', data);
+        return data;
+    }
+    const stale = cacheGet('folders');
+    if (stale && !stale.__error) return stale;
+    return data || { movies: [], series: [] };
+};
 
 export const fetchVideos = async (folderName) => {
     try {

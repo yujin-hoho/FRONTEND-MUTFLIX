@@ -1,9 +1,21 @@
-import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo, TMDB_GENRES } from '../services/api';
 
-export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0 }) => {
+const tmdbOptsFromItem = (item) => {
+  if (!item?.tmdb_query) return {};
+  const o = {
+    query: item.tmdb_query,
+    mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+  };
+  if (item.override_year != null && item.override_year !== '') o.year = Number(item.override_year);
+  if (item.override_region) o.region = item.override_region;
+  if (item.include_adult) o.includeAdult = true;
+  return o;
+};
+
+export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster }) => {
   const isHorizontal = variant === 'horizontal';
   const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
@@ -38,12 +50,11 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   const title = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
 
   useEffect(() => {
-    // Only fetch if original poster is missing
-    if (title !== 'Loading...' && !item.tmdb_poster_path && !item.poster && !tmdbData) {
-      getTMDBInfo(title).then(data => {
-        if (data) setTmdbData(data);
-      });
-    }
+    if (title === 'Loading...' || item.tmdb_poster_path || item.poster || tmdbData) return;
+    const searchTitle = item.tmdb_query || title;
+    getTMDBInfo(searchTitle, tmdbOptsFromItem(item)).then((data) => {
+      if (data) setTmdbData(data);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item, title]);
 
@@ -120,6 +131,20 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
           </div>
         )}
 
+        {isAdmin && onEditPoster && progress === undefined && folderName && (
+          <button
+            type="button"
+            title="Edit poster (TMDB)"
+            onClick={(e) => {
+              e.stopPropagation();
+              onEditPoster({ ...item, name: item.name || item.folder_name, folder_name: folderName });
+            }}
+            className={`absolute z-[32] p-1.5 rounded-md bg-black/70 hover:bg-black/90 text-white/90 border border-white/15 opacity-0 group-hover:opacity-100 transition-opacity ${tag === 'TOP 10' ? 'top-9 right-2' : 'top-2 right-2'}`}
+          >
+            <Pencil size={14} strokeWidth={2.5} />
+          </button>
+        )}
+
         {/* Bottom text inside poster (episodes/rating) */}
         <div className="absolute bottom-0 left-0 w-full pt-8 pb-1.5 px-2 bg-gradient-to-t from-black/90 via-black/40 to-transparent">
           {progress !== undefined && (
@@ -158,7 +183,7 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   );
 };
 
-const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, removingId }) => {
+const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, removingId, isAdmin, onEditPoster }) => {
   const isHorizontal = variant === 'horizontal';
   const scrollRef = useRef(null);
 
@@ -222,6 +247,8 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
                   onDelete={variant === 'horizontal' ? (item) => onDelete && onDelete(item) : null}
                   isRemoving={variant === 'horizontal' && !!removingId && removingId === item.media_path}
                   delay={idx}
+                  isAdmin={isAdmin}
+                  onEditPoster={onEditPoster}
                 />
               </div>
             ))

@@ -1,8 +1,8 @@
-import { Play, BookmarkPlus, Info } from 'lucide-react';
+import { Play, BookmarkPlus, Pencil } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-const HeroBanner = ({ items }) => {
+const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const navigate = useNavigate();
   const scrollRef = useRef(null);
@@ -45,9 +45,9 @@ const HeroBanner = ({ items }) => {
   if (!items || items.length === 0) return <div className="h-[90vh] bg-[#0a0c10] animate-pulse w-full"></div>;
 
   return (
-    <div className="relative w-full h-[85vh] md:h-[95vh] bg-[#0a0c10] overflow-hidden">
+    <div className="relative w-full h-[75vh] md:h-[95vh] bg-[#0a0c10] overflow-hidden">
       {/* Scrollable Container */}
-      <div 
+      <div
         ref={scrollRef}
         onScroll={handleScroll}
         className="flex w-full h-full overflow-x-auto no-scrollbar snap-x snap-mandatory scroll-smooth"
@@ -55,10 +55,10 @@ const HeroBanner = ({ items }) => {
       >
         {items.map((item, index) => {
           const rawPoster = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster;
-          const bgImage = rawPoster 
+          const bgImage = rawPoster
             ? (rawPoster.startsWith('http') ? rawPoster : `https://image.tmdb.org/t/p/original${rawPoster}`)
             : 'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
-            
+
           const title = item.tmdb_title || item.folder_name || item.name || "Title";
           const rating = item.tmdb_rating;
           const overview = item.tmdb_overview || "Explore this amazing title on Mutflix.";
@@ -66,26 +66,40 @@ const HeroBanner = ({ items }) => {
           const isActive = index === currentIndex;
 
           return (
-            <div 
+            <div
               key={item.folder_name || index}
               className="relative shrink-0 w-full h-full snap-center overflow-hidden group"
             >
               {/* Image Layer with Ken Burns Effect */}
               <div className="absolute inset-0 w-full h-full overflow-hidden">
-                <img 
-                  src={bgImage} 
-                  alt={title} 
+                {isAdmin && onEditPoster && (item.folder_name || item.name) && (
+                  <button
+                    type="button"
+                    title="Edit poster (TMDB)"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const fn = item.folder_name || item.name;
+                      onEditPoster({ ...item, name: item.name || item.folder_name, folder_name: fn });
+                    }}
+                    className="absolute top-4 right-4 md:top-6 md:right-8 z-[40] p-2 rounded-lg bg-black/60 hover:bg-black/85 text-white border border-white/15 opacity-90 hover:opacity-100 transition-opacity"
+                  >
+                    <Pencil size={18} strokeWidth={2.5} />
+                  </button>
+                )}
+                <img
+                  src={bgImage}
+                  alt={title}
                   className={`w-full h-full object-cover object-[center_top] transition-opacity duration-1000 ${isActive ? 'opacity-100 animate-ken-burns' : 'opacity-0'}`}
                 />
-                
+
                 {/* Visual Depth Masks */}
                 <div className="absolute inset-x-0 bottom-0 h-[60%] bg-gradient-to-t from-[#0a0c10] via-[#0a0c10]/40 to-transparent"></div>
                 <div className="absolute inset-y-0 left-0 w-[50%] bg-gradient-to-r from-[#0a0c10]/80 via-[#0a0c10]/20 to-transparent"></div>
                 <div className="absolute inset-0 bg-black/20"></div>
               </div>
-              
+
               {/* Content Layer with Staggered Animations */}
-              <div 
+              <div
                 className={`relative z-10 flex flex-col justify-center h-full px-8 md:px-16 pt-20 pb-12 md:pb-32 max-w-[850px] transition-all duration-700 ${isActive ? 'translate-x-0 opacity-100' : '-translate-x-12 opacity-0'}`}
               >
                 {/* Badge */}
@@ -99,7 +113,7 @@ const HeroBanner = ({ items }) => {
                 <h1 className={`text-4xl md:text-7xl font-black text-white mb-6 leading-[0.9] tracking-tighter drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] animate-reveal-right delay-200 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   {title}
                 </h1>
-                
+
                 {/* Meta Info */}
                 <div className={`flex items-center gap-4 mb-8 animate-reveal-right delay-300 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   <div className="flex items-center gap-1.5">
@@ -114,22 +128,22 @@ const HeroBanner = ({ items }) => {
                     {item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'TV Series' : 'Movie'}
                   </span>
                 </div>
-                
+
                 {/* Description */}
                 <p className={`text-white/80 text-[15px] md:text-[17px] mb-12 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-2xl font-medium pr-8 drop-shadow-md animate-reveal-right delay-400 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   {overview}
                 </p>
-                
+
                 {/* Actions */}
                 <div className={`flex items-center gap-4 animate-reveal-right delay-500 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
-                  <button 
+                  <button
                     onClick={() => navigate(`/detail/${encodeURIComponent(item.folder_name || title)}?type=${item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'series' : 'movie'}`)}
-                    className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-black px-8 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95 shadow-[0_10px_30px_rgba(0,220,65,0.4)] group/play"
+                    className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-white px-8 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95 group/play"
                   >
-                    <Play fill="black" size={20} className="group-hover/play:scale-110 transition-transform" />
+                    <Play fill="white" size={20} className="group-hover/play:scale-110 transition-transform" />
                     Watch Now
                   </button>
-                  
+
                   <button className="flex items-center gap-3 bg-white/5 hover:bg-white/10 backdrop-blur-xl text-white px-8 py-4 rounded-xl border border-white/10 font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95">
                     <BookmarkPlus size={20} />
                     My List
@@ -140,21 +154,23 @@ const HeroBanner = ({ items }) => {
           );
         })}
       </div>
-      
+
       {/* Rotation Indicators */}
       {items && items.length > 1 && (
         <div className="absolute bottom-12 left-0 right-0 z-20 flex justify-center px-8">
-          <div className="flex gap-3 bg-black/20 backdrop-blur-md px-4 py-3 rounded-full border border-white/5">
+
+          {/* Hapus class background di div ini, sisa flex gap-3 aja */}
+          <div className="flex gap-3">
             {items.map((_, idx) => (
-              <div 
-                key={idx} 
+              <div
+                key={idx}
                 onClick={() => scrollToBanner(idx)}
-                className={`h-1 cursor-pointer transition-all duration-[500ms] rounded-full shrink-0 ${
-                  idx === currentIndex ? 'w-12 bg-white' : 'w-4 bg-white/20 hover:bg-white/40'
-                }`}
+                className={`h-1 cursor-pointer transition-all duration-[500ms] rounded-full shrink-0 ${idx === currentIndex ? 'w-12 bg-brand' : 'w-4 bg-white/20 hover:bg-white/40'
+                  }`}
               />
             ))}
           </div>
+
         </div>
       )}
     </div>
