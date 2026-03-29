@@ -981,13 +981,14 @@ def set_tmdb_override(current_user):
     if not data or 'folder_name' not in data or 'tmdb_query' not in data:
         return orjson_jsonify({'error': 'folder_name and tmdb_query required'}, 400)
     
-    folder_name = data['folder_name'].strip()
-    tmdb_query = data['tmdb_query'].strip()
-    media_type = data.get('media_type', 'tv').strip()
+    # JSON null → .get('k', default) still returns None if key present; never call .strip() on None
+    folder_name = (data.get('folder_name') or '').strip()
+    tmdb_query = (data.get('tmdb_query') or '').strip()
+    media_type = str(data.get('media_type') or 'tv').strip() or 'tv'
     override_year = data.get('override_year')  # int or None
-    override_language = data.get('override_language', '').strip() or None
+    override_language = (data.get('override_language') or '').strip() or None
     include_adult = bool(data.get('include_adult', False))
-    override_region = data.get('override_region', '').strip() or None
+    override_region = (data.get('override_region') or '').strip() or None
     
     if not folder_name or not tmdb_query:
         return orjson_jsonify({'error': 'folder_name and tmdb_query cannot be empty'}, 400)
