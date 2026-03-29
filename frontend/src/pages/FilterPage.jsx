@@ -1,10 +1,9 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useEffect, useState, useMemo, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
 import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout } from '../services/api';
 import Footer from '../components/Footer';
-import LoadingScreen from '../components/LoadingScreen';
 
 const REGIONS = ['All regions', 'Chinese Mainland', 'South Korea', 'Indonesia', 'Thailand', 'Taiwan', 'Japan', 'Malaysia', 'America', 'UK'];
 const CATEGORIES = ['All Genres', 'Youth', 'Mystery', 'Costume', 'Urban', 'Romance', 'Sweet Love', 'Marriage', 'Drama', 'Comedy', 'Family', 'Friendship', 'Fantasy', 'Crime', 'War', 'Novel Adaptation', 'Contemporary', 'Ancient', 'Variety Show'];
@@ -87,15 +86,18 @@ const itemMatchesVarietyShow = (item) => {
 const TMDB_FILTER_CONCURRENCY = 5;
 const MAX_TMDB_ENRICH_FILTER = 500;
 
-async function mapWithConcurrency(items, concurrency, mapper) {
+async function mapWithConcurrency(items, concurrency, mapper, onItemDone) {
   if (!items.length) return [];
   const results = new Array(items.length);
   let next = 0;
+  let completed = 0;
   async function worker() {
     while (true) {
       const i = next++;
       if (i >= items.length) break;
       results[i] = await mapper(items[i], i);
+      completed += 1;
+      if (onItemDone) onItemDone(i, results[i], completed);
     }
   }
   await Promise.all(
@@ -170,16 +172,50 @@ const filterItems = (resolved, activeType, activeRegion, activeCategory) => {
   return filtered;
 };
 
+/** Urutkan dari TMDB rating (field tmdb_rating) */
+const applySort = (items, sortKey) => {
+  if (sortKey === 'rating_desc') {
+    return [...items].sort((a, b) => {
+      const d = (Number(b.tmdb_rating) || 0) - (Number(a.tmdb_rating) || 0);
+      if (d !== 0) return d;
+      return (a.folder_name || '').localeCompare(b.folder_name || '', undefined, { sensitivity: 'base' });
+    });
+  }
+  if (sortKey === 'rating_asc') {
+    return [...items].sort((a, b) => {
+      const d = (Number(a.tmdb_rating) || 0) - (Number(b.tmdb_rating) || 0);
+      if (d !== 0) return d;
+      return (a.folder_name || '').localeCompare(b.folder_name || '', undefined, { sensitivity: 'base' });
+    });
+  }
+  return items;
+};
+
+const GRID_PAGE_SIZE = 24;
+
 const FilterPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
 
   const activeType = searchParams.get('type') || 'All';
   const activeRegion = searchParams.get('region') || 'All regions';
   const activeCategory = searchParams.get('category') || 'All Genres';
-  const [results, setResults] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const sortBy = searchParams.get('sort') || 'default';
+
+  const [listLoading, setListLoading] = useState(true);
+  const [tmdbEnriching, setTmdbEnriching] = useState(false);
   const [allResolved, setAllResolved] = useState([]);
+  const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
+  const loadMoreSentinelRef = useRef(null);
+
+  const filteredSorted = useMemo(
+    () => applySort(filterItems(allResolved, activeType, activeRegion, activeCategory), sortBy),
+    [allResolved, activeType, activeRegion, activeCategory, sortBy]
+  );
+
+  const visibleItems = useMemo(
+    () => filteredSorted.slice(0, visibleCount),
+    [filteredSorted, visibleCount]
+  );
 
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [authUser, setAuthUser] = useState(() => {
@@ -205,17 +241,41 @@ const FilterPage = () => {
     setSearchParams(newParams);
   };
 
-  // Re-filter when filter params change (no re-fetch needed)
-  useEffect(() => {
-    if (allResolved.length > 0) {
-      setResults(filterItems(allResolved, activeType, activeRegion, activeCategory));
+  const handleSortClick = (value) => {
+    const newParams = new URLSearchParams(searchParams);
+    if (value === 'default') {
+      newParams.delete('sort');
+    } else {
+      newParams.set('sort', value);
     }
-  }, [activeType, activeRegion, activeCategory, allResolved]);
+    setSearchParams(newParams);
+  };
 
-  // Fetch data once, resolve TMDB progressively
+  useEffect(() => {
+    setVisibleCount(GRID_PAGE_SIZE);
+  }, [activeType, activeRegion, activeCategory, sortBy]);
+
+  // Infinite scroll: muat lebih banyak kartu saat sentinel terlihat
+  useEffect(() => {
+    const el = loadMoreSentinelRef.current;
+    if (!el || visibleCount >= filteredSorted.length) return undefined;
+
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount((c) => Math.min(c + GRID_PAGE_SIZE, filteredSorted.length));
+        }
+      },
+      { root: null, rootMargin: '400px', threshold: 0 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [filteredSorted.length, visibleCount]);
+
+  // Fetch daftar folder sekali; TMDB enrichment tidak memblokir halaman
   useEffect(() => {
     const loadData = async () => {
-      setLoading(true);
+      setListLoading(true);
       try {
         const foldersResp = await fetchFolders();
 
@@ -226,20 +286,21 @@ const FilterPage = () => {
           foldersData = foldersResp;
         }
 
-        let uniqueDataList = foldersData;
+        const uniqueDataList = foldersData;
 
-        // PHASE 1: Show results immediately with whatever data we have
-        const quickResolved = uniqueDataList.map(item => {
+        const quickResolved = uniqueDataList.map((item) => {
           const srcGenreIds = item.tmdb_genre_ids;
-          const parsedCategories = srcGenreIds ? srcGenreIds.map(id => TMDB_GENRES[id]).filter(Boolean) : [];
+          const parsedCategories = srcGenreIds ? srcGenreIds.map((id) => TMDB_GENRES[id]).filter(Boolean) : [];
           const resolved = { ...item, parsedCategories };
           resolved.parsedRegion = getRegionMapping(resolved);
           return resolved;
         });
-        setAllResolved(quickResolved);
-        // setLoading(false); // We now wait for enrichment below
 
-        // PHASE 2: Enrich seluruh daftar (urutan tetap). TV tanpa metadata diprioritaskan; max 500 hit TMDB per load.
+        const merged = [...quickResolved];
+        setAllResolved(merged);
+        setListLoading(false);
+        setTmdbEnriching(true);
+
         const needFetchIndices = uniqueDataList
           .map((item, i) => ({ i, item }))
           .filter(({ item }) => !(item.tmdb_poster_path && item.tmdb_genre_ids));
@@ -252,6 +313,7 @@ const FilterPage = () => {
           needFetchIndices.slice(0, MAX_TMDB_ENRICH_FILTER).map(({ i }) => i)
         );
 
+        const FLUSH_EVERY = 28;
         const enriched = await mapWithConcurrency(
           uniqueDataList,
           TMDB_FILTER_CONCURRENCY,
@@ -293,24 +355,27 @@ const FilterPage = () => {
             };
             resolvedItem.parsedRegion = getRegionMapping(resolvedItem);
             return resolvedItem;
+          },
+          (i, resolvedItem, completed) => {
+            merged[i] = resolvedItem;
+            if (completed % FLUSH_EVERY === 0 || completed === uniqueDataList.length) {
+              setAllResolved([...merged]);
+            }
           }
         );
 
-        const finalResolved = enriched;
-
-        setAllResolved(finalResolved);
-        setLoading(false); // Ready!
+        setAllResolved(enriched);
       } catch (e) {
         console.error(e);
-        setLoading(false);
+      } finally {
+        setTmdbEnriching(false);
+        setListLoading(false);
       }
     };
     loadData();
   }, []);
 
-    if (loading) return <LoadingScreen />;
-
-    return (
+  return (
     <div className="min-h-screen bg-darkBG font-sans flex flex-col overflow-x-hidden pt-24 animate-page-enter">
       <Navbar
         onMeClick={() => setShowLoginModal(true)}
@@ -382,22 +447,58 @@ const FilterPage = () => {
               })}
             </div>
           </div>
+
+          <div className="flex items-start mt-4">
+            <div className="w-[80px] shrink-0 text-gray-400 text-[14px] font-medium pt-1.5 align-middle">
+              Sort
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { key: 'default', label: 'Default' },
+                { key: 'rating_desc', label: 'Rating (highest)' },
+                { key: 'rating_asc', label: 'Rating (lowest)' },
+              ].map(({ key, label }) => {
+                const isOn = key === 'default' ? sortBy === 'default' : sortBy === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => handleSortClick(key)}
+                    className={`px-4 py-1.5 rounded-md text-[13px] font-medium transition-colors ${
+                      isOn ? 'bg-[#1a2b22] text-[#00dc41]' : 'bg-[#1a1c22] text-gray-300 hover:text-white hover:bg-[#252830]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
+
+        
 
         {/* Filter Results */}
         <div className="border-t border-white/5 pt-8">
-          {loading ? (
+          {listLoading ? (
             <div className="flex justify-center mt-20">
-              <div className="w-10 h-10 border-4 border-brand border-t-transparent rounded-full animate-spin"></div>
+              <div className="w-10 h-10 border-4 border-brand border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : results.length > 0 ? (
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
-              {results.map((item, idx) => (
-                <div key={item.id || idx} className="flex justify-center">
-                  <MovieCard item={item} />
+          ) : filteredSorted.length > 0 ? (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
+                {visibleItems.map((item, idx) => (
+                  <div key={item.folder_name || item.path || item.id || idx} className="flex justify-center">
+                    <MovieCard item={item} />
+                  </div>
+                ))}
+              </div>
+              {visibleCount < filteredSorted.length && (
+                <div ref={loadMoreSentinelRef} className="h-16 w-full flex items-center justify-center py-6">
+                  <div className="w-8 h-8 border-2 border-white/20 border-t-[#00dc41] rounded-full animate-spin" />
                 </div>
-              ))}
-            </div>
+              )}
+            </>
           ) : (
             <div className="text-gray-400 mt-10 text-center py-20 bg-[#16181d] rounded-lg border border-white/5">
               No content matches the selected filters.

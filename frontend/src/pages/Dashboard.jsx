@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Compass, ArrowRight } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import HeroBanner from '../components/HeroBanner';
 import MovieCarousel from '../components/MovieCarousel';
@@ -30,14 +31,47 @@ const getSafeArray = (resp, type) => {
   return [];
 };
 
+const SectionDivider = () => (
+  <div className="w-full max-w-[1400px] mx-auto px-6 md:px-[60px] py-3 md:py-4">
+    <div className="h-px w-full bg-gradient-to-r from-transparent via-white/[0.09] to-transparent" />
+  </div>
+);
+
+const BrowseMoreStrip = ({ onNavigate }) => (
+  <div className="max-w-[1400px] mx-auto px-6 md:px-[60px] mb-8">
+    <div className="relative overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-br from-[#12151c] via-[#0c0e12] to-[#10131a] px-5 py-4 md:px-8 md:py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_100%_0%,rgba(0,220,65,0.09),transparent_50%)]" />
+      <div className="relative flex gap-3 items-start">
+        <div className="mt-0.5 p-2 rounded-xl bg-[#00dc41]/10 border border-[#00dc41]/18">
+          <Compass className="w-5 h-5 text-[#00dc41]" strokeWidth={2} />
+        </div>
+        <div>
+          <p className="text-white text-[15px] font-semibold tracking-tight">Jelajahi koleksi</p>
+          <p className="text-gray-500 text-[13px] mt-1 max-w-md leading-relaxed">
+            Atur region, genre, dan urutkan rating di halaman filter — lebih lega dari deretan kartu tanpa henti.
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onNavigate('/filter')}
+        className="relative shrink-0 inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#00dc41] to-[#00b837] text-black font-bold text-sm hover:brightness-110 transition shadow-[0_0_22px_rgba(0,220,65,0.22)]"
+      >
+        Buka filter
+        <ArrowRight className="w-4 h-4" strokeWidth={2.5} />
+      </button>
+    </div>
+  </div>
+);
+
 const backdropOrPosterUrl = (item) => {
   const raw = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster;
   if (!raw) return null;
   return raw.startsWith('http') ? raw : `https://image.tmdb.org/t/p/w780${raw}`;
 };
 
-/** Tunggu asset visual utama agar tidak tampil dashboard kosong/peluru sebelum gambar siap */
-const preloadDashboardImages = async (resolvedItems, continueWatchingItems, topActors = []) => {
+/** Preload gambar di background (jangan await — jangan blokir paint) */
+const preloadDashboardImages = (resolvedItems, continueWatchingItems, topActors = []) => {
   const urls = [];
   const push = (u) => {
     if (u && typeof u === 'string') urls.push(u);
@@ -49,12 +83,17 @@ const preloadDashboardImages = async (resolvedItems, continueWatchingItems, topA
   });
   topActors.slice(0, 12).forEach((a) => push(a.profile_path));
   const unique = [...new Set(urls)];
-  await Promise.all(unique.map((url) => new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => resolve();
-    img.onerror = () => resolve();
-    img.src = url;
-  })));
+  const run = () => {
+    unique.forEach((url) => {
+      const img = new Image();
+      img.src = url;
+    });
+  };
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 1200 });
+  } else {
+    setTimeout(run, 0);
+  }
 };
 
 const Dashboard = () => {
@@ -287,27 +326,24 @@ const Dashboard = () => {
         }
       })() : Promise.resolve([]);
 
-      const [enrichResult, cwList] = await Promise.all([
-        enrichWithTMDB(shuffledData, currentFetchId),
-        historyPromise
-      ]);
-
+      const cwList = await historyPromise;
       if (fetchIdRef.current !== currentFetchId) return;
 
-      if (!enrichResult) {
-        if (fetchIdRef.current === currentFetchId) setLoading(false);
-        return;
-      }
+      // Paint cepat: data folder + history — tanpa tunggu ratusan panggilan TMDB
+      setFeaturedList(shuffledData.slice(0, 6));
+      setGenreSections(buildSections(shuffledData));
+      setContinueWatching(cwList);
+      setCelebrities([]);
+      setLoading(false);
 
-      await preloadDashboardImages(enrichResult.resolvedItems, cwList, enrichResult.topActors);
-
+      const enrichResult = await enrichWithTMDB(shuffledData, currentFetchId);
       if (fetchIdRef.current !== currentFetchId) return;
+      if (!enrichResult) return;
 
       setCelebrities(enrichResult.topActors);
       setFeaturedList(enrichResult.resolvedItems.slice(0, 6));
       setGenreSections(buildSections(enrichResult.resolvedItems));
-      setContinueWatching(cwList);
-      setLoading(false);
+      preloadDashboardImages(enrichResult.resolvedItems, cwList, enrichResult.topActors);
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);
@@ -353,7 +389,7 @@ const Dashboard = () => {
   }
 
   return (
-    <div className="min-h-screen bg-darkBG font-sans flex flex-col overflow-x-hidden">
+    <div className="min-h-screen bg-darkBG font-sans flex flex-col overflow-x-hidden scroll-pt-20">
       <Navbar
         onMeClick={() => setShowLoginModal(true)}
         isLoggedIn={!!authUser}
@@ -381,19 +417,26 @@ const Dashboard = () => {
             </div>
           )}
 
+          <SectionDivider />
+
           {/* Continue Watching should appear under Top 10 */}
           {continueWatching.length > 0 && (
-            <div className="mb-8 -mt-2">
-              <MovieCarousel
-                title="Continue Watching"
-                items={continueWatching}
-                variant="horizontal"
-                onDelete={handleDeleteHistory}
-                removingId={removingItemPath}
-                isAdmin={false}
-              />
-            </div>
+            <>
+              <div className="mb-8 -mt-2">
+                <MovieCarousel
+                  title="Continue Watching"
+                  items={continueWatching}
+                  variant="horizontal"
+                  onDelete={handleDeleteHistory}
+                  removingId={removingItemPath}
+                  isAdmin={false}
+                />
+              </div>
+              <SectionDivider />
+            </>
           )}
+
+          <BrowseMoreStrip onNavigate={navigate} />
 
           {genreSections.length > 0 && (
             <div className="px-6 md:px-[60px] mb-6 -mt-2 w-full">
@@ -414,23 +457,29 @@ const Dashboard = () => {
             </div>
           )}
 
-          {genreSections.slice(1).map((section, idx) => (
-            <React.Fragment key={section.title}>
-              <div className="mb-4">
-                <MovieCarousel
-                  title={section.title}
-                  items={section.items}
-                  tagType={section.tagType || ((idx + 1) % 3 === 0 ? 'free' : null)}
-                  isAdmin={isAdmin}
-                  onEditPoster={(it) => setPosterEditItem(it)}
-                />
-              </div>
+          {genreSections.slice(1).map((section, idx) => {
+            const rest = genreSections.slice(1);
+            const isLast = idx === rest.length - 1;
+            return (
+              <React.Fragment key={section.title}>
+                <div className="mb-4">
+                  <MovieCarousel
+                    title={section.title}
+                    items={section.items}
+                    tagType={section.tagType || ((idx + 1) % 3 === 0 ? 'free' : null)}
+                    isAdmin={isAdmin}
+                    onEditPoster={(it) => setPosterEditItem(it)}
+                  />
+                </div>
 
-              {idx === Math.min(4, Math.max(0, genreSections.slice(1).length - 1)) && celebrities.length > 0 && (
-                <CelebrityCarousel castList={celebrities} />
-              )}
-            </React.Fragment>
-          ))}
+                {idx === Math.min(4, Math.max(0, rest.length - 1)) && celebrities.length > 0 && (
+                  <CelebrityCarousel castList={celebrities} />
+                )}
+
+                {!isLast && <SectionDivider />}
+              </React.Fragment>
+            );
+          })}
         </div>
       </main>
 

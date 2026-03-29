@@ -77,6 +77,8 @@ const WatchPage = () => {
 
     // Subtitle Customizer
     const [rawSubtitleText, setRawSubtitleText] = useState(null);
+    /** Subtitle mux di dalam file (textTracks), hanya jika tidak ada file .srt/.vtt terpisah */
+    const [embeddedSubsAvailable, setEmbeddedSubsAvailable] = useState(false);
     const [activeCues, setActiveCues] = useState([]);
     const [showSubSettings, setShowSubSettings] = useState(false);
     const [subSettings, setSubSettings] = useState(() => {
@@ -131,6 +133,7 @@ const WatchPage = () => {
     const controlsTimeoutRef = useRef(null);
     const progressBarRef = useRef(null);
     const prevSubtitleUrl = useRef(null);
+    const embeddedSubCleanupRef = useRef(null);
     const [resumeTime, setResumeTime] = useState(0);
     const hasSeekedRef = useRef(false);
     const [showResumeToast, setShowResumeToast] = useState(null);
@@ -160,57 +163,69 @@ const WatchPage = () => {
     useEffect(() => {
         const loadData = async () => {
             setLoading(true);
-            const [videosResp, tmdb] = await Promise.all([
-                fetchVideos(decodedName),
-                getTMDBInfo(decodedName)
-            ]);
+            try {
+                const [videosResp, tmdb] = await Promise.all([
+                    fetchVideos(decodedName),
+                    getTMDBInfo(decodedName)
+                ]);
 
-            const videosList = videosResp?.videos || [];
-            videosList.sort((a, b) => {
-                if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
-                return (a.episode || 0) - (b.episode || 0);
-            });
+                const videosList = videosResp?.videos || [];
+                videosList.sort((a, b) => {
+                    if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
+                    return (a.episode || 0) - (b.episode || 0);
+                });
 
-            setVideos(videosList);
-            setTmdbData(tmdb);
+                setVideos(videosList);
+                setTmdbData(tmdb);
 
-            if (tmdb?.tmdb_id) {
-                const creditsData = await getTMDBCredits(tmdb.tmdb_id, tmdb.media_type);
-                setCredits(creditsData);
+                const targetVideo = videosList.find(v =>
+                    (v.season || 1) === urlSeason && (v.episode || 1) === urlEp
+                ) || videosList[0];
 
-                if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
-                    const seasons = [...new Set(videosList.map(v => v.season || 1))];
-                    const seasonPromises = seasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s));
-                    const seasonsData = await Promise.all(seasonPromises);
-                    const dataMap = {};
-                    seasonsData.forEach((sd, idx) => {
-                        if (sd?.episodes) {
-                            sd.episodes.forEach(ep => {
-                                dataMap[`${seasons[idx]}_${ep.episode_number}`] = {
-                                    still_path: ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : null,
-                                    name: ep.name
-                                };
-                            });
-                        }
-                    });
-                    setEpisodeData(dataMap);
+                if (targetVideo) {
+                    setCurrentVideo(targetVideo);
+                    setActiveSeason(targetVideo.season || 1);
                 }
+
+                // Biarkan pemutar & stream mulai lebih dulu — kredit & still episode di background
+                setLoading(false);
+
+                if (tmdb?.tmdb_id) {
+                    void (async () => {
+                        try {
+                            const creditsData = await getTMDBCredits(tmdb.tmdb_id, tmdb.media_type);
+                            setCredits(creditsData);
+
+                            if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
+                                const seasons = [...new Set(videosList.map(v => v.season || 1))];
+                                const seasonsData = await Promise.all(
+                                    seasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s))
+                                );
+                                const dataMap = {};
+                                seasonsData.forEach((sd, idx) => {
+                                    if (sd?.episodes) {
+                                        sd.episodes.forEach(ep => {
+                                            dataMap[`${seasons[idx]}_${ep.episode_number}`] = {
+                                                still_path: ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : null,
+                                                name: ep.name
+                                            };
+                                        });
+                                    }
+                                });
+                                setEpisodeData(dataMap);
+                            }
+                        } catch (e) {
+                            console.warn('Watch page TMDB extras failed:', e);
+                        }
+                    })();
+                }
+            } catch (e) {
+                console.error('Watch page load failed:', e);
+                setLoading(false);
             }
-
-            // Auto-select episode
-            const targetVideo = videosList.find(v =>
-                (v.season || 1) === urlSeason && (v.episode || 1) === urlEp
-            ) || videosList[0];
-
-            if (targetVideo) {
-                setCurrentVideo(targetVideo);
-                setActiveSeason(targetVideo.season || 1);
-            }
-
-            setLoading(false);
         };
         loadData();
-    }, [decodedName, urlType]);
+    }, [decodedName, urlType, urlSeason, urlEp]);
 
     // ─── Fetch/Create Profile ───────────────────────
     useEffect(() => {
@@ -285,7 +300,6 @@ const WatchPage = () => {
     useEffect(() => {
         const video = videoRef.current;
         if (video && duration > 0 && resumeTime > 0 && !hasSeekedRef.current) {
-            console.log(`[Resume] Seeking to ${resumeTime}s for ${currentVideo?.path}`);
             video.currentTime = resumeTime;
             hasSeekedRef.current = true;
 
@@ -347,11 +361,22 @@ const WatchPage = () => {
                 prevSubtitleUrl.current = null;
             }
             setSubtitleUrl(null);
+            setRawSubtitleText(null);
+            setEmbeddedSubsAvailable(false);
 
-            // ── Load video stream ──
+            // ── Load video stream + subtitle file paralel (kurangi waktu tunggu) ──
             try {
-                const details = await getStreamDetails(currentVideo.path);
+                const [details, subText] = await Promise.all([
+                    getStreamDetails(currentVideo.path),
+                    currentVideo.subtitle_path
+                        ? fetchSubtitle(currentVideo.subtitle_path)
+                        : Promise.resolve(null)
+                ]);
                 if (cancelled) return;
+
+                if (subText && !cancelled) {
+                    setRawSubtitleText(subText);
+                }
 
                 if (details?.url && videoRef.current) {
                     // Extract file ID from the GDrive URL
@@ -393,18 +418,6 @@ const WatchPage = () => {
                 if (!cancelled) setVideoError('Error loading video');
             }
 
-            // ── Load subtitles ──
-            if (currentVideo.subtitle_path) {
-                try {
-                    const subText = await fetchSubtitle(currentVideo.subtitle_path);
-                    if (!cancelled && subText) {
-                        setRawSubtitleText(subText);
-                    }
-                } catch (e) {
-                    console.warn('Subtitle load failed:', e);
-                }
-            }
-
             if (!cancelled) setVideoLoading(false);
         };
         loadStream();
@@ -424,41 +437,133 @@ const WatchPage = () => {
         prevSubtitleUrl.current = blobUrl;
     }, [rawSubtitleText, subSettings.delay]);
 
-    // ─── Subtitle track management ──────────────────
+    // ─── Subtitle: file eksternal (blob VTT) ────────
     useEffect(() => {
         if (!videoRef.current) return;
         const video = videoRef.current;
 
-        // Remove existing tracks
-        const existingTracks = video.querySelectorAll('track');
-        existingTracks.forEach(t => t.remove());
+        video.querySelectorAll('track').forEach((t) => t.remove());
         setActiveCues([]);
 
         if (subtitleUrl && showSubtitles) {
-            const track = document.createElement('track');
-            track.kind = 'subtitles';
-            track.label = 'Subtitles';
-            track.srclang = 'id';
-            track.src = subtitleUrl;
-            track.default = true;
-            video.appendChild(track);
+            const trackEl = document.createElement('track');
+            trackEl.setAttribute('data-mutflix', 'external');
+            trackEl.kind = 'subtitles';
+            trackEl.label = 'Mutflix external';
+            trackEl.srclang = 'id';
+            trackEl.src = subtitleUrl;
+            trackEl.default = true;
+            video.appendChild(trackEl);
 
-            setTimeout(() => {
-                if (video.textTracks.length > 0) {
-                    const tTrack = video.textTracks[0];
-                    tTrack.mode = 'hidden';
-                    tTrack.oncuechange = () => {
-                        if (tTrack.activeCues) {
-                            const cues = Array.from(tTrack.activeCues).map(c => c.text);
-                            setActiveCues(cues);
-                        } else {
-                            setActiveCues([]);
-                        }
-                    };
-                }
-            }, 100);
+            let bound = false;
+            const bindExternal = () => {
+                if (bound) return;
+                const tt = trackEl.track;
+                if (!tt) return;
+                bound = true;
+                tt.mode = 'hidden';
+                tt.oncuechange = () => {
+                    if (tt.activeCues && tt.activeCues.length > 0) {
+                        setActiveCues(Array.from(tt.activeCues).map((c) => c.text));
+                    } else {
+                        setActiveCues([]);
+                    }
+                };
+                tt.oncuechange();
+            };
+            trackEl.addEventListener('load', bindExternal);
+            if (trackEl.readyState === 2) queueMicrotask(bindExternal);
         }
     }, [subtitleUrl, showSubtitles]);
+
+    // ─── Subtitle: tersemat di kontainer video (in-band) — tanpa file terpisah
+    useEffect(() => {
+        if (subtitleUrl) {
+            if (embeddedSubCleanupRef.current) {
+                embeddedSubCleanupRef.current();
+                embeddedSubCleanupRef.current = null;
+            }
+            setEmbeddedSubsAvailable(false);
+            return;
+        }
+        if (!showSubtitles) {
+            if (embeddedSubCleanupRef.current) {
+                embeddedSubCleanupRef.current();
+                embeddedSubCleanupRef.current = null;
+            }
+            setEmbeddedSubsAvailable(false);
+            setActiveCues([]);
+            return;
+        }
+        const video = videoRef.current;
+        if (!video || !currentVideo?.path) return;
+
+        let cancelled = false;
+
+        const tryBindEmbedded = () => {
+            if (cancelled || subtitleUrl) return;
+            if (embeddedSubCleanupRef.current) {
+                embeddedSubCleanupRef.current();
+                embeddedSubCleanupRef.current = null;
+            }
+
+            const list = video.textTracks;
+            const subs = [];
+            for (let i = 0; i < list.length; i++) {
+                const t = list[i];
+                if (t.kind === 'subtitles' || t.kind === 'captions') subs.push(t);
+            }
+            if (subs.length === 0) {
+                setEmbeddedSubsAvailable(false);
+                return;
+            }
+
+            subs.forEach((t) => { t.mode = 'disabled'; });
+            const chosen = subs[0];
+            chosen.mode = 'hidden';
+            const onCue = () => {
+                if (cancelled) return;
+                if (chosen.activeCues && chosen.activeCues.length > 0) {
+                    setActiveCues(Array.from(chosen.activeCues).map((c) => c.text));
+                } else {
+                    setActiveCues([]);
+                }
+            };
+            chosen.addEventListener('cuechange', onCue);
+            embeddedSubCleanupRef.current = () => {
+                chosen.removeEventListener('cuechange', onCue);
+                chosen.mode = 'disabled';
+            };
+            setEmbeddedSubsAvailable(true);
+            onCue();
+        };
+
+        const onMedia = () => tryBindEmbedded();
+        video.addEventListener('loadedmetadata', onMedia);
+        video.addEventListener('loadeddata', onMedia);
+        video.addEventListener('canplay', onMedia);
+        const delays = [0, 120, 400, 1000, 2500, 5000].map((ms) => setTimeout(tryBindEmbedded, ms));
+        const poll = setInterval(tryBindEmbedded, 400);
+        const stopPoll = setTimeout(() => clearInterval(poll), 10000);
+
+        return () => {
+            cancelled = true;
+            delays.forEach(clearTimeout);
+            clearInterval(poll);
+            clearTimeout(stopPoll);
+            video.removeEventListener('loadedmetadata', onMedia);
+            video.removeEventListener('loadeddata', onMedia);
+            video.removeEventListener('canplay', onMedia);
+            if (embeddedSubCleanupRef.current) {
+                embeddedSubCleanupRef.current();
+                embeddedSubCleanupRef.current = null;
+            }
+            setEmbeddedSubsAvailable(false);
+        };
+    }, [subtitleUrl, showSubtitles, currentVideo?.path]);
+
+    const hasSubtitleSource = !!(subtitleUrl || embeddedSubsAvailable);
+    const syncDelayAppliesToExternalFile = !!subtitleUrl;
 
     // ─── Controls auto-hide ─────────────────────────
     const resetControlsTimeout = useCallback(() => {
@@ -901,8 +1006,14 @@ const WatchPage = () => {
                                         <div className="flex items-center gap-1.5 relative">
                                             <button
                                                 onClick={() => setShowSubtitles(!showSubtitles)}
-                                                className={`transition text-[13px] font-medium ${showSubtitles && subtitleUrl ? 'text-[#00dc41]' : 'text-white/70 hover:text-[#00dc41]'}`}
-                                                title={subtitleUrl ? (showSubtitles ? 'Hide Subtitles' : 'Show Subtitles') : 'No subtitles'}
+                                                className={`transition text-[13px] font-medium ${showSubtitles && hasSubtitleSource ? 'text-[#00dc41]' : 'text-white/70 hover:text-[#00dc41]'}`}
+                                                title={
+                                                    !hasSubtitleSource
+                                                        ? 'No subtitles'
+                                                        : embeddedSubsAvailable && !subtitleUrl
+                                                            ? (showSubtitles ? 'Hide embedded subtitles' : 'Show embedded subtitles')
+                                                            : (showSubtitles ? 'Hide Subtitles' : 'Show Subtitles')
+                                                }
                                             >
                                                 Subtitle
                                             </button>
@@ -917,15 +1028,19 @@ const WatchPage = () => {
                                             <div className={`absolute bottom-full right-0 mb-4 bg-[#1a1c22]/95 backdrop-blur-md rounded-lg border border-white/10 p-4 shadow-xl w-[280px] text-white z-50 cursor-default transition-all duration-200 origin-bottom-right ${showSubSettings ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' : 'opacity-0 scale-95 translate-y-2 pointer-events-none'}`}>
                                                 <h3 className="text-[13px] font-bold text-gray-300 mb-3 border-b border-white/10 pb-2">Subtitle Settings</h3>
 
-                                                {/* Sync: negatif = tunda, positif = percepat */}
+                                                {/* Sync: negatif = tunda, positif = percepat (hanya file .srt/.vtt) */}
                                                 <div className="mb-3">
                                                     <div className="text-[10px] text-gray-500 mb-0.5">− tunda · + percepat</div>
+                                                    {!syncDelayAppliesToExternalFile && embeddedSubsAvailable && (
+                                                        <p className="text-[10px] text-amber-500/90 mb-1">Sinkron tidak berlaku untuk subtitle tersemat di video (kontrol browser).</p>
+                                                    )}
                                                     <div className="text-[11px] text-gray-500 mb-1 flex justify-between items-center">
                                                         <span>Sinkron</span>
                                                         <div className="flex items-center gap-2">
                                                             <span>{subSettings.delay > 0 ? '+' : ''}{subSettings.delay}s</span>
-                                                            {subSettings.delay !== 0 && (
+                                                            {subSettings.delay !== 0 && syncDelayAppliesToExternalFile && (
                                                                 <button
+                                                                    type="button"
                                                                     onClick={() => setSubSettings({ ...subSettings, delay: 0 })}
                                                                     className="text-[#00dc41] hover:text-white transition px-1.5 rounded bg-white/5 border border-white/10"
                                                                 >
@@ -940,13 +1055,14 @@ const WatchPage = () => {
                                                         max={SUBTITLE_DELAY_MAX_SECONDS}
                                                         step="0.5"
                                                         value={subSettings.delay}
+                                                        disabled={!syncDelayAppliesToExternalFile && embeddedSubsAvailable}
                                                         onChange={(e) =>
                                                             setSubSettings({
                                                                 ...subSettings,
                                                                 delay: clampSubtitleDelay(parseFloat(e.target.value))
                                                             })
                                                         }
-                                                        className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#00dc41]"
+                                                        className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#00dc41] disabled:opacity-40 disabled:cursor-not-allowed"
                                                     />
                                                 </div>
 

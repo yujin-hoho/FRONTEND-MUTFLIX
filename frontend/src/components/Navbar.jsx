@@ -1,7 +1,17 @@
-import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle } from 'lucide-react';
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { searchContent, getTMDBInfo } from '../services/api';
+
+/** Genre singkat → `/filter?category=…` (Variety Show di ujung) */
+const MORE_GENRE_LINKS = [
+  { label: 'Drama', value: 'Drama' },
+  { label: 'Romance', value: 'Romance' },
+  { label: 'Comedy', value: 'Comedy' },
+  { label: 'Action', value: 'Action' },
+  { label: 'Horror', value: 'Horror' },
+  { label: 'Variety Show', value: 'Variety Show' },
+];
 
 const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
@@ -9,7 +19,10 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreWrapRef = useRef(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Debounced search
   useEffect(() => {
@@ -84,22 +97,80 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
 
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (moreWrapRef.current && !moreWrapRef.current.contains(e.target)) setMoreOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const forYouActive = location.pathname === '/dashboard';
+
   return (
-    <nav className={`fixed top-0 w-full z-[100] px-6 py-4 flex items-center gap-6 transition-colors duration-300 ${isScrolled ? 'bg-[#111319] shadow-lg border-b border-white/5' : 'bg-gradient-to-b from-black/80 to-transparent'}`}>
-      <div onClick={() => navigate('/')} className="text-brand font-black text-3xl md:text-4xl tracking-tight cursor-pointer select-none">
+    <nav
+      className={`fixed top-0 left-0 right-0 w-full z-[9999] px-4 sm:px-6 py-3.5 flex items-center gap-4 sm:gap-6 transition-[background,box-shadow,border-color] duration-300 ${
+        isScrolled
+          ? 'bg-[#0a0b0f]/95 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.45)] border-b border-white/[0.07]'
+          : 'bg-gradient-to-b from-black/90 via-black/50 to-transparent'
+      }`}
+    >
+      <div onClick={() => navigate('/')} className="text-brand font-black text-2xl sm:text-3xl md:text-4xl tracking-tight cursor-pointer select-none shrink-0">
         MUTFLIX
       </div>
-      <div className="flex gap-4 lg:gap-8 text-sm md:text-base font-medium text-gray-300 whitespace-nowrap hidden md:flex">
-        <a href="#" className="text-white font-bold relative after:content-[''] after:absolute after:w-4 after:h-[3px] after:bg-brand after:-bottom-1 after:left-1/2 after:-translate-x-1/2 after:rounded-full">For You</a>
-        <a href="#" className="hover:text-white transition-colors">Pursuit of Jade</a>
-        <a href="#" className="hover:text-white transition-colors flex items-center gap-1">More <span className="text-[10px]">▼</span></a>
+      <div className="flex gap-3 lg:gap-6 text-sm md:text-[15px] font-medium text-gray-300 whitespace-nowrap hidden md:flex items-center">
+        <button
+          type="button"
+          onClick={() => navigate('/dashboard')}
+          className={`px-0.5 pb-0.5 transition-colors border-b-2 ${
+            forYouActive ? 'text-white font-bold border-[#00dc41]' : 'border-transparent text-gray-300 hover:text-white'
+          }`}
+        >
+          For You
+        </button>
+        <div className="relative shrink-0" ref={moreWrapRef}>
+          <button
+            type="button"
+            onClick={() => setMoreOpen((o) => !o)}
+            className={`flex items-center gap-1 hover:text-white transition-colors ${moreOpen ? 'text-white' : ''}`}
+            aria-expanded={moreOpen}
+            aria-haspopup="true"
+          >
+            More
+            <ChevronDown className={`w-4 h-4 opacity-80 transition-transform ${moreOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {moreOpen && (
+            <div
+              role="menu"
+              className="absolute top-full left-0 mt-2 w-[220px] max-w-[min(220px,calc(100vw-2rem))] flex flex-col items-stretch py-2 rounded-lg bg-[#14161c] border border-white/10 shadow-2xl z-[10000] animate-slide-up whitespace-normal"
+            >
+              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-gray-500 font-semibold shrink-0">
+                Browse by genre
+              </div>
+              {MORE_GENRE_LINKS.map(({ label, value }) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="menuitem"
+                  className="block w-full text-left px-3 py-2.5 text-[13px] text-gray-200 hover:bg-white/5 hover:text-[#00dc41] transition-colors shrink-0"
+                  onClick={() => {
+                    navigate(`/filter?category=${encodeURIComponent(value)}`);
+                    setMoreOpen(false);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex-1 max-w-md xl:max-w-lg relative lg:ml-8 hidden sm:block">
         <form onSubmit={handleSearch}>
           <input
             type="text"
-            placeholder="Pursuit of Jade"
+            placeholder="Cari judul, genre…"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full bg-white/10 hover:bg-white/15 text-white text-sm rounded-full py-2.5 px-5 outline-none focus:bg-white/20 transition-all border border-white/10"
