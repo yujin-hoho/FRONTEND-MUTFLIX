@@ -140,9 +140,11 @@ const Login = () => {
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-4">
                         {trending.map((item, idx) => (
                             <div key={idx} className="relative aspect-[2/3] rounded-lg overflow-hidden group cursor-pointer shadow-xl transition-all hover:scale-105 hover:z-20">
-                                <img 
-                                    src={`https://image.tmdb.org/t/p/w342${item.poster_path}`} 
+                                <img
+                                    src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}
                                     alt={item.folder_name}
+                                    loading="lazy"
+                                    decoding="async"
                                     className="w-full h-full object-cover transition-transform group-hover:scale-110"
                                 />
                                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex items-end p-3">

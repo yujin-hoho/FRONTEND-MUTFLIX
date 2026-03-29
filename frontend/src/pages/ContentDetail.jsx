@@ -251,7 +251,14 @@ const ContentDetail = () => {
       <div className="relative w-full min-h-[50vh] md:min-h-[75vh] animate-fade-in">
         {/* Backdrop Image */}
         <div className="absolute inset-0 w-full h-full">
-          <img src={backdropPath} alt={title} className="w-full h-full object-cover object-top opacity-60" />
+          <img
+            src={backdropPath}
+            alt={title}
+            loading="eager"
+            fetchPriority="high"
+            decoding="async"
+            className="w-full h-full object-cover object-top opacity-60"
+          />
           <div className="absolute inset-0 bg-gradient-to-r from-[#111319]/90 via-[#111319]/60 to-[#111319]/10"></div>
           <div className="absolute inset-0 bg-gradient-to-t from-[#111319]/90 via-[#111319]/40 to-transparent"></div>
         </div>
@@ -474,7 +481,13 @@ const EpisodeCard = ({ video, index, posterFallback, tmdbData, onPlay, progress 
       onClick={onPlay}
     >
       <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1a1c22] mb-2 border border-transparent group-hover:border-white/20 transition-colors">
-        <img src={imageToUse} alt={name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" />
+        <img
+          src={imageToUse}
+          alt={name}
+          loading="lazy"
+          decoding="async"
+          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+        />
         <div className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity duration-300 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
           <div className="bg-[#00dc41] rounded-full p-3 shadow-[0_0_20px_rgba(0,220,65,0.5)] hover:scale-110 transition-transform">
             <Play fill="black" size={20} className="text-black ml-0.5" />
@@ -532,7 +545,13 @@ const CastGrid = ({ castList, loading }) => {
           <div key={member.id} className="flex flex-col items-center group cursor-pointer">
             <div className="w-20 h-20 md:w-24 md:h-24 rounded-full overflow-hidden bg-[#1a1c22] mb-2 border-2 border-transparent group-hover:border-[#00dc41]/50 transition-all duration-300 group-hover:shadow-[0_0_15px_rgba(0,220,65,0.2)]">
               {member.profile_path ? (
-                <img src={member.profile_path} alt={member.name} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" />
+                <img
+                  src={member.profile_path}
+                  alt={member.name}
+                  loading="lazy"
+                  decoding="async"
+                  className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-[#22252b]">
                   <User size={28} className="text-gray-600" />

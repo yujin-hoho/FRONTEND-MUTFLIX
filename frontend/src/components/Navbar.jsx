@@ -134,6 +134,8 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                             <img
                               src={item.tmdb_poster_path.startsWith('http') ? item.tmdb_poster_path : `https://image.tmdb.org/t/p/w92${item.tmdb_poster_path}`}
                               alt={item.folder_name || item.name}
+                              loading="lazy"
+                              decoding="async"
                               className="w-full h-full object-cover"
                             />
                           ) : (

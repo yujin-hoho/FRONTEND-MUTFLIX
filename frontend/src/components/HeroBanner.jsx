@@ -89,6 +89,9 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                 <img
                   src={bgImage}
                   alt={title}
+                  {...(index === 0
+                    ? { loading: 'eager', fetchPriority: 'high', decoding: 'async' }
+                    : { loading: 'lazy', decoding: 'async' })}
                   className={`w-full h-full object-cover object-[center_top] transition-opacity duration-1000 ${isActive ? 'opacity-100 animate-ken-burns' : 'opacity-0'}`}
                 />
 

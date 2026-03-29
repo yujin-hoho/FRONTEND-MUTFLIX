@@ -264,9 +264,11 @@ const ListCard = ({ item, onRemove, onStatusUpdate, historyProgress }) => {
                 onClick={() => navigate(`/detail/${encodeURIComponent(item.folder_name)}?type=${item.media_type === 'tv' ? 'series' : 'movie'}`)}
             >
                 {posterPath ? (
-                    <img 
-                        src={posterPath} 
-                        alt={item.folder_name} 
+                    <img
+                        src={posterPath}
+                        alt={item.folder_name}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
                     />
                 ) : (

@@ -1,16 +1,25 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import Dashboard from './pages/Dashboard';
-import ContentDetail from './pages/ContentDetail';
-import WatchPage from './pages/WatchPage';
-import Search from './pages/Search';
-import FilterPage from './pages/FilterPage';
-import MyList from './pages/MyList';
-import Login from './pages/Login';
 import { ProtectedRoute, PublicRoute } from './components/ProtectedRoute';
+
+const Login = lazy(() => import('./pages/Login'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const ContentDetail = lazy(() => import('./pages/ContentDetail'));
+const WatchPage = lazy(() => import('./pages/WatchPage'));
+const Search = lazy(() => import('./pages/Search'));
+const FilterPage = lazy(() => import('./pages/FilterPage'));
+const MyList = lazy(() => import('./pages/MyList'));
+
+const RouteFallback = () => (
+  <div className="min-h-screen bg-[#0a0b0f] flex items-center justify-center" aria-busy="true" aria-label="Loading">
+    <div className="w-10 h-10 border-2 border-[#00dc41]/30 border-t-[#00dc41] rounded-full animate-spin" />
+  </div>
+);
 
 function App() {
   return (
     <BrowserRouter>
+      <Suspense fallback={<RouteFallback />}>
       <Routes>
         {/* Public Route: Only accessible when NOT logged in */}
         <Route path="/" element={
@@ -59,6 +68,7 @@ function App() {
         {/* Fallback: Redirect any unknown routes to / */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </Suspense>
     </BrowserRouter>
   )
 }

@@ -748,6 +748,7 @@ const WatchPage = () => {
                         <video
                             ref={videoRef}
                             className="w-full h-full object-contain bg-black"
+                            preload="metadata"
                             onTimeUpdate={handleTimeUpdate}
                             onPlay={handleVideoPlay}
                             onPause={handleVideoPause}
@@ -1189,7 +1190,13 @@ const WatchPage = () => {
                                         <div key={member.id} className="flex flex-col items-center flex-shrink-0 group cursor-pointer w-[72px] md:w-[84px]">
                                             <div className="w-16 h-16 md:w-20 md:h-20 rounded-full overflow-hidden bg-[#1a1c22] mb-1.5 border-2 border-transparent group-hover:border-[#00dc41]/60 transition-all">
                                                 {member.profile_path ? (
-                                                    <img src={member.profile_path} alt={member.name} className="w-full h-full object-cover" />
+                                                    <img
+                                                        src={member.profile_path}
+                                                        alt={member.name}
+                                                        loading="lazy"
+                                                        decoding="async"
+                                                        className="w-full h-full object-cover"
+                                                    />
                                                 ) : (
                                                     <div className="w-full h-full flex items-center justify-center bg-[#22252b]">
                                                         <User size={24} className="text-gray-600" />
@@ -1278,7 +1285,13 @@ const WatchPage = () => {
                                             {/* Thumbnail */}
                                             <div className="w-28 aspect-video rounded-md overflow-hidden bg-[#1a1c22] flex-shrink-0 relative">
                                                 {epData?.still_path ? (
-                                                    <img src={epData.still_path} alt="" className="w-full h-full object-cover" />
+                                                    <img
+                                                        src={epData.still_path}
+                                                        alt=""
+                                                        loading="lazy"
+                                                        decoding="async"
+                                                        className="w-full h-full object-cover"
+                                                    />
                                                 ) : (
                                                     <div className="w-full h-full flex items-center justify-center bg-[#1a1c22]">
                                                         <Play size={16} className="text-gray-600" />
