@@ -47,6 +47,15 @@ export function srtToVtt(srtContent) {
   return 'WEBVTT\n\n' + content;
 }
 
+/** Max subtitle sync offset: later (+) or earlier (−), in seconds. */
+export const SUBTITLE_DELAY_MAX_SECONDS = 50;
+
+export function clampSubtitleDelay(seconds) {
+  const n = Number(seconds);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(-SUBTITLE_DELAY_MAX_SECONDS, Math.min(SUBTITLE_DELAY_MAX_SECONDS, n));
+}
+
 export function shiftTime(timeString, delaySeconds) {
   timeString = timeString.replace(',', '.');
   const parts = timeString.split(':');
@@ -73,11 +82,12 @@ export function shiftTime(timeString, delaySeconds) {
 }
 
 export function shiftSubtitleTimes(content, delaySeconds) {
-  if (!delaySeconds) return content;
-  // Regex matches VTT and SRT: 00:00:00,000 or 00:00:00.000 or 00:00.000
-  return content.replace(/(\d{2}:\d{2}:\d{2}[,\.]\d{3})/g, (match) => {
-    return shiftTime(match, delaySeconds);
-  });
+  if (delaySeconds === 0) return content;
+  // Long form first (hh:mm:ss), then WebVTT short (mm:ss) — order avoids partial matches
+  return content.replace(
+    /(\d{2}:\d{2}:\d{2}[,\.]\d{3}|\d{2}:\d{2}[,\.]\d{3})/g,
+    (match) => shiftTime(match, delaySeconds)
+  );
 }
 
 /**
@@ -90,6 +100,8 @@ export function shiftSubtitleTimes(content, delaySeconds) {
 export function createSubtitleBlobUrl(textContent, delaySeconds = 0) {
   if (!textContent) return null;
 
+  const delay = clampSubtitleDelay(delaySeconds);
+
   let vttContent;
   if (isSRT(textContent)) {
     vttContent = srtToVtt(textContent);
@@ -101,9 +113,8 @@ export function createSubtitleBlobUrl(textContent, delaySeconds = 0) {
     }
   }
 
-  // Apply delay if specified
-  if (delaySeconds !== 0) {
-    vttContent = shiftSubtitleTimes(vttContent, delaySeconds);
+  if (delay !== 0) {
+    vttContent = shiftSubtitleTimes(vttContent, delay);
   }
 
   const blob = new Blob([vttContent], { type: 'text/vtt' });

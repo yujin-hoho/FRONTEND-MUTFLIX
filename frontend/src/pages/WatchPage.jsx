@@ -11,11 +11,19 @@ import {
     getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES,
     fetchProfiles, createProfile, saveHistory, fetchHistory
 } from '../services/api';
-import { createSubtitleBlobUrl, revokeSubtitleBlobUrl } from '../utils/subtitleParser';
+import {
+    createSubtitleBlobUrl,
+    revokeSubtitleBlobUrl,
+    clampSubtitleDelay,
+    SUBTITLE_DELAY_MAX_SECONDS
+} from '../utils/subtitleParser';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
+
+/** Stored delay: negative = tunda (subtitle lebih lambat), positive = percepat (lebih cepat). */
+const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 
@@ -72,8 +80,7 @@ const WatchPage = () => {
     const [activeCues, setActiveCues] = useState([]);
     const [showSubSettings, setShowSubSettings] = useState(false);
     const [subSettings, setSubSettings] = useState(() => {
-        const saved = localStorage.getItem('mutflix_sub_settings');
-        return saved ? JSON.parse(saved) : {
+        const defaults = {
             fontSize: 24,
             fontFamily: 'Poppins, sans-serif',
             backgroundOpacity: 0.7,
@@ -82,10 +89,31 @@ const WatchPage = () => {
             marginBottom: 8,
             delay: 0
         };
+        const saved = localStorage.getItem('mutflix_sub_settings');
+        if (!saved) return { ...defaults, delayConvention: SUB_DELAY_UI_CONVENTION };
+        try {
+            const parsed = JSON.parse(saved);
+            let delay = clampSubtitleDelay(parsed.delay ?? 0);
+            // Migrasi: dulu positif = tunda; sekarang negatif = tunda
+            if (parsed.delayConvention !== SUB_DELAY_UI_CONVENTION) {
+                delay = clampSubtitleDelay(-delay);
+            }
+            return {
+                ...defaults,
+                ...parsed,
+                delay,
+                delayConvention: SUB_DELAY_UI_CONVENTION
+            };
+        } catch {
+            return { ...defaults, delayConvention: SUB_DELAY_UI_CONVENTION };
+        }
     });
 
     useEffect(() => {
-        localStorage.setItem('mutflix_sub_settings', JSON.stringify(subSettings));
+        localStorage.setItem(
+            'mutflix_sub_settings',
+            JSON.stringify({ ...subSettings, delayConvention: SUB_DELAY_UI_CONVENTION })
+        );
     }, [subSettings]);
 
     const handleLoginSuccess = (data) => {
@@ -390,7 +418,8 @@ const WatchPage = () => {
         if (prevSubtitleUrl.current) {
             revokeSubtitleBlobUrl(prevSubtitleUrl.current);
         }
-        const blobUrl = createSubtitleBlobUrl(rawSubtitleText, subSettings.delay || 0);
+        // Parser: positif = geser timestamp maju (subtitle lebih lambat). UI negatif = tunda → negasi.
+        const blobUrl = createSubtitleBlobUrl(rawSubtitleText, -(subSettings.delay || 0));
         setSubtitleUrl(blobUrl);
         prevSubtitleUrl.current = blobUrl;
     }, [rawSubtitleText, subSettings.delay]);
@@ -887,10 +916,11 @@ const WatchPage = () => {
                                             <div className={`absolute bottom-full right-0 mb-4 bg-[#1a1c22]/95 backdrop-blur-md rounded-lg border border-white/10 p-4 shadow-xl w-[280px] text-white z-50 cursor-default transition-all duration-200 origin-bottom-right ${showSubSettings ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' : 'opacity-0 scale-95 translate-y-2 pointer-events-none'}`}>
                                                 <h3 className="text-[13px] font-bold text-gray-300 mb-3 border-b border-white/10 pb-2">Subtitle Settings</h3>
 
-                                                {/* Delay */}
+                                                {/* Sync: negatif = tunda, positif = percepat */}
                                                 <div className="mb-3">
+                                                    <div className="text-[10px] text-gray-500 mb-0.5">− tunda · + percepat</div>
                                                     <div className="text-[11px] text-gray-500 mb-1 flex justify-between items-center">
-                                                        <span>Delay</span>
+                                                        <span>Sinkron</span>
                                                         <div className="flex items-center gap-2">
                                                             <span>{subSettings.delay > 0 ? '+' : ''}{subSettings.delay}s</span>
                                                             {subSettings.delay !== 0 && (
@@ -904,9 +934,17 @@ const WatchPage = () => {
                                                         </div>
                                                     </div>
                                                     <input
-                                                        type="range" min="-150" max="150" step="0.5"
+                                                        type="range"
+                                                        min={-SUBTITLE_DELAY_MAX_SECONDS}
+                                                        max={SUBTITLE_DELAY_MAX_SECONDS}
+                                                        step="0.5"
                                                         value={subSettings.delay}
-                                                        onChange={(e) => setSubSettings({ ...subSettings, delay: parseFloat(e.target.value) })}
+                                                        onChange={(e) =>
+                                                            setSubSettings({
+                                                                ...subSettings,
+                                                                delay: clampSubtitleDelay(parseFloat(e.target.value))
+                                                            })
+                                                        }
                                                         className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#00dc41]"
                                                     />
                                                 </div>
