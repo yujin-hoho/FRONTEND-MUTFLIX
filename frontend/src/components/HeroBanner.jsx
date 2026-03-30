@@ -1,11 +1,35 @@
 import { Play, BookmarkPlus, Pencil } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { getTMDBInfo } from '../services/api';
 
 const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [tmdbBackdropByKey, setTmdbBackdropByKey] = useState({});
+  const [bgReadyByKey, setBgReadyByKey] = useState({});
   const navigate = useNavigate();
   const scrollRef = useRef(null);
+  const inflightRef = useRef(new Map());
+
+  const tmdbOptsFromItem = (item) => {
+    if (!item?.tmdb_query) return {};
+    const o = {
+      query: item.tmdb_query,
+      mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+    };
+    if (item.override_year != null && item.override_year !== '') o.year = Number(item.override_year);
+    if (item.override_region) o.region = item.override_region;
+    if (item.include_adult) o.includeAdult = true;
+    return o;
+  };
+
+  const tmdbImageUrl = (path) => {
+    if (!path || typeof path !== 'string') return null;
+    if (path.startsWith('http')) return path;
+    const p = path.startsWith('/') ? path : `/${path}`;
+    // Use the same rendition tier as MovieCarousel to reduce load-time delay.
+    return `https://image.tmdb.org/t/p/w500${p}`;
+  };
 
   // Auto rotate
   useEffect(() => {
@@ -21,6 +45,49 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
       setCurrentIndex(nextIndex);
     }, 10000); // Slower rotation (10s) to enjoy the zoom
     return () => clearInterval(interval);
+  }, [items, currentIndex]);
+
+  // Fetch TMDB backdrop for hero background (server only stores poster).
+  // Performance: don't flood TMDB when dashboard hero items are randomized.
+  useEffect(() => {
+    let cancelled = false;
+    if (!items || items.length === 0) return;
+
+    const maxFetch = Math.min(items.length, 2); // current + next
+    const indices = Array.from({ length: maxFetch }, (_, i) => (currentIndex + i) % items.length);
+
+    indices.forEach((index) => {
+      const item = items[index];
+      const key = item.folder_name || item.name || index;
+      if (!key) return;
+
+      // If server already provides backdrop_path, no need to fetch.
+      if (item.tmdb_backdrop_path) return;
+      if (tmdbBackdropByKey[key]?.backdrop_path) return;
+      if (inflightRef.current.has(key)) return;
+
+      const title = item.tmdb_title || item.folder_name || item.name;
+      if (!title) return;
+
+      const p = getTMDBInfo(title, { ...tmdbOptsFromItem(item), light: true })
+        .then((data) => {
+          if (cancelled || !data) return;
+          // Allow fallback to poster when backdrop isn't available yet.
+          // This prevents hero from staying blank while TMDB only returns poster.
+          if (data.backdrop_path || data.poster_path) {
+            setTmdbBackdropByKey((prev) => ({ ...prev, [key]: data }));
+          }
+        })
+        .catch(() => { /* ignore */ })
+        .finally(() => inflightRef.current.delete(key));
+
+      inflightRef.current.set(key, p);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, currentIndex]);
 
   const handleScroll = (e) => {
@@ -54,10 +121,18 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
         {items.map((item, index) => {
-          const rawPoster = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster;
-          const bgImage = rawPoster
-            ? (rawPoster.startsWith('http') ? rawPoster : `https://image.tmdb.org/t/p/original${rawPoster}`)
-            : 'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
+          const key = item.folder_name || item.name || index;
+          const tmdbData = tmdbBackdropByKey[key];
+          // Prefer backdrop, but fall back to poster/still when needed.
+          const rawBackdropOrPoster =
+            item.tmdb_backdrop_path ||
+            tmdbData?.backdrop_path ||
+            item.tmdb_poster_path ||
+            item.poster_path ||
+            item.poster ||
+            tmdbData?.poster_path;
+          const bgImage = rawBackdropOrPoster ? tmdbImageUrl(rawBackdropOrPoster) : null;
+          const isBgReady = !!bgReadyByKey[key];
 
           const title = item.tmdb_title || item.folder_name || item.name || "Title";
           const rating = item.tmdb_rating;
@@ -86,14 +161,23 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                     <Pencil size={18} strokeWidth={2.5} />
                   </button>
                 )}
-                <img
-                  src={bgImage}
-                  alt={title}
-                  {...(index === 0
-                    ? { loading: 'eager', fetchPriority: 'high', decoding: 'async' }
-                    : { loading: 'lazy', decoding: 'async' })}
-                  className={`w-full h-full object-cover object-[center_top] transition-opacity duration-1000 ${isActive ? 'opacity-100 animate-ken-burns' : 'opacity-0'}`}
-                />
+                {bgImage ? (
+                  <img
+                    src={bgImage}
+                    alt={title}
+                    {...(index === 0
+                      ? { loading: 'eager', fetchPriority: 'high', decoding: 'async' }
+                      : { loading: 'lazy', decoding: 'async' })}
+                    onLoad={() => setBgReadyByKey((prev) => ({ ...prev, [key]: true }))}
+                    onError={() => setBgReadyByKey((prev) => ({ ...prev, [key]: false }))}
+                    className={`w-full h-full object-cover object-[center_top] transition-opacity duration-1000 ${
+                      isActive ? 'animate-ken-burns' : ''
+                    } ${isBgReady ? 'opacity-100' : 'opacity-0'}`}
+                  />
+                ) : (
+                  // Loading placeholder: no poster image until TMDB backdrop is ready.
+                  <div className="w-full h-full bg-gradient-to-br from-white/5 via-white/2 to-transparent animate-pulse" />
+                )}
 
                 {/* Visual Depth Masks */}
                 <div className="absolute inset-x-0 bottom-0 h-[60%] bg-gradient-to-t from-[#0a0c10] via-[#0a0c10]/40 to-transparent"></div>

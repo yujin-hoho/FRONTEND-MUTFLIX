@@ -21,9 +21,17 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   const [tmdbData, setTmdbData] = useState(null);
   const [posterLoaded, setPosterLoaded] = useState(false);
   const hoverTimeoutRef = useRef(null);
+  const imgRef = useRef(null);
   const navigate = useNavigate();
   const cardWidth = isHorizontal ? 260 : 190;
   const posterHeight = isHorizontal ? 165 : 285;
+
+  const tmdbImageUrl = (path, size = 'w500') => {
+    if (!path || typeof path !== 'string') return '';
+    if (path.startsWith('http')) return path;
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return `https://image.tmdb.org/t/p/${size}${p}`;
+  };
 
   const folderName = item?.folder_name || item?.name || '';
   const mediaType = item?.type || 'movie';
@@ -44,7 +52,8 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
           /* keep defaults */
         }
       }
-      const type = item.series_title ? 'series' : 'movie';
+      const isSeries = item?.series_title || item?.media_type === 'tv' || item?.type === 'series' || item?.episodes;
+      const type = isSeries ? 'series' : 'movie';
       navigate(`/watch/${encodeURIComponent(folderName)}?ep=${ep}&s=${s}&type=${type}`);
     } else {
       navigate(`/detail/${encodeURIComponent(folderName)}?type=${mediaType}`);
@@ -91,12 +100,20 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
 
   const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
-  const poster = posterPath
-    ? (posterPath.startsWith('http') ? posterPath : `https://image.tmdb.org/t/p/w500${posterPath}`)
-    : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop';
+  const poster = posterPath ? tmdbImageUrl(posterPath, 'w500') : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop';
 
   useEffect(() => {
     setPosterLoaded(false);
+  }, [poster]);
+
+  // Safety net: some browsers/cached images may skip load event.
+  // If image is already complete, mark as loaded so grayscale/opacity won't get stuck.
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    if (img.complete && img.naturalWidth > 0) {
+      setPosterLoaded(true);
+    }
   }, [poster]);
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
@@ -132,6 +149,7 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
         style={{ height: `${posterHeight}px` }}
       >
         <img 
+          ref={imgRef}
           src={poster} 
           alt={title} 
           loading="lazy" 
@@ -142,7 +160,7 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
             posterFadeIn && rawPoster
               ? posterLoaded
                 ? 'opacity-100'
-                : 'opacity-0'
+                : 'opacity-30 grayscale'
               : !rawPoster
                 ? 'opacity-30 grayscale'
                 : 'opacity-100'

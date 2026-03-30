@@ -67,16 +67,21 @@ const Search = () => {
           let matched = cleanTitle.includes(queryLower);
           
           if (!matched) {
-            const cacheRaw = localStorage.getItem(`mutflix_tmdb_info_${cleanTitle}`);
+            // getTMDBInfo() cache key format:
+            // mutflix_tmdb_info_${queryTextLower}_ov_${mediaType||'multi'}_${year??'x'}_${region||'x'}_${includeAdult?'a':''}
+            // plus suffix "_lite" untuk light mode.
+            const baseKey = `mutflix_tmdb_info_${cleanTitle}_ov_multi_x_x_`;
+            const cacheRawFull = localStorage.getItem(baseKey);
+            const cacheRawLite = localStorage.getItem(`${baseKey}_lite`);
+            const cacheRaw = cacheRawFull || cacheRawLite;
+
             if (cacheRaw) {
               try {
                 const cacheData = JSON.parse(cacheRaw);
-                const hasActor = cacheData.cast?.some(c => c.name.toLowerCase().includes(queryLower));
-                const hasGenre = cacheData.genres?.some(g => g.name.toLowerCase().includes(queryLower));
-                if (hasActor || hasGenre) {
-                  matched = true;
-                }
-              } catch(e){}
+                const hasActor = cacheData.cast?.some(c => c?.name?.toLowerCase().includes(queryLower));
+                const hasGenre = cacheData.genres?.some(g => g?.name?.toLowerCase().includes(queryLower));
+                if (hasActor || hasGenre) matched = true;
+              } catch (e) { /* ignore */ }
             }
           }
            

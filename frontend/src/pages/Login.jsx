@@ -141,7 +141,11 @@ const Login = () => {
                         {trending.map((item, idx) => (
                             <div key={idx} className="relative aspect-[2/3] rounded-lg overflow-hidden group cursor-pointer shadow-xl transition-all hover:scale-105 hover:z-20">
                                 <img
-                                    src={`https://image.tmdb.org/t/p/w342${item.poster_path}`}
+                                    src={
+                                        item.poster_path?.startsWith('http')
+                                            ? item.poster_path
+                                            : `https://image.tmdb.org/t/p/w342${item.poster_path?.startsWith('/') ? item.poster_path : '/' + item.poster_path}`
+                                    }
                                     alt={item.folder_name}
                                     loading="lazy"
                                     decoding="async"

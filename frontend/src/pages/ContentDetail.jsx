@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
@@ -14,6 +14,12 @@ const ContentDetail = () => {
   const navigate = useNavigate();
   const decodedName = decodeURIComponent(folderName);
   const urlType = searchParams.get('type'); // 'movie' or 'series'
+
+  const toInt = (value, fallback) => {
+    const n =
+      value == null || value === '' ? NaN : typeof value === 'string' ? parseInt(value, 10) : Number(value);
+    return Number.isFinite(n) && !Number.isNaN(n) ? n : fallback;
+  };
 
   const [videos, setVideos] = useState([]);
   const [tmdbData, setTmdbData] = useState(null);
@@ -34,19 +40,23 @@ const ContentDetail = () => {
   const [profileId, setProfileId] = useState(localStorage.getItem('mutflix_last_profile_id'));
   const [isUpdatingList, setIsUpdatingList] = useState(false);
 
-  const isSeriesContent = urlType === 'series' ||
-    (tmdbData?.media_type === 'tv') ||
-    (!urlType && videos.length > 1);
+  // Cache TMDB season episode info so when user switches seasons we don't refetch.
+  const fetchedSeasonStillsRef = useRef(new Set());
+
+  // Important: even if TMDB API key is missing (tmdbData=null) and `type` query param is wrong,
+  // we still detect series using `videos.length > 1` so Episodes tab won't disappear.
+  const isSeriesContent = urlType === 'series' || (tmdbData?.media_type === 'tv') || videos.length > 1;
 
   const uniqueSeasons = useMemo(
-    () => [...new Set(videos.map(v => v.season || 1))].sort((a, b) => a - b),
+    () => [...new Set(videos.map(v => toInt(v.season, 1)))].sort((a, b) => a - b),
     [videos]
   );
   const [detailSeason, setDetailSeason] = useState(1);
   const episodesForSeason = useMemo(
-    () => videos.filter(v => (v.season || 1) === detailSeason),
+    () => videos.filter(v => toInt(v.season, 1) === toInt(detailSeason, 1)),
     [videos, detailSeason]
   );
+  const episodesToShow = episodesForSeason.length > 0 ? episodesForSeason : videos;
 
   useEffect(() => {
     if (videos.length === 0) return;
@@ -64,6 +74,8 @@ const ContentDetail = () => {
     const loadData = async () => {
       setLoading(true);
       setLastWatchedMedia(null);
+      setEpisodeData({});
+      fetchedSeasonStillsRef.current = new Set();
       try {
         // Step 1: Fetch Basic Info (Videos + TMDB)
         const [videosResp, tmdb] = await Promise.all([
@@ -73,7 +85,12 @@ const ContentDetail = () => {
         
         if (!isMounted) return;
 
-        const videosList = videosResp?.videos || [];
+        const videosListRaw = videosResp?.videos || [];
+        const videosList = videosListRaw.map((v) => ({
+          ...v,
+          season: toInt(v.season, 1),
+          episode: toInt(v.episode, 1),
+        }));
         videosList.sort((a, b) => {
           if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
           return (a.episode || 0) - (b.episode || 0);
@@ -82,37 +99,14 @@ const ContentDetail = () => {
         setVideos(videosList);
         setTmdbData(tmdb);
 
-        // Step 2: Parallel Fetching
-        const fetchTasks = [];
+          // Step 2: Parallel Fetching
+          const fetchTasks = [];
 
-        // 2a. Visual Metadata (Stills, Cast, etc.)
+          // 2a. Visual Metadata (Cast only here; episode stills are lazy-loaded per season)
         if (tmdb?.tmdb_id) {
           fetchTasks.push(getTMDBCredits(tmdb.tmdb_id, tmdb.media_type).then(data => {
             if (isMounted) setCredits(data);
           }));
-
-          // Fetch Episode Stills (Crucial for visuals)
-          if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
-            const uniqueSeasons = Array.from(new Set(videosList.map(v => v.season || 1)));
-            const seasonPromises = uniqueSeasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s));
-            
-            Promise.all(seasonPromises).then(seasonsData => {
-              if (!isMounted) return;
-              const dataMap = {};
-              seasonsData.forEach((seasonData, index) => {
-                if (seasonData && seasonData.episodes) {
-                  const sNum = uniqueSeasons[index];
-                  seasonData.episodes.forEach(ep => {
-                    dataMap[`${sNum}_${ep.episode_number}`] = {
-                      still_path: ep.still_path ? `https://image.tmdb.org/t/p/w500${ep.still_path}` : null,
-                      name: ep.name
-                    };
-                  });
-                }
-              });
-              setEpisodeData(dataMap);
-            }).catch(err => console.error("Error fetching season stills:", err));
-          }
         }
 
         // 2b. User Data (History, My List)
@@ -160,7 +154,9 @@ const ContentDetail = () => {
         await Promise.allSettled(fetchTasks);
 
         if (isMounted) {
-          const isSeries = urlType === 'series' || (tmdb?.media_type === 'tv') || (!urlType && videosList.length > 1);
+          // Important: even if `type` query param is wrong and TMDB key missing (tmdb=null),
+          // we still consider it a series when backend returns multiple videos (seasons/episodes).
+          const isSeries = urlType === 'series' || (tmdb?.media_type === 'tv') || videosList.length > 1;
           setActiveTab(isSeries ? 'episodes' : 'cast');
         }
 
@@ -174,6 +170,33 @@ const ContentDetail = () => {
     loadData();
     return () => { isMounted = false; };
   }, [decodedName, urlType, authUser, profileId]);
+
+  // Lazy-load episode stills + episode names per selected season.
+  useEffect(() => {
+    if (!tmdbData?.tmdb_id) return;
+    if (!isSeriesContent) return;
+    if (!detailSeason) return;
+
+    const seasonNum = toInt(detailSeason, 1);
+    if (fetchedSeasonStillsRef.current.has(seasonNum)) return;
+    void getTMDBSeasonDetails(tmdbData.tmdb_id, seasonNum)
+      .then((seasonData) => {
+        if (seasonData?.episodes) {
+          const dataMap = {};
+          seasonData.episodes.forEach((ep) => {
+            dataMap[`${seasonNum}_${ep.episode_number}`] = {
+              still_path: ep.still_path
+                ? `https://image.tmdb.org/t/p/w500${ep.still_path.startsWith('/') ? ep.still_path : `/${ep.still_path}`}`
+                : null,
+              name: ep.name
+            };
+          });
+          setEpisodeData((prev) => ({ ...prev, ...dataMap }));
+        }
+        fetchedSeasonStillsRef.current.add(seasonNum);
+      })
+      .catch(() => { /* ignore */ });
+  }, [tmdbData?.tmdb_id, detailSeason, isSeriesContent]);
 
   const handleToggleMyList = async () => {
     if (!authUser) {
@@ -223,13 +246,13 @@ const ContentDetail = () => {
   const castNames = castList.map(c => c.name).slice(0, 8).join(', ') || 'Cast information unavailable';
 
   const backdropPath = tmdbData?.backdrop_path
-    ? `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}`
+    ? `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path.startsWith('/') ? tmdbData.backdrop_path : `/${tmdbData.backdrop_path}`}`
     : tmdbData?.poster_path
-      ? `https://image.tmdb.org/t/p/original${tmdbData.poster_path}`
+      ? `https://image.tmdb.org/t/p/original${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
       : 'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
 
   const posterPath = tmdbData?.poster_path
-    ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`
+    ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
     : backdropPath;
 
   const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];
@@ -408,7 +431,7 @@ const ContentDetail = () => {
             )}
             <h3 className="text-gray-400 text-sm font-medium mb-4">
               {isSeriesContent && uniqueSeasons.length > 1
-                ? `Season ${detailSeason} · ${episodesForSeason.length} episode${episodesForSeason.length === 1 ? '' : 's'}`
+                ? `Season ${detailSeason} · ${episodesToShow.length} episode${episodesToShow.length === 1 ? '' : 's'}`
                 : `Episodes ${videos.length > 0 ? `1–${videos.length}` : '—'}`}
             </h3>
             {loading ? (
@@ -422,7 +445,7 @@ const ContentDetail = () => {
               </div>
             ) : videos.length > 0 ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                {episodesForSeason.map((video, idx) => {
+                {episodesToShow.map((video, idx) => {
                   const epData = episodeData[`${video.season || 1}_${video.episode || idx + 1}`];
                   return (
                     <EpisodeCard

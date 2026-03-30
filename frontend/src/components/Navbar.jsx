@@ -107,6 +107,13 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
 
   const forYouActive = location.pathname === '/dashboard';
 
+  const tmdbImageUrl = (path, size = 'w92') => {
+    if (!path || typeof path !== 'string') return '';
+    if (path.startsWith('http')) return path;
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return `https://image.tmdb.org/t/p/${size}${p}`;
+  };
+
   return (
     <nav
       className={`fixed top-0 left-0 right-0 w-full z-[9999] px-4 sm:px-6 py-3.5 flex items-center gap-4 sm:gap-6 transition-[background,box-shadow,border-color] duration-300 ${
@@ -203,7 +210,7 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                         <div className="w-8 h-11 rounded overflow-hidden bg-white/5 flex items-center justify-center flex-shrink-0 border border-white/5 group-hover:border-white/20 transition-colors">
                           {(item.tmdb_poster_path || item.poster_path) ? (
                             <img
-                              src={(item.tmdb_poster_path || item.poster_path).startsWith('http') ? (item.tmdb_poster_path || item.poster_path) : `https://image.tmdb.org/t/p/w92${item.tmdb_poster_path || item.poster_path}`}
+                              src={tmdbImageUrl(item.tmdb_poster_path || item.poster_path, 'w92')}
                               alt={item.folder_name || item.name}
                               loading="lazy"
                               decoding="async"

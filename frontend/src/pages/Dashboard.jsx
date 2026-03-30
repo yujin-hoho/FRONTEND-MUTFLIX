@@ -67,7 +67,10 @@ const BrowseMoreStrip = ({ onNavigate }) => (
 const backdropOrPosterUrl = (item) => {
   const raw = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster_path || item.poster;
   if (!raw) return null;
-  return raw.startsWith('http') ? raw : `https://image.tmdb.org/t/p/w780${raw}`;
+  if (raw.startsWith('http')) return raw;
+  const p = raw.startsWith('/') ? raw : `/${raw}`;
+  // Must match the rendition used by HeroBanner to get a cache hit.
+  return `https://image.tmdb.org/t/p/w500${p}`;
 };
 
 /** Preload gambar di background (jangan await — jangan blokir paint) */
@@ -334,6 +337,9 @@ const Dashboard = () => {
       setGenreSections(buildSections(shuffledData));
       setContinueWatching(cwList);
       setCelebrities([]);
+      // Preload banner/posters immediately on phase 1.
+      // This prevents HeroBanner background from staying blank until phase 2 enrichment completes.
+      preloadDashboardImages(shuffledData, cwList, []);
       setLoading(false);
 
       const enrichResult = await enrichWithTMDB(shuffledData, currentFetchId);

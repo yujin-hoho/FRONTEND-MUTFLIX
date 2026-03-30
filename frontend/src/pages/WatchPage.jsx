@@ -36,6 +36,12 @@ const WatchPage = () => {
     const urlEp = parseInt(searchParams.get('ep')) || 1;
     const urlSeason = parseInt(searchParams.get('s')) || 1;
 
+    const toInt = (value, fallback) => {
+        const n =
+            value == null || value === '' ? NaN : typeof value === 'string' ? parseInt(value, 10) : Number(value);
+        return Number.isFinite(n) && !Number.isNaN(n) ? n : fallback;
+    };
+
     // Data state
     const [videos, setVideos] = useState([]);
     const [tmdbData, setTmdbData] = useState(null);
@@ -65,6 +71,7 @@ const WatchPage = () => {
     const [videoLoading, setVideoLoading] = useState(false);
     const [videoError, setVideoError] = useState(null);
     const [activeSeason, setActiveSeason] = useState(urlSeason);
+    const fetchedSeasonStillsRef = useRef(new Set());
     const [profileId, setProfileId] = useState(localStorage.getItem('mutflix_last_profile_id'));
 
     // Auth state for Navbar
@@ -139,12 +146,13 @@ const WatchPage = () => {
     const [showResumeToast, setShowResumeToast] = useState(null);
 
     // Derived
-    const isSeriesContent = urlType === 'series' ||
-        (tmdbData?.media_type === 'tv') ||
-        (!urlType && videos.length > 1);
+    // Important: if TMDB API key missing (tmdbData=null) and `type` query param is wrong,
+    // Episodes sidebar should still show based on number of videos.
+    const isSeriesContent = urlType === 'series' || (tmdbData?.media_type === 'tv') || videos.length > 1;
 
-    const uniqueSeasons = [...new Set(videos.map(v => v.season || 1))].sort((a, b) => a - b);
-    const filteredEpisodes = videos.filter(v => (v.season || 1) === activeSeason);
+    const uniqueSeasons = [...new Set(videos.map(v => toInt(v.season, 1)))].sort((a, b) => a - b);
+    const filteredEpisodes = videos.filter(v => toInt(v.season, 1) === toInt(activeSeason, 1));
+    const episodesToShow = filteredEpisodes.length > 0 ? filteredEpisodes : videos;
 
     // ─── Derived values ────────────────────────────
     const title = decodedName;
@@ -163,13 +171,20 @@ const WatchPage = () => {
     useEffect(() => {
         const loadData = async () => {
             setLoading(true);
+            setEpisodeData({});
+            fetchedSeasonStillsRef.current = new Set();
             try {
                 const [videosResp, tmdb] = await Promise.all([
                     fetchVideos(decodedName),
                     getTMDBInfo(decodedName)
                 ]);
 
-                const videosList = videosResp?.videos || [];
+                const videosListRaw = videosResp?.videos || [];
+                const videosList = videosListRaw.map((v) => ({
+                    ...v,
+                    season: toInt(v.season, 1),
+                    episode: toInt(v.episode, 1),
+                }));
                 videosList.sort((a, b) => {
                     if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
                     return (a.episode || 0) - (b.episode || 0);
@@ -195,25 +210,6 @@ const WatchPage = () => {
                         try {
                             const creditsData = await getTMDBCredits(tmdb.tmdb_id, tmdb.media_type);
                             setCredits(creditsData);
-
-                            if (urlType === 'series' || tmdb.media_type === 'tv' || videosList.length > 1) {
-                                const seasons = [...new Set(videosList.map(v => v.season || 1))];
-                                const seasonsData = await Promise.all(
-                                    seasons.map(s => getTMDBSeasonDetails(tmdb.tmdb_id, s))
-                                );
-                                const dataMap = {};
-                                seasonsData.forEach((sd, idx) => {
-                                    if (sd?.episodes) {
-                                        sd.episodes.forEach(ep => {
-                                            dataMap[`${seasons[idx]}_${ep.episode_number}`] = {
-                                                still_path: ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : null,
-                                                name: ep.name
-                                            };
-                                        });
-                                    }
-                                });
-                                setEpisodeData(dataMap);
-                            }
                         } catch (e) {
                             console.warn('Watch page TMDB extras failed:', e);
                         }
@@ -226,6 +222,36 @@ const WatchPage = () => {
         };
         loadData();
     }, [decodedName, urlType, urlSeason, urlEp]);
+
+    // Lazy-load TMDB episode stills + episode names per season tab.
+    useEffect(() => {
+        if (!tmdbData?.tmdb_id) return;
+        if (!isSeriesContent) return;
+
+        const seasonNum = toInt(activeSeason, 1);
+        if (!Number.isFinite(seasonNum)) return;
+        if (fetchedSeasonStillsRef.current.has(seasonNum)) return;
+
+        void getTMDBSeasonDetails(tmdbData.tmdb_id, seasonNum)
+            .then((sd) => {
+                if (sd?.episodes) {
+                    const dataMap = {};
+                    sd.episodes.forEach((ep) => {
+                        dataMap[`${seasonNum}_${ep.episode_number}`] = {
+                            still_path: ep.still_path
+                                ? `https://image.tmdb.org/t/p/w300${ep.still_path.startsWith('/') ? ep.still_path : `/${ep.still_path}`}`
+                                : null,
+                            name: ep.name
+                        };
+                    });
+                    setEpisodeData((prev) => ({ ...prev, ...dataMap }));
+                }
+                fetchedSeasonStillsRef.current.add(seasonNum);
+            })
+            .catch(() => {
+                fetchedSeasonStillsRef.current.add(seasonNum);
+            });
+    }, [tmdbData?.tmdb_id, activeSeason, isSeriesContent]);
 
     // ─── Fetch/Create Profile ───────────────────────
     useEffect(() => {
@@ -1380,12 +1406,12 @@ const WatchPage = () => {
                         {/* Episode Grid & List */}
                         <div className="flex-1 overflow-y-auto p-4 no-scrollbar bg-[#0f1014]">
                             <div className="flex items-center justify-between mb-3">
-                                <span className="text-[12px] text-gray-500 font-medium">Episodes {filteredEpisodes.length > 0 ? `1-${filteredEpisodes.length}` : '0'}</span>
+                                <span className="text-[12px] text-gray-500 font-medium">Episodes {episodesToShow.length > 0 ? `1-${episodesToShow.length}` : '0'}</span>
                             </div>
 
                             {/* Episode Details List */}
                             <div className="mt-4 space-y-2">
-                                {filteredEpisodes.map((video, idx) => {
+                                {episodesToShow.map((video, idx) => {
                                     const epNum = video.episode || idx + 1;
                                     const epData = episodeData[`${video.season || 1}_${epNum}`];
                                     const isActive = video === currentVideo;

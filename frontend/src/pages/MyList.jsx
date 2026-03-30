@@ -252,9 +252,13 @@ const MyList = () => {
 const ListCard = ({ item, onRemove, onStatusUpdate, historyProgress }) => {
     const navigate = useNavigate();
     const meta = item.meta_json || {};
-    const posterPath = meta.tmdb_poster_path 
-        ? (meta.tmdb_poster_path.startsWith('http') ? meta.tmdb_poster_path : `https://image.tmdb.org/t/p/w500${meta.tmdb_poster_path}`)
-        : null;
+    const tmdbImageUrl = (path, size = 'w500') => {
+        if (!path || typeof path !== 'string') return null;
+        if (path.startsWith('http')) return path;
+        const p = path.startsWith('/') ? path : `/${path}`;
+        return `https://image.tmdb.org/t/p/${size}${p}`;
+    };
+    const posterPath = meta.tmdb_poster_path ? tmdbImageUrl(meta.tmdb_poster_path, 'w500') : null;
 
     return (
         <div className="flex flex-col gap-3 group">
