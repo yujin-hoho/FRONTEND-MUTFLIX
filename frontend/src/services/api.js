@@ -129,6 +129,18 @@ export const clearAllTmdbInfoLocalCache = () => {
     } catch { /* ignore */ }
 };
 
+/** Dedupe request paralel dengan judul + opsi yang sama */
+const _tmdbInflight = new Map();
+
+const mapCastFromCredits = (credits) =>
+    credits?.cast
+        ? credits.cast.slice(0, 15).map((c) => ({
+              id: c.id,
+              name: c.name,
+              profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null,
+          }))
+        : [];
+
 /**
  * Mengambil info dari TMDB. Gunakan options jika ada override dari server (admin).
  * @param {string} title - judul fallback / folder
@@ -138,6 +150,7 @@ export const clearAllTmdbInfoLocalCache = () => {
  * @param {number|null} [options.year] - tahun rilis (movie) atau tahun tayang (tv)
  * @param {string|null} [options.region] - kode negara ISO 3166-1 (opsional)
  * @param {boolean} [options.includeAdult]
+ * @param {boolean} [options.light] - mode grid/filter: tanpa credits, detail minimal, 1 request jika hasil search cukup
  */
 export const getTMDBInfo = async (title, options = {}) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
@@ -150,156 +163,362 @@ export const getTMDBInfo = async (title, options = {}) => {
     const year = options.year != null && options.year !== '' ? Number(options.year) : null;
     const region = (options.region || '').trim() || null;
     const includeAdult = !!options.includeAdult;
+    const light = !!options.light;
+    const includeCredits = !light;
 
-    const cacheKey = `mutflix_tmdb_info_${queryText.toLowerCase()}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-        try { return JSON.parse(cached); } catch (e) { /* continue */ }
+    const cacheKeyFull = `mutflix_tmdb_info_${queryText.toLowerCase()}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
+    const cacheKeyLite = `${cacheKeyFull}_lite`;
+    const inflightKey = light ? cacheKeyLite : cacheKeyFull;
+
+    const readLite = () => {
+        try {
+            const raw = localStorage.getItem(cacheKeyLite);
+            if (raw) return JSON.parse(raw);
+        } catch { /* ignore */ }
+        return null;
+    };
+
+    const readFull = () => {
+        try {
+            const raw = localStorage.getItem(cacheKeyFull);
+            if (raw) return JSON.parse(raw);
+        } catch { /* ignore */ }
+        return null;
+    };
+
+    if (light) {
+        const lite = readLite();
+        if (lite) return lite;
+    } else {
+        const full = readFull();
+        if (full) return full;
     }
 
-    const pickTvWithRegion = (results, reg) => {
-        if (!reg || !results?.length) return results?.[0];
-        const hit = results.find((r) => r.origin_country && r.origin_country.includes(reg));
-        return hit || results[0];
-    };
+    if (_tmdbInflight.has(inflightKey)) {
+        return _tmdbInflight.get(inflightKey);
+    }
 
-    const pickMovieWithRegion = async (results, reg) => {
-        if (!reg || !results?.length) return results[0];
-        for (const r of results.slice(0, 8)) {
+    const run = (async () => {
+        const pickTvWithRegion = (results, reg) => {
+            if (!reg || !results?.length) return results?.[0];
+            const hit = results.find((r) => r.origin_country && r.origin_country.includes(reg));
+            return hit || results[0];
+        };
+
+        const pickMovieWithRegion = async (results, reg) => {
+            if (!reg || !results?.length) return results[0];
+            for (const r of results.slice(0, 8)) {
+                try {
+                    const dr = await fetch(`https://api.themoviedb.org/3/movie/${r.id}?api_key=${tmdbKey}&language=en-US`);
+                    const d = await dr.json();
+                    const ok = (d.production_countries || []).some((c) => c.iso_3166_1 === reg);
+                    if (ok) return r;
+                } catch {
+                    /* next */
+                }
+            }
+            return results[0];
+        };
+
+        const creditsParam = includeCredits ? '&append_to_response=credits' : '';
+
+        const save = (result) => {
+            if (!result) return;
             try {
-                const dr = await fetch(`https://api.themoviedb.org/3/movie/${r.id}?api_key=${tmdbKey}&language=en-US`);
-                const d = await dr.json();
-                const ok = (d.production_countries || []).some((c) => c.iso_3166_1 === reg);
-                if (ok) return r;
-            } catch { /* next */ }
-        }
-        return results[0];
-    };
+                if (light) localStorage.setItem(cacheKeyLite, JSON.stringify(result));
+                else localStorage.setItem(cacheKeyFull, JSON.stringify(result));
+            } catch { /* ignore */ }
+        };
 
-    try {
-        let data;
-        const q = encodeURIComponent(queryText);
-        const adult = includeAdult ? 'true' : 'false';
+        try {
+            if (!light) {
+                const fullAgain = readFull();
+                if (fullAgain) return fullAgain;
+                const liteOnly = readLite();
+                if (liteOnly?.tmdb_id && liteOnly?.media_type) {
+                    const type = liteOnly.media_type === 'movie' ? 'movie' : 'tv';
+                    const detailRes = await fetch(
+                        `https://api.themoviedb.org/3/${type}/${liteOnly.tmdb_id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`
+                    );
+                    const details = await detailRes.json();
+                    if (details?.id) {
+                        const merged =
+                            type === 'movie'
+                                ? {
+                                      tmdb_id: liteOnly.tmdb_id,
+                                      media_type: 'movie',
+                                      poster_path: details.poster_path || liteOnly.poster_path,
+                                      backdrop_path: details.backdrop_path || liteOnly.backdrop_path,
+                                      rating: details.vote_average ?? liteOnly.rating,
+                                      overview: details.overview || liteOnly.overview,
+                                      date: details.release_date || liteOnly.date,
+                                      genres: details.genres || [],
+                                      genre_ids: (details.genres || []).map((g) => g.id),
+                                      cast: mapCastFromCredits(details.credits),
+                                      total_episodes: null,
+                                      total_seasons: null,
+                                      runtime: details.runtime,
+                                      origin_country: details.production_countries?.map((c) => c.iso_3166_1) || [],
+                                      original_language: details.original_language,
+                                  }
+                                : {
+                                      tmdb_id: liteOnly.tmdb_id,
+                                      media_type: 'tv',
+                                      poster_path: details.poster_path || liteOnly.poster_path,
+                                      backdrop_path: details.backdrop_path || liteOnly.backdrop_path,
+                                      rating: details.vote_average ?? liteOnly.rating,
+                                      overview: details.overview || liteOnly.overview,
+                                      date: details.first_air_date || details.last_air_date || liteOnly.date,
+                                      genres: details.genres || [],
+                                      genre_ids: (details.genres || []).map((g) => g.id),
+                                      cast: mapCastFromCredits(details.credits),
+                                      total_episodes: details.number_of_episodes || null,
+                                      total_seasons: details.number_of_seasons || null,
+                                      runtime: details.episode_run_time ? details.episode_run_time[0] : null,
+                                      origin_country: details.origin_country || liteOnly.origin_country || [],
+                                      original_language: details.original_language || liteOnly.original_language,
+                                  };
+                        try {
+                            localStorage.setItem(cacheKeyFull, JSON.stringify(merged));
+                        } catch { /* ignore */ }
+                        return merged;
+                    }
+                }
+            } else {
+                const liteAgain = readLite();
+                if (liteAgain) return liteAgain;
+            }
 
-        if (mediaType === 'movie') {
-            let url = `https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
-            if (year != null && !Number.isNaN(year)) url += `&year=${year}`;
-            const res = await fetch(url);
-            data = await res.json();
+            const q = encodeURIComponent(queryText);
+            const adult = includeAdult ? 'true' : 'false';
+
+            if (mediaType === 'movie') {
+                let url = `https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
+                if (year != null && !Number.isNaN(year)) url += `&year=${year}`;
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!data.results?.length) return null;
+                let best = data.results.find((i) => i.poster_path || i.backdrop_path) || data.results[0];
+                if (region && !light) best = await pickMovieWithRegion(data.results, region);
+                else if (region && light) {
+                    best = data.results.find((i) => i.poster_path || i.backdrop_path) || data.results[0];
+                }
+
+                const searchHasGenres = Array.isArray(best.genre_ids) && best.genre_ids.length > 0;
+                const posterOrBack = best.poster_path || best.backdrop_path;
+                if (light && posterOrBack && searchHasGenres) {
+                    const result = {
+                        tmdb_id: best.id,
+                        media_type: 'movie',
+                        poster_path: best.poster_path || best.backdrop_path,
+                        backdrop_path: best.backdrop_path,
+                        rating: best.vote_average,
+                        overview: best.overview,
+                        date: best.release_date,
+                        genres: [],
+                        genre_ids: best.genre_ids,
+                        cast: [],
+                        total_episodes: null,
+                        total_seasons: null,
+                        runtime: best.runtime,
+                        origin_country: [],
+                        original_language: best.original_language,
+                    };
+                    save(result);
+                    return result;
+                }
+
+                const detailRes = await fetch(
+                    `https://api.themoviedb.org/3/movie/${best.id}?api_key=${tmdbKey}&language=en-US${creditsParam}`
+                );
+                const details = await detailRes.json();
+                const result = {
+                    tmdb_id: best.id,
+                    media_type: 'movie',
+                    poster_path: details.poster_path || best.poster_path,
+                    backdrop_path: details.backdrop_path || best.backdrop_path,
+                    rating: details.vote_average || best.vote_average,
+                    overview: details.overview || best.overview,
+                    date: details.release_date || best.release_date,
+                    genres: details.genres || [],
+                    genre_ids: (details.genres || []).map((g) => g.id),
+                    cast: includeCredits ? mapCastFromCredits(details.credits) : [],
+                    total_episodes: null,
+                    total_seasons: null,
+                    runtime: details.runtime,
+                    origin_country: details.production_countries?.map((c) => c.iso_3166_1) || [],
+                    original_language: details.original_language,
+                };
+                save(result);
+                return result;
+            }
+
+            if (mediaType === 'tv') {
+                let url = `https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
+                if (year != null && !Number.isNaN(year)) url += `&first_air_date_year=${year}`;
+                const res = await fetch(url);
+                const data = await res.json();
+                if (!data.results?.length) return null;
+                const pool = data.results;
+                const withPoster = pool.filter((i) => i.poster_path || i.backdrop_path);
+                const searchPool = withPoster.length ? withPoster : pool;
+                let best = region
+                    ? pickTvWithRegion(searchPool, region)
+                    : searchPool.find((i) => i.poster_path || i.backdrop_path) || searchPool[0];
+                if (!best) best = pool[0];
+
+                const searchHasGenres = Array.isArray(best.genre_ids) && best.genre_ids.length > 0;
+                const posterOrBackTv = best.poster_path || best.backdrop_path;
+                if (light && posterOrBackTv && searchHasGenres) {
+                    const result = {
+                        tmdb_id: best.id,
+                        media_type: 'tv',
+                        poster_path: best.poster_path || best.backdrop_path,
+                        backdrop_path: best.backdrop_path,
+                        rating: best.vote_average,
+                        overview: best.overview,
+                        date: best.first_air_date,
+                        genres: [],
+                        genre_ids: best.genre_ids,
+                        cast: [],
+                        total_episodes: null,
+                        total_seasons: null,
+                        runtime: null,
+                        origin_country: best.origin_country || [],
+                        original_language: best.original_language,
+                    };
+                    save(result);
+                    return result;
+                }
+
+                const detailRes = await fetch(
+                    `https://api.themoviedb.org/3/tv/${best.id}?api_key=${tmdbKey}&language=en-US${creditsParam}`
+                );
+                const details = await detailRes.json();
+                const result = {
+                    tmdb_id: best.id,
+                    media_type: 'tv',
+                    poster_path: details.poster_path || best.poster_path,
+                    backdrop_path: details.backdrop_path || best.backdrop_path,
+                    rating: details.vote_average || best.vote_average,
+                    overview: details.overview || best.overview,
+                    date: details.first_air_date || details.last_air_date || best.first_air_date,
+                    genres: details.genres || [],
+                    genre_ids: (details.genres || []).map((g) => g.id),
+                    cast: includeCredits ? mapCastFromCredits(details.credits) : [],
+                    total_episodes: details.number_of_episodes || null,
+                    total_seasons: details.number_of_seasons || null,
+                    runtime: details.episode_run_time ? details.episode_run_time[0] : null,
+                    origin_country: details.origin_country || best.origin_country || [],
+                    original_language: details.original_language || best.original_language,
+                };
+                save(result);
+                return result;
+            }
+
+            const res = await fetch(
+                `https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`
+            );
+            const data = await res.json();
             if (!data.results?.length) return null;
-            let best = data.results.find((i) => i.poster_path || i.backdrop_path) || data.results[0];
-            if (region) best = await pickMovieWithRegion(data.results, region);
-            const detailRes = await fetch(`https://api.themoviedb.org/3/movie/${best.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
+
+            const filtered = data.results.filter((i) => i.media_type === 'movie' || i.media_type === 'tv');
+            const pool = filtered.length ? filtered : data.results;
+            let bestResult = pool.find((i) => i.poster_path || i.backdrop_path) || pool[0];
+            const mt = bestResult.media_type === 'movie' ? 'movie' : 'tv';
+            if (region && mt === 'tv' && bestResult.origin_country) {
+                bestResult = pickTvWithRegion(pool.filter((i) => i.media_type === 'tv'), region) || bestResult;
+            }
+            if (region && !light && mt === 'movie') {
+                const movies = pool.filter((i) => i.media_type === 'movie');
+                if (movies.length) bestResult = await pickMovieWithRegion(movies, region);
+            }
+            if (region && light && mt === 'movie') {
+                const movies = pool.filter((i) => i.media_type === 'movie');
+                if (movies.length) bestResult = movies.find((i) => i.poster_path || i.backdrop_path) || movies[0];
+            }
+
+            const type = bestResult.media_type === 'movie' ? 'movie' : 'tv';
+            const searchHasGenres = Array.isArray(bestResult.genre_ids) && bestResult.genre_ids.length > 0;
+            const posterOrBackM = bestResult.poster_path || bestResult.backdrop_path;
+            if (light && posterOrBackM && searchHasGenres) {
+                const result =
+                    type === 'movie'
+                        ? {
+                              tmdb_id: bestResult.id,
+                              media_type: 'movie',
+                              poster_path: bestResult.poster_path || bestResult.backdrop_path,
+                              backdrop_path: bestResult.backdrop_path,
+                              rating: bestResult.vote_average,
+                              overview: bestResult.overview,
+                              date: bestResult.release_date,
+                              genres: [],
+                              genre_ids: bestResult.genre_ids,
+                              cast: [],
+                              total_episodes: null,
+                              total_seasons: null,
+                              runtime: bestResult.runtime,
+                              origin_country: [],
+                              original_language: bestResult.original_language,
+                          }
+                        : {
+                              tmdb_id: bestResult.id,
+                              media_type: 'tv',
+                              poster_path: bestResult.poster_path || bestResult.backdrop_path,
+                              backdrop_path: bestResult.backdrop_path,
+                              rating: bestResult.vote_average,
+                              overview: bestResult.overview,
+                              date: bestResult.first_air_date,
+                              genres: [],
+                              genre_ids: bestResult.genre_ids,
+                              cast: [],
+                              total_episodes: null,
+                              total_seasons: null,
+                              runtime: null,
+                              origin_country: bestResult.origin_country || [],
+                              original_language: bestResult.original_language,
+                          };
+                save(result);
+                return result;
+            }
+
+            const detailRes = await fetch(
+                `https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US${creditsParam}`
+            );
             const details = await detailRes.json();
+
             const result = {
-                tmdb_id: best.id,
-                media_type: 'movie',
-                poster_path: details.poster_path || best.poster_path,
-                backdrop_path: details.backdrop_path || best.backdrop_path,
-                rating: details.vote_average || best.vote_average,
-                overview: details.overview || best.overview,
-                date: details.release_date || best.release_date,
+                tmdb_id: bestResult.id,
+                media_type: type,
+                poster_path: details.poster_path || bestResult.poster_path,
+                backdrop_path: details.backdrop_path || bestResult.backdrop_path,
+                rating: details.vote_average || bestResult.vote_average,
+                overview: details.overview || bestResult.overview,
+                date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
                 genres: details.genres || [],
                 genre_ids: (details.genres || []).map((g) => g.id),
-                cast: details.credits?.cast
-                    ? details.credits.cast.slice(0, 15).map((c) => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
-                    : [],
-                total_episodes: null,
-                total_seasons: null,
-                runtime: details.runtime,
-                origin_country: details.production_countries?.map((c) => c.iso_3166_1) || [],
-                original_language: details.original_language
-            };
-            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
-            return result;
-        }
-
-        if (mediaType === 'tv') {
-            let url = `https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
-            if (year != null && !Number.isNaN(year)) url += `&first_air_date_year=${year}`;
-            const res = await fetch(url);
-            data = await res.json();
-            if (!data.results?.length) return null;
-            const pool = data.results;
-            const withPoster = pool.filter((i) => i.poster_path || i.backdrop_path);
-            const searchPool = withPoster.length ? withPoster : pool;
-            let best = region
-                ? pickTvWithRegion(searchPool, region)
-                : (searchPool.find((i) => i.poster_path || i.backdrop_path) || searchPool[0]);
-            if (!best) best = pool[0];
-            const detailRes = await fetch(`https://api.themoviedb.org/3/tv/${best.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
-            const details = await detailRes.json();
-            const result = {
-                tmdb_id: best.id,
-                media_type: 'tv',
-                poster_path: details.poster_path || best.poster_path,
-                backdrop_path: details.backdrop_path || best.backdrop_path,
-                rating: details.vote_average || best.vote_average,
-                overview: details.overview || best.overview,
-                date: details.first_air_date || details.last_air_date || best.first_air_date,
-                genres: details.genres || [],
-                genre_ids: (details.genres || []).map((g) => g.id),
-                cast: details.credits?.cast
-                    ? details.credits.cast.slice(0, 15).map((c) => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
-                    : [],
+                cast: includeCredits ? mapCastFromCredits(details.credits) : [],
                 total_episodes: details.number_of_episodes || null,
                 total_seasons: details.number_of_seasons || null,
-                runtime: details.episode_run_time ? details.episode_run_time[0] : null,
-                origin_country: details.origin_country || best.origin_country || [],
-                original_language: details.original_language || best.original_language
+                runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
+                origin_country: details.origin_country || bestResult.origin_country || [],
+                original_language: details.original_language || bestResult.original_language,
             };
-            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+            save(result);
             return result;
+        } catch (e) {
+            console.error('TMDB fetch error:', e);
+            return null;
         }
+    })();
 
-        // Default: search/multi
-        const res = await fetch(`https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`);
-        data = await res.json();
-        if (!data.results?.length) return null;
-
-        const filtered = data.results.filter((i) => i.media_type === 'movie' || i.media_type === 'tv');
-        const pool = filtered.length ? filtered : data.results;
-        let bestResult = pool.find((i) => i.poster_path || i.backdrop_path) || pool[0];
-        const mt = bestResult.media_type === 'movie' ? 'movie' : 'tv';
-        if (region && mt === 'tv' && bestResult.origin_country) {
-            bestResult = pickTvWithRegion(pool.filter((i) => i.media_type === 'tv'), region) || bestResult;
-        }
-        if (region && mt === 'movie') {
-            const movies = pool.filter((i) => i.media_type === 'movie');
-            if (movies.length) bestResult = await pickMovieWithRegion(movies, region);
-        }
-
-        const type = bestResult.media_type === 'movie' ? 'movie' : 'tv';
-        const detailRes = await fetch(`https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`);
-        const details = await detailRes.json();
-
-        const result = {
-            tmdb_id: bestResult.id,
-            media_type: type,
-            poster_path: details.poster_path || bestResult.poster_path,
-            backdrop_path: details.backdrop_path || bestResult.backdrop_path,
-            rating: details.vote_average || bestResult.vote_average,
-            overview: details.overview || bestResult.overview,
-            date: details.release_date || details.first_air_date || bestResult.release_date || bestResult.first_air_date,
-            genres: details.genres || [],
-            genre_ids: (details.genres || []).map((g) => g.id),
-            cast: details.credits?.cast
-                ? details.credits.cast.slice(0, 15).map((c) => ({ id: c.id, name: c.name, profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null }))
-                : [],
-            total_episodes: details.number_of_episodes || null,
-            total_seasons: details.number_of_seasons || null,
-            runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
-            origin_country: details.origin_country || bestResult.origin_country || [],
-            original_language: details.original_language || bestResult.original_language
-        };
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
-        return result;
-    } catch (e) {
-        console.error('TMDB fetch error:', e);
-        return null;
+    _tmdbInflight.set(inflightKey, run);
+    try {
+        return await run;
+    } finally {
+        _tmdbInflight.delete(inflightKey);
     }
 };
-
 /** Simpan override query TMDB (admin — backend menyimpan di tmdb_overrides) */
 export const saveTmdbOverride = async (payload) => {
     const res = await fetch(`${BASE_URL}/api/tmdb-overrides`, {

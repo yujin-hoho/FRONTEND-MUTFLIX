@@ -67,6 +67,17 @@ const inferTmdbMediaType = (item) => {
   return undefined;
 };
 
+const tmdbOptsFromItem = (item) => {
+  if (!item?.tmdb_query) return {};
+  return {
+    query: item.tmdb_query,
+    mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+    year: item.override_year != null && item.override_year !== '' ? Number(item.override_year) : undefined,
+    region: item.override_region || undefined,
+    includeAdult: !!item.include_adult,
+  };
+};
+
 const itemMatchesVarietyShow = (item) => {
   const ids = item.tmdb_genre_ids;
   if (Array.isArray(ids) && ids.some((id) => VARIETY_TMDB_GENRE_IDS.has(Number(id)))) return true;
@@ -82,9 +93,9 @@ const itemMatchesVarietyShow = (item) => {
   return false;
 };
 
-/** Pool agar semua item bisa di-enrich tanpa membanjiri TMDB sekaligus */
-const TMDB_FILTER_CONCURRENCY = 5;
-const MAX_TMDB_ENRICH_FILTER = 500;
+/** Pool agar semua item bisa di-enrich tanpa membanjiri TMDB sekaligus (TMDB ~40 req/10s — 12 aman dengan light + dedupe) */
+const TMDB_FILTER_CONCURRENCY = 12;
+const MAX_TMDB_ENRICH_FILTER = 2000;
 
 async function mapWithConcurrency(items, concurrency, mapper, onItemDone) {
   if (!items.length) return [];
@@ -192,6 +203,8 @@ const applySort = (items, sortKey) => {
 };
 
 const GRID_PAGE_SIZE = 24;
+/** Batch pertama lebih besar supaya sentinel cepat masuk area scroll / intersection */
+const INITIAL_VISIBLE = Math.min(GRID_PAGE_SIZE * 2, 200);
 
 const FilterPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -204,13 +217,16 @@ const FilterPage = () => {
   const [listLoading, setListLoading] = useState(true);
   const [tmdbEnriching, setTmdbEnriching] = useState(false);
   const [allResolved, setAllResolved] = useState([]);
-  const [visibleCount, setVisibleCount] = useState(GRID_PAGE_SIZE);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const loadMoreSentinelRef = useRef(null);
+  const filteredSortedLengthRef = useRef(0);
 
   const filteredSorted = useMemo(
     () => applySort(filterItems(allResolved, activeType, activeRegion, activeCategory), sortBy),
     [allResolved, activeType, activeRegion, activeCategory, sortBy]
   );
+
+  filteredSortedLengthRef.current = filteredSorted.length;
 
   const visibleItems = useMemo(
     () => filteredSorted.slice(0, visibleCount),
@@ -252,25 +268,34 @@ const FilterPage = () => {
   };
 
   useEffect(() => {
-    setVisibleCount(GRID_PAGE_SIZE);
+    const max = filteredSortedLengthRef.current;
+    if (max === 0) return;
+    setVisibleCount(Math.min(INITIAL_VISIBLE, max));
   }, [activeType, activeRegion, activeCategory, sortBy]);
 
-  // Infinite scroll: muat lebih banyak kartu saat sentinel terlihat
+  // Infinite scroll: jangan masukkan visibleCount ke deps — observer harus stabil agar intersection tidak “hilang” tiap batch
   useEffect(() => {
     const el = loadMoreSentinelRef.current;
-    if (!el || visibleCount >= filteredSorted.length) return undefined;
+    if (!el) return undefined;
 
     const obs = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting) {
-          setVisibleCount((c) => Math.min(c + GRID_PAGE_SIZE, filteredSorted.length));
-        }
+        if (!entries[0]?.isIntersecting) return;
+        setVisibleCount((c) => {
+          const max = filteredSortedLengthRef.current;
+          if (c >= max) return c;
+          return Math.min(c + GRID_PAGE_SIZE, max);
+        });
       },
-      { root: null, rootMargin: '400px', threshold: 0 }
+      {
+        root: null,
+        rootMargin: '0px 0px 2000px 0px',
+        threshold: 0,
+      }
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [filteredSorted.length, visibleCount]);
+  }, [filteredSorted.length]);
 
   // Fetch daftar folder sekali; TMDB enrichment tidak memblokir halaman
   useEffect(() => {
@@ -288,10 +313,19 @@ const FilterPage = () => {
 
         const uniqueDataList = foldersData;
 
+        const hasPosterAndGenres = (it) => {
+          const pp = it.poster_path || it.tmdb_poster_path;
+          const g = it.tmdb_genre_ids;
+          return !!(pp && Array.isArray(g) && g.length > 0);
+        };
+
         const quickResolved = uniqueDataList.map((item) => {
           const srcGenreIds = item.tmdb_genre_ids;
           const parsedCategories = srcGenreIds ? srcGenreIds.map((id) => TMDB_GENRES[id]).filter(Boolean) : [];
           const resolved = { ...item, parsedCategories };
+          if (item.poster_path && !item.tmdb_poster_path) {
+            resolved.tmdb_poster_path = item.poster_path;
+          }
           resolved.parsedRegion = getRegionMapping(resolved);
           return resolved;
         });
@@ -301,9 +335,12 @@ const FilterPage = () => {
         setListLoading(false);
         setTmdbEnriching(true);
 
+        const viteTmdbKey = import.meta.env.VITE_TMDB_API_KEY;
+        const canClientTmdbFetch = !!(viteTmdbKey && viteTmdbKey !== 'MASUKKAN_KEY_TMDB_ANDA_DISINI');
+
         const needFetchIndices = uniqueDataList
           .map((item, i) => ({ i, item }))
-          .filter(({ item }) => !(item.tmdb_poster_path && item.tmdb_genre_ids));
+          .filter(({ item }) => !hasPosterAndGenres(item));
         needFetchIndices.sort((a, b) => {
           const at = inferTmdbMediaType(a.item) === 'tv' ? 0 : 1;
           const bt = inferTmdbMediaType(b.item) === 'tv' ? 0 : 1;
@@ -313,7 +350,7 @@ const FilterPage = () => {
           needFetchIndices.slice(0, MAX_TMDB_ENRICH_FILTER).map(({ i }) => i)
         );
 
-        const FLUSH_EVERY = 28;
+        const FLUSH_EVERY = 14;
         const enriched = await mapWithConcurrency(
           uniqueDataList,
           TMDB_FILTER_CONCURRENCY,
@@ -329,11 +366,16 @@ const FilterPage = () => {
               return r;
             }
 
-            const mediaType = inferTmdbMediaType(item);
-            const hasEnoughInfo = item.tmdb_poster_path && item.tmdb_genre_ids;
+            const inferred = inferTmdbMediaType(item);
+            const override = tmdbOptsFromItem(item);
+            const hasEnoughInfo = hasPosterAndGenres(item);
             let tmdbData = null;
-            if (!hasEnoughInfo && mayCallTmdb.has(index)) {
-              tmdbData = await getTMDBInfo(title, mediaType ? { mediaType } : {});
+            if (!hasEnoughInfo && mayCallTmdb.has(index) && canClientTmdbFetch) {
+              tmdbData = await getTMDBInfo(title, {
+                ...override,
+                mediaType: override.mediaType || inferred || undefined,
+                light: true,
+              });
             }
 
             const srcGenreIds =
@@ -346,7 +388,7 @@ const FilterPage = () => {
 
             const resolvedItem = {
               ...item,
-              tmdb_poster_path: tmdbData?.poster_path || item.tmdb_poster_path,
+              tmdb_poster_path: tmdbData?.poster_path || item.tmdb_poster_path || item.poster_path,
               tmdb_rating: tmdbData?.rating || item.tmdb_rating,
               tmdb_genre_ids: srcGenreIds,
               original_language: tmdbData?.original_language || item.original_language,
@@ -488,8 +530,12 @@ const FilterPage = () => {
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
                 {visibleItems.map((item, idx) => (
-                  <div key={item.folder_name || item.path || item.id || idx} className="flex justify-center">
-                    <MovieCard item={item} />
+                  <div
+                    key={item.folder_name || item.path || item.id || idx}
+                    className="flex justify-center animate-fade-in-up"
+                    style={{ animationDelay: `${Math.min(idx % GRID_PAGE_SIZE, 11) * 40}ms` }}
+                  >
+                    <MovieCard item={item} delay={idx % GRID_PAGE_SIZE} posterFadeIn />
                   </div>
                 ))}
               </div>

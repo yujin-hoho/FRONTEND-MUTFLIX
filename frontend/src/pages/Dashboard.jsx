@@ -65,7 +65,7 @@ const BrowseMoreStrip = ({ onNavigate }) => (
 );
 
 const backdropOrPosterUrl = (item) => {
-  const raw = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster;
+  const raw = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster_path || item.poster;
   if (!raw) return null;
   return raw.startsWith('http') ? raw : `https://image.tmdb.org/t/p/w780${raw}`;
 };
@@ -198,7 +198,7 @@ const Dashboard = () => {
     const enrichPriority = (it) => {
       if (it.tmdb_query) return -1;
       const hasGenres = Array.isArray(it.tmdb_genre_ids) && it.tmdb_genre_ids.length > 0;
-      const hasPoster = !!it.tmdb_poster_path;
+      const hasPoster = !!(it.tmdb_poster_path || it.poster_path);
       if (!hasGenres && !hasPoster) return 0;
       if (!hasGenres) return 1;
       return 3;
@@ -210,7 +210,7 @@ const Dashboard = () => {
         const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
         if (!searchTitle) return false;
         const hasOverride = !!item.tmdb_query;
-        const hasBaseInfo = item.tmdb_poster_path && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
+        const hasBaseInfo = (item.tmdb_poster_path || item.poster_path) && item.tmdb_genre_ids && item.tmdb_genre_ids.length > 0;
         return !(hasBaseInfo && !hasOverride);
       })
       .sort((a, b) => enrichPriority(a.item) - enrichPriority(b.item))

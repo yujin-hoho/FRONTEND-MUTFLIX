@@ -15,10 +15,11 @@ const tmdbOptsFromItem = (item) => {
   return o;
 };
 
-export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster }) => {
+export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster, posterFadeIn }) => {
   const isHorizontal = variant === 'horizontal';
   const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
+  const [posterLoaded, setPosterLoaded] = useState(false);
   const hoverTimeoutRef = useRef(null);
   const navigate = useNavigate();
   const cardWidth = isHorizontal ? 260 : 190;
@@ -73,26 +74,30 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
 
   useEffect(() => {
     if (title === 'Loading...') return;
-    if (item.tmdb_poster_path || item.poster) {
+    if (item.tmdb_poster_path || item.poster_path || item.poster) {
       setTmdbData(null);
       return;
     }
     setTmdbData(null);
     let cancelled = false;
     const searchTitle = item.tmdb_query || title;
-    getTMDBInfo(searchTitle, tmdbOptsFromItem(item)).then((data) => {
+    getTMDBInfo(searchTitle, { ...tmdbOptsFromItem(item), light: true }).then((data) => {
       if (!cancelled && data) setTmdbData(data);
     });
     return () => {
       cancelled = true;
     };
-  }, [title, tmdbFetchSignature, item.tmdb_poster_path, item.poster]);
+  }, [title, tmdbFetchSignature, item.tmdb_poster_path, item.poster_path, item.poster]);
 
-  const rawPoster = item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
+  const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
   const poster = posterPath
     ? (posterPath.startsWith('http') ? posterPath : `https://image.tmdb.org/t/p/w500${posterPath}`)
     : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop';
+
+  useEffect(() => {
+    setPosterLoaded(false);
+  }, [poster]);
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
   const overview = item?.tmdb_overview || tmdbData?.overview || "A thrilling story awaits in this masterpiece.";
@@ -110,12 +115,12 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
     <div
       className={`relative flex-none transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)] 
         ${isRemoving ? 'opacity-0 scale-75 translate-y-4 !w-0 !mr-[-1rem] pointer-events-none' : 'opacity-100 scale-100 translate-y-0'}
-        animate-poster-reveal group cursor-pointer shrink-0`}
+        ${posterFadeIn ? '' : 'animate-poster-reveal'} group cursor-pointer shrink-0`}
       style={{ 
         zIndex: isHovered ? 50 : 1, 
         width: `${cardWidth}px`, 
         minWidth: `${cardWidth}px`,
-        animationDelay: `${delay * 105}ms`
+        animationDelay: posterFadeIn ? undefined : `${delay * 105}ms`
       }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -131,7 +136,17 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
           alt={title} 
           loading="lazy" 
           decoding="async" 
-          className={`w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 ${!rawPoster ? 'opacity-30 grayscale' : 'opacity-100'}`} 
+          onLoad={() => posterFadeIn && setPosterLoaded(true)}
+          onError={() => posterFadeIn && setPosterLoaded(true)}
+          className={`w-full h-full object-cover transition-opacity duration-500 transition-transform duration-500 group-hover:scale-105 ${
+            posterFadeIn && rawPoster
+              ? posterLoaded
+                ? 'opacity-100'
+                : 'opacity-0'
+              : !rawPoster
+                ? 'opacity-30 grayscale'
+                : 'opacity-100'
+          }`} 
         />
         
         {!rawPoster && (

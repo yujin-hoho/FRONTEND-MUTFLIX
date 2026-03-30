@@ -56,7 +56,7 @@ const MyList = () => {
             const enrichmentPromises = data.map(async (item, idx) => {
                 if (item.meta_json?.tmdb_poster_path) return;
 
-                const tmdb = await getTMDBInfo(item.folder_name);
+                const tmdb = await getTMDBInfo(item.folder_name, { light: true });
                 if (tmdb && currentFetchId === fetchIdRef.current) {
                     enrichedData[idx] = {
                         ...item,

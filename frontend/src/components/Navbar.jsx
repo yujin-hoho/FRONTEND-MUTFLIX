@@ -52,16 +52,16 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
         // Enrich with TMDB data if missing so posters show up
         const enriched = await Promise.all(
           topResults.map(async (item) => {
-            if (item.tmdb_poster_path) return item;
+            if (item.tmdb_poster_path || item.poster_path) return item;
             const title = item.tmdb_title || item.folder_name || item.name;
             if (!title) return item;
 
             try {
-              const tmdbData = await getTMDBInfo(title);
+              const tmdbData = await getTMDBInfo(title, { light: true });
               if (tmdbData) {
                 return {
                   ...item,
-                  tmdb_poster_path: tmdbData.poster_path || item.tmdb_poster_path,
+                  tmdb_poster_path: tmdbData.poster_path || item.tmdb_poster_path || item.poster_path,
                   tmdb_rating: tmdbData.rating || item.tmdb_rating,
                 };
               }
@@ -201,9 +201,9 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                         onMouseDown={() => navigate(`/detail/${encodeURIComponent(item.folder_name || item.name || '')}?type=${item.type === 'tv' ? 'series' : (item.type || 'movie')}`)}
                       >
                         <div className="w-8 h-11 rounded overflow-hidden bg-white/5 flex items-center justify-center flex-shrink-0 border border-white/5 group-hover:border-white/20 transition-colors">
-                          {item.tmdb_poster_path ? (
+                          {(item.tmdb_poster_path || item.poster_path) ? (
                             <img
-                              src={item.tmdb_poster_path.startsWith('http') ? item.tmdb_poster_path : `https://image.tmdb.org/t/p/w92${item.tmdb_poster_path}`}
+                              src={(item.tmdb_poster_path || item.poster_path).startsWith('http') ? (item.tmdb_poster_path || item.poster_path) : `https://image.tmdb.org/t/p/w92${item.tmdb_poster_path || item.poster_path}`}
                               alt={item.folder_name || item.name}
                               loading="lazy"
                               decoding="async"
