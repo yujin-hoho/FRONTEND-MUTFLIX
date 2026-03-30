@@ -2449,7 +2449,7 @@ def get_folders(current_user):
         if cached:
             payload = copy.deepcopy(cached)
             _merge_tmdb_overrides_into_folders(payload)
-            return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
+            return add_no_cache_headers(orjson_jsonify(payload))
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
@@ -2497,12 +2497,12 @@ def get_folders(current_user):
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         payload = copy.deepcopy(all_c)
         _merge_tmdb_overrides_into_folders(payload)
-        return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
+        return add_no_cache_headers(orjson_jsonify(payload))
     stale = mem_get(key)
     if stale:
         payload = copy.deepcopy(stale)
         _merge_tmdb_overrides_into_folders(payload)
-        return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=60)
+        return add_no_cache_headers(orjson_jsonify(payload))
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
 
 @app.route("/api/videos/<path:folder_name>")

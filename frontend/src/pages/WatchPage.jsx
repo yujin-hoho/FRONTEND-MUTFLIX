@@ -21,11 +21,38 @@ import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
+import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 
 /** Stored delay: negative = tunda (subtitle lebih lambat), positive = percepat (lebih cepat). */
 const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
+const LOCAL_RESUME_KEY = 'mutflix_resume_positions';
+
+const getLocalResumeMap = () => {
+    try {
+        const raw = localStorage.getItem(LOCAL_RESUME_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+};
+
+const setLocalResumeForPath = (mediaPath, positionMs, durationMs) => {
+    if (!mediaPath) return;
+    try {
+        const map = getLocalResumeMap();
+        map[mediaPath] = {
+            position_ms: Number(positionMs) || 0,
+            duration_ms: Number(durationMs) || 0,
+            ts: Date.now(),
+        };
+        localStorage.setItem(LOCAL_RESUME_KEY, JSON.stringify(map));
+    } catch {
+        // ignore local cache write failures
+    }
+};
 
 const WatchPage = () => {
     const { folderName } = useParams();
@@ -155,7 +182,7 @@ const WatchPage = () => {
     const episodesToShow = filteredEpisodes.length > 0 ? filteredEpisodes : videos;
 
     // ─── Derived values ────────────────────────────
-    const title = decodedName;
+    const title = cleanTitleOutsideParentheses(decodedName) || decodedName;
     const rating = tmdbData?.rating;
     const overview = tmdbData?.overview || '';
     const year = (tmdbData?.date || '').substring(0, 4) || '';
@@ -169,15 +196,17 @@ const WatchPage = () => {
 
     // ─── Load Data ──────────────────────────────────
     useEffect(() => {
+        let cancelled = false;
         const loadData = async () => {
             setLoading(true);
             setEpisodeData({});
+            setTmdbData(null);
+            setCredits(null);
             fetchedSeasonStillsRef.current = new Set();
             try {
-                const [videosResp, tmdb] = await Promise.all([
-                    fetchVideos(decodedName),
-                    getTMDBInfo(decodedName)
-                ]);
+                // Critical path: videos only. TMDB metadata loads in background.
+                const videosResp = await fetchVideos(decodedName);
+                if (cancelled) return;
 
                 const videosListRaw = videosResp?.videos || [];
                 const videosList = videosListRaw.map((v) => ({
@@ -191,7 +220,6 @@ const WatchPage = () => {
                 });
 
                 setVideos(videosList);
-                setTmdbData(tmdb);
 
                 const targetVideo = videosList.find(v =>
                     (v.season || 1) === urlSeason && (v.episode || 1) === urlEp
@@ -205,27 +233,39 @@ const WatchPage = () => {
                 // Biarkan pemutar & stream mulai lebih dulu — kredit & still episode di background
                 setLoading(false);
 
-                if (tmdb?.tmdb_id) {
-                    void (async () => {
-                        try {
+                // Background: TMDB metadata + credits.
+                void (async () => {
+                    try {
+                        const inferredIsSeries =
+                            urlType === 'series' ||
+                            videosList.length > 1 ||
+                            videosList.some((v) => toInt(v.season, 1) > 1);
+                        const tmdb = await getTMDBInfo(decodedName, {
+                            mediaType: inferredIsSeries ? 'tv' : (urlType === 'movie' ? 'movie' : undefined),
+                        });
+                        if (cancelled) return;
+                        setTmdbData(tmdb);
+                        if (tmdb?.tmdb_id) {
                             const creditsData = await getTMDBCredits(tmdb.tmdb_id, tmdb.media_type);
-                            setCredits(creditsData);
-                        } catch (e) {
-                            console.warn('Watch page TMDB extras failed:', e);
+                            if (!cancelled) setCredits(creditsData);
                         }
-                    })();
-                }
+                    } catch (e) {
+                        console.warn('Watch page TMDB extras failed:', e);
+                    }
+                })();
             } catch (e) {
                 console.error('Watch page load failed:', e);
                 setLoading(false);
             }
         };
         loadData();
+        return () => { cancelled = true; };
     }, [decodedName, urlType, urlSeason, urlEp]);
 
     // Lazy-load TMDB episode stills + episode names per season tab.
     useEffect(() => {
         if (!tmdbData?.tmdb_id) return;
+        if (tmdbData?.media_type !== 'tv') return;
         if (!isSeriesContent) return;
 
         const seasonNum = toInt(activeSeason, 1);
@@ -281,6 +321,11 @@ const WatchPage = () => {
         const video = videoRef.current;
         if (!video.duration) return;
 
+        const positionMs = Math.floor(video.currentTime * 1000);
+        const durationMs = Math.floor(video.duration * 1000);
+        // Fast local resume cache for instant seek on next open.
+        setLocalResumeForPath(currentVideo.path, positionMs, durationMs);
+
         await saveHistory(
             profileId,
             currentVideo.path,
@@ -289,8 +334,8 @@ const WatchPage = () => {
             currentVideo.source,
             currentEpData?.still_path || tmdbData?.tmdb_poster_path,
             currentVideo.subtitle_path,
-            Math.floor(video.currentTime * 1000),
-            Math.floor(video.duration * 1000),
+            positionMs,
+            durationMs,
             isSeriesContent ? (currentVideo.season ?? null) : null,
             isSeriesContent ? (currentVideo.episode ?? null) : null
         );
@@ -299,7 +344,20 @@ const WatchPage = () => {
     // ─── Fetch Resume Position ─────────────────────
     useEffect(() => {
         if (!profileId || !currentVideo) return;
-        
+
+        // Instant local seek hint while remote history is loading.
+        const localMap = getLocalResumeMap();
+        const localEntry = localMap[currentVideo.path];
+        if (localEntry && Number(localEntry.position_ms) >= 10000) {
+            const p = Number(localEntry.position_ms);
+            const d = Number(localEntry.duration_ms) || 0;
+            const progress = d > 0 ? (p / d) * 100 : 0;
+            if (progress < 95) setResumeTime(p / 1000);
+            else setResumeTime(0);
+        } else {
+            setResumeTime(0);
+        }
+
         const fetchResumePosition = async () => {
             const history = await fetchHistory(profileId);
             const entry = history.find(h => h.media_path === currentVideo.path);
@@ -307,6 +365,7 @@ const WatchPage = () => {
                 const progress = (entry.position_ms / entry.duration_ms) * 100;
                 if (progress < 95) {
                     setResumeTime(entry.position_ms / 1000);
+                    setLocalResumeForPath(entry.media_path, entry.position_ms, entry.duration_ms);
                 } else {
                     setResumeTime(0);
                 }
@@ -428,9 +487,22 @@ const WatchPage = () => {
                         if (playPromise !== undefined) {
                             playPromise.catch(e => {
                                 console.warn('Autoplay prevented by browser:', e);
-                                // If autoplay fails, the user will have to click play. 
-                                // We ensure videoLoading is false so the Play button is visible.
-                                setVideoLoading(false);
+                                // Browser policy: retry with muted autoplay (most reliable path).
+                                try {
+                                    if (videoRef.current) {
+                                        videoRef.current.muted = true;
+                                        setIsMuted(true);
+                                        const mutedRetry = videoRef.current.play();
+                                        if (mutedRetry !== undefined) {
+                                            mutedRetry.catch(() => {
+                                                // If still blocked, show play button.
+                                                setVideoLoading(false);
+                                            });
+                                        }
+                                    }
+                                } catch {
+                                    setVideoLoading(false);
+                                }
                             });
                         }
                     } else {

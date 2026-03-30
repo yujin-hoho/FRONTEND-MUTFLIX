@@ -20,7 +20,7 @@ const Footer = () => {
       
       <div className="flex items-center gap-2 mb-10">
         <Search className="w-4 h-4 text-[#00dc41]" />
-        <span className="text-[#00dc41] font-bold text-sm tracking-wide">iQIYI</span>
+        <span className="text-[#00dc41] font-bold text-sm tracking-wide">MUTFLIX</span>
         <span className="text-gray-500 text-sm">Search in App Store</span>
       </div>
 

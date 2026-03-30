@@ -8,7 +8,7 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
-import { fetchFoldersFresh, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
+import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -22,12 +22,12 @@ const shuffleArray = (array) => {
 const getSafeArray = (resp, type) => {
   if (!resp || typeof resp.then === 'function') return [];
   if (Array.isArray(resp)) return resp;
-  
+
   // Handle the object structure from /api/folders
   if (type === 'folders') {
     return [...(resp.movies || []), ...(resp.series || [])];
   }
-  
+
   return [];
 };
 
@@ -97,6 +97,42 @@ const preloadDashboardImages = (resolvedItems, continueWatchingItems, topActors 
   } else {
     setTimeout(run, 0);
   }
+};
+
+const tmdbOptsFromItem = (it) => {
+  if (!it?.tmdb_query) return {};
+  const o = {
+    query: it.tmdb_query,
+    mediaType: it.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+  };
+  if (it.override_year != null && it.override_year !== '') o.year = Number(it.override_year);
+  if (it.override_region) o.region = it.override_region;
+  if (it.include_adult) o.includeAdult = true;
+  return o;
+};
+
+const enrichFeaturedFast = async (items) => {
+  const picks = (items || []).slice(0, 6);
+  const jobs = picks.map(async (item) => {
+    const title = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
+    if (!title) return item;
+    try {
+      const data = await getTMDBInfo(title, { ...tmdbOptsFromItem(item), light: true });
+      if (!data) return item;
+      return {
+        ...item,
+        tmdb_poster_path: item.tmdb_poster_path || item.poster_path || data.poster_path || data.backdrop_path,
+        tmdb_backdrop_path: item.tmdb_backdrop_path || data.backdrop_path || data.poster_path,
+        tmdb_overview: item.tmdb_overview || data.overview,
+        tmdb_rating: item.tmdb_rating || data.rating,
+        tmdb_genre_ids: item.tmdb_genre_ids?.length ? item.tmdb_genre_ids : (data.genre_ids || []),
+      };
+    } catch {
+      return item;
+    }
+  });
+  const resolved = await Promise.all(jobs);
+  return [...resolved, ...items.slice(6)];
 };
 
 const Dashboard = () => {
@@ -186,18 +222,6 @@ const Dashboard = () => {
     let apiFetchCount = 0;
     const MAX_API_CALLS = 120;
 
-    const tmdbOptsFromItem = (it) => {
-      if (!it.tmdb_query) return {};
-      const o = {
-        query: it.tmdb_query,
-        mediaType: it.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
-      };
-      if (it.override_year != null && it.override_year !== '') o.year = Number(it.override_year);
-      if (it.override_region) o.region = it.override_region;
-      if (it.include_adult) o.includeAdult = true;
-      return o;
-    };
-
     const enrichPriority = (it) => {
       if (it.tmdb_query) return -1;
       const hasGenres = Array.isArray(it.tmdb_genre_ids) && it.tmdb_genre_ids.length > 0;
@@ -271,12 +295,13 @@ const Dashboard = () => {
   }, [buildSections]);
   const loadData = useCallback(async () => {
     const currentFetchId = ++fetchIdRef.current;
-    
+
     try {
       setLoading(true);
 
-      // fetchFoldersFresh: tunggu network dulu (bukan cache dulu) agar UI tidak stuck kosong.
-      const foldersResp = await fetchFoldersFresh();
+      // Fast path: serve cache instantly (if available), then refresh in background.
+      // We intentionally skip onUpdate callback to avoid recursive reload loops.
+      const foldersResp = await fetchFolders();
 
       if (fetchIdRef.current !== currentFetchId) return;
 
@@ -342,6 +367,12 @@ const Dashboard = () => {
       preloadDashboardImages(shuffledData, cwList, []);
       setLoading(false);
 
+      // Make hero metadata arrive early (poster/backdrop/synopsis/rating) before full enrichment.
+      void enrichFeaturedFast(shuffledData).then((featuredQuick) => {
+        if (fetchIdRef.current !== currentFetchId) return;
+        setFeaturedList(featuredQuick.slice(0, 6));
+      });
+
       const enrichResult = await enrichWithTMDB(shuffledData, currentFetchId);
       if (fetchIdRef.current !== currentFetchId) return;
       if (!enrichResult) return;
@@ -374,16 +405,16 @@ const Dashboard = () => {
 
   const handleDeleteHistory = async (item) => {
     if (!item.media_path) return;
-    
+
     // Satisfying deletion effect:
     setRemovingItemPath(item.media_path);
-    
+
     // Delay actual removal to allow animation to play
     setTimeout(() => {
       const newHidden = [...hiddenHistory, item.media_path];
       setHiddenHistory(newHidden);
       localStorage.setItem('mutflix_hidden_history', JSON.stringify(newHidden));
-      
+
       setContinueWatching(prev => prev.filter(h => h.media_path !== item.media_path));
       setRemovingItemPath(null);
     }, 400); // match animation duration
@@ -442,7 +473,6 @@ const Dashboard = () => {
             </>
           )}
 
-          <BrowseMoreStrip onNavigate={navigate} />
 
           {genreSections.length > 0 && (
             <div className="px-6 md:px-[60px] mb-6 -mt-2 w-full">
@@ -478,6 +508,14 @@ const Dashboard = () => {
                   />
                 </div>
 
+                {/* 👇 SISIPIN DI SINI */}
+                {idx === 2 && (
+                  <>
+                    <SectionDivider />
+                    <BrowseMoreStrip onNavigate={navigate} />
+                  </>
+                )}
+
                 {idx === Math.min(4, Math.max(0, rest.length - 1)) && celebrities.length > 0 && (
                   <CelebrityCarousel castList={celebrities} />
                 )}
@@ -487,6 +525,8 @@ const Dashboard = () => {
             );
           })}
         </div>
+
+
       </main>
 
       <LoginModal

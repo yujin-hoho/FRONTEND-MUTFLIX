@@ -2,6 +2,9 @@ import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X, Pencil } from 'lucide
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo, TMDB_GENRES, fetchVideos } from '../services/api';
+import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
+import { preloadContentDetailRoute, preloadWatchPageRoute } from '../utils/routePreload';
+import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 
 const tmdbOptsFromItem = (item) => {
   if (!item?.tmdb_query) return {};
@@ -34,10 +37,9 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   };
 
   const folderName = item?.folder_name || item?.name || '';
-  const mediaType = item?.type || 'movie';
-  
   const handleNavigate = async () => {
     if (progress !== undefined) {
+      void preloadWatchPageRoute();
       let ep = item.episode ?? 1;
       let s = item.season ?? 1;
       if (item.media_path && folderName && (item.season == null || item.episode == null)) {
@@ -52,23 +54,25 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
           /* keep defaults */
         }
       }
-      const isSeries = item?.series_title || item?.media_type === 'tv' || item?.type === 'series' || item?.episodes;
-      const type = isSeries ? 'series' : 'movie';
+      const type = detailTypeOfItem(item);
       navigate(`/watch/${encodeURIComponent(folderName)}?ep=${ep}&s=${s}&type=${type}`);
     } else {
-      navigate(`/detail/${encodeURIComponent(folderName)}?type=${mediaType}`);
+      void preloadContentDetailRoute();
+      navigate(`/detail/${encodeURIComponent(folderName)}?type=${detailTypeOfItem(item)}`);
     }
   };
 
   const handleMouseEnter = () => {
-    // Detail popup removed per user request
+    // Warm route chunk to reduce click->detail delay.
+    void preloadContentDetailRoute();
   };
 
   const handleMouseLeave = () => {
     // Detail popup removed per user request
   };
 
-  const title = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
+  const rawTitle = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
+  const title = cleanTitleOutsideParentheses(rawTitle) || 'Loading...';
 
   /** Berubah saat admin edit query TMDB — harus refetch, jangan pakai tmdbData lama */
   const tmdbFetchSignature = [
@@ -120,7 +124,7 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   const overview = item?.tmdb_overview || tmdbData?.overview || "A thrilling story awaits in this masterpiece.";
   const year = (tmdbData?.date || "2024").substring(0, 4);
 
-  const isSeries = mediaType === 'series' || item?.media_type === 'tv' || item?.episodes;
+  const isSeries = isSeriesLike(item);
   const episodesCount = item?.episodes ? `${item.episodes} Episodes` : (isSeries ? "24 Episodes" : "Movie");
   const bottomText = rating > 0 && tag !== 'Free' ? `★ ${Number(rating).toFixed(1)}` : episodesCount;
 

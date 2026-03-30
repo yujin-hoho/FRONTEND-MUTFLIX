@@ -2,6 +2,8 @@ import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle, ChevronDo
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { searchContent, getTMDBInfo } from '../services/api';
+import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
+import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 
 /** Genre singkat → `/filter?category=…` (Variety Show di ujung) */
 const MORE_GENRE_LINKS = [
@@ -205,13 +207,13 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                       <div
                         key={idx}
                         className="flex items-center gap-3 cursor-pointer group p-2 hover:bg-white/5 rounded-lg transition-colors"
-                        onMouseDown={() => navigate(`/detail/${encodeURIComponent(item.folder_name || item.name || '')}?type=${item.type === 'tv' ? 'series' : (item.type || 'movie')}`)}
+                        onMouseDown={() => navigate(`/detail/${encodeURIComponent(item.folder_name || item.name || '')}?type=${detailTypeOfItem(item)}`)}
                       >
                         <div className="w-8 h-11 rounded overflow-hidden bg-white/5 flex items-center justify-center flex-shrink-0 border border-white/5 group-hover:border-white/20 transition-colors">
                           {(item.tmdb_poster_path || item.poster_path) ? (
                             <img
                               src={tmdbImageUrl(item.tmdb_poster_path || item.poster_path, 'w92')}
-                              alt={item.folder_name || item.name}
+                              alt={cleanTitleOutsideParentheses(item.folder_name || item.name)}
                               loading="lazy"
                               decoding="async"
                               className="w-full h-full object-cover"
@@ -222,10 +224,10 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                         </div>
                         <div className="flex flex-col overflow-hidden">
                           <span className="text-[14px] text-gray-200 group-hover:text-white truncate font-medium">
-                            {item.folder_name || item.name}
+                            {cleanTitleOutsideParentheses(item.folder_name || item.name)}
                           </span>
                           <span className="text-[11px] text-gray-500 truncate flex items-center gap-1">
-                            {item.type === 'tv' ? 'Series' : 'Movie'}
+                            {isSeriesLike(item) ? 'Series' : 'Movie'}
                             {item.tmdb_rating && <span>• ⭐ {Number(item.tmdb_rating).toFixed(1)}</span>}
                           </span>
                         </div>

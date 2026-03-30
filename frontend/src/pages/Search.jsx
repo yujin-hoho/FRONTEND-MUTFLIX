@@ -2,9 +2,21 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { searchContent, getTMDBInfo, logout, fetchFolders } from '../services/api';
+import { searchContent, getTMDBInfo, logout, fetchFoldersFresh } from '../services/api';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
+
+const tmdbOptsFromItem = (item) => {
+  if (!item?.tmdb_query) return {};
+  const o = {
+    query: item.tmdb_query,
+    mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
+  };
+  if (item.override_year != null && item.override_year !== '') o.year = Number(item.override_year);
+  if (item.override_region) o.region = item.override_region;
+  if (item.include_adult) o.includeAdult = true;
+  return o;
+};
 
 const Search = () => {
   const [searchParams] = useSearchParams();
@@ -36,7 +48,7 @@ const Search = () => {
       try {
         const [serverResults, foldersResp] = await Promise.all([
           searchContent(query),
-          fetchFolders()
+          fetchFoldersFresh()
         ]);
 
         // PHASE 1: Show results immediately
@@ -114,17 +126,15 @@ const Search = () => {
         const topToEnrich = finalMappedResults.slice(0, 20);
         const enriched = await Promise.all(
           topToEnrich.map(async (item) => {
-            if (item.tmdb_poster_path) return item;
-
             const title = item.tmdb_title || item.folder_name || item.name;
             if (!title) return item;
 
             try {
-              const tmdbData = await getTMDBInfo(title);
+              const tmdbData = await getTMDBInfo(title, { ...tmdbOptsFromItem(item), light: true });
               if (tmdbData) {
                 return {
                   ...item,
-                  tmdb_poster_path: tmdbData.poster_path || item.tmdb_poster_path,
+                  tmdb_poster_path: tmdbData.poster_path || tmdbData.backdrop_path || item.tmdb_poster_path || item.poster_path,
                   tmdb_rating: tmdbData.rating || item.tmdb_rating,
                   tmdb_overview: tmdbData.overview || item.tmdb_overview,
                 };

@@ -586,7 +586,7 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
 
 const _fetchFoldersRaw = async () => {
     try {
-        const res = await fetch(`${BASE_URL}/api/folders`, {
+        const res = await fetch(`${BASE_URL}/api/folders?_=${Date.now()}`, {
             headers: getAuthHeaders()
         });
         if (!res.ok) {

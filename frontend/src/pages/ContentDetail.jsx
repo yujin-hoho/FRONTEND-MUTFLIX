@@ -7,6 +7,7 @@ import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout,
 import MovieCarousel from '../components/MovieCarousel';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
+import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 
 const ContentDetail = () => {
   const { folderName } = useParams();
@@ -75,6 +76,7 @@ const ContentDetail = () => {
       setLoading(true);
       setLastWatchedMedia(null);
       setEpisodeData({});
+      setCredits(null);
       fetchedSeasonStillsRef.current = new Set();
       try {
         // Step 1: Fetch Basic Info (Videos + TMDB)
@@ -99,19 +101,22 @@ const ContentDetail = () => {
         setVideos(videosList);
         setTmdbData(tmdb);
 
-          // Step 2: Parallel Fetching
-          const fetchTasks = [];
+        // Compute active tab from the fastest available data (don't block UI).
+        const isSeries = urlType === 'series' || (tmdb?.media_type === 'tv') || videosList.length > 1;
+        setActiveTab(isSeries ? 'episodes' : 'cast');
+        setLoading(false);
 
-          // 2a. Visual Metadata (Cast only here; episode stills are lazy-loaded per season)
+        // Step 2: Background fetches (non-blocking).
+        // 2a. Visual Metadata (Cast only here; episode stills are lazy-loaded per season)
         if (tmdb?.tmdb_id) {
-          fetchTasks.push(getTMDBCredits(tmdb.tmdb_id, tmdb.media_type).then(data => {
+          getTMDBCredits(tmdb.tmdb_id, tmdb.media_type).then(data => {
             if (isMounted) setCredits(data);
-          }));
+          }).catch(() => { /* ignore */ });
         }
 
         // 2b. User Data (History, My List)
         if (authUser) {
-          const userTask = fetchProfiles().then(async (profiles) => {
+          fetchProfiles().then(async (profiles) => {
             if (!isMounted || profiles.length === 0) return;
             
             const pid = profileId || profiles[0].id;
@@ -147,19 +152,8 @@ const ContentDetail = () => {
 
             setHistoryMap(newHistoryMap);
             setIsInMyList((mylistData || []).some(item => item.folder_name === decodedName));
-          });
-          fetchTasks.push(userTask);
+          }).catch(() => { /* ignore */ });
         }
-
-        await Promise.allSettled(fetchTasks);
-
-        if (isMounted) {
-          // Important: even if `type` query param is wrong and TMDB key missing (tmdb=null),
-          // we still consider it a series when backend returns multiple videos (seasons/episodes).
-          const isSeries = urlType === 'series' || (tmdb?.media_type === 'tv') || videosList.length > 1;
-          setActiveTab(isSeries ? 'episodes' : 'cast');
-        }
-
       } catch (err) {
         console.error("Error loading ContentDetail:", err);
       } finally {
@@ -236,7 +230,7 @@ const ContentDetail = () => {
     setAuthUser(null);
   };
 
-  const title = decodedName;
+  const title = cleanTitleOutsideParentheses(decodedName) || decodedName;
   const rating = tmdbData?.rating;
   const overview = tmdbData?.overview || "No description available for this title.";
   const year = tmdbData?.date ? tmdbData.date.substring(0, 4) : "";

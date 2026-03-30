@@ -2,6 +2,9 @@ import { Play, BookmarkPlus, Pencil } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getTMDBInfo } from '../services/api';
+import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
+import { preloadContentDetailRoute } from '../utils/routePreload';
+import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 
 const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -28,7 +31,7 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
     if (path.startsWith('http')) return path;
     const p = path.startsWith('/') ? path : `/${path}`;
     // Use the same rendition tier as MovieCarousel to reduce load-time delay.
-    return `https://image.tmdb.org/t/p/w500${p}`;
+    return `https://image.tmdb.org/t/p/original${p}`;
   };
 
   // Auto rotate
@@ -134,7 +137,8 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
           const bgImage = rawBackdropOrPoster ? tmdbImageUrl(rawBackdropOrPoster) : null;
           const isBgReady = !!bgReadyByKey[key];
 
-          const title = item.tmdb_title || item.folder_name || item.name || "Title";
+          const rawTitle = item.tmdb_title || item.folder_name || item.name || "Title";
+          const title = cleanTitleOutsideParentheses(rawTitle) || "Title";
           const rating = item.tmdb_rating;
           const overview = item.tmdb_overview || "Explore this amazing title on Mutflix.";
           const year = (item.release_date || item.first_air_date || "2024").substring(0, 4);
@@ -212,7 +216,7 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                   <span className="border border-white/40 px-2 py-0.5 rounded text-[10px] text-white font-black uppercase tracking-widest">Ultra HD</span>
                   <div className="w-[1px] h-4 bg-white/20"></div>
                   <span className="text-gray-300 font-bold text-sm">
-                    {item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'TV Series' : 'Movie'}
+                    {isSeriesLike(item) ? 'TV Series' : 'Movie'}
                   </span>
                 </div>
 
@@ -224,7 +228,11 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                 {/* Actions */}
                 <div className={`flex items-center gap-4 animate-reveal-right delay-500 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   <button
-                    onClick={() => navigate(`/detail/${encodeURIComponent(item.folder_name || title)}?type=${item.media_type === 'tv' || item.type === 'series' || item.episodes ? 'series' : 'movie'}`)}
+                    onMouseEnter={() => void preloadContentDetailRoute()}
+                    onClick={() => {
+                      void preloadContentDetailRoute();
+                      navigate(`/detail/${encodeURIComponent(item.folder_name || rawTitle)}?type=${detailTypeOfItem(item)}`);
+                    }}
                     className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-white px-8 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95 group/play"
                   >
                     <Play fill="white" size={20} className="group-hover/play:scale-110 transition-transform" />

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { saveTmdbOverride, TMDB_ORIGIN_COUNTRIES, clearAllTmdbInfoLocalCache, cacheClear } from '../services/api';
 
@@ -61,7 +62,9 @@ const TmdbPosterEditModal = ({ item, onClose, onSaved }) => {
     }
   };
 
-  return (
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
     <div className="fixed inset-0 z-[100000] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm">
       <div
         className="w-full max-w-md bg-[#16181d] border border-white/10 rounded-xl shadow-2xl overflow-hidden"
@@ -183,7 +186,8 @@ const TmdbPosterEditModal = ({ item, onClose, onSaved }) => {
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

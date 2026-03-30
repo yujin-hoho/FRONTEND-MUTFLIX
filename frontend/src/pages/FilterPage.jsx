@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
 import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout } from '../services/api';
 import Footer from '../components/Footer';
+import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
 
 const REGIONS = ['All regions', 'Chinese Mainland', 'South Korea', 'Indonesia', 'Thailand', 'Taiwan', 'Japan', 'Malaysia', 'America', 'UK'];
 const CATEGORIES = ['All Genres', 'Youth', 'Mystery', 'Costume', 'Urban', 'Romance', 'Sweet Love', 'Marriage', 'Drama', 'Comedy', 'Family', 'Friendship', 'Fantasy', 'Crime', 'War', 'Novel Adaptation', 'Contemporary', 'Ancient', 'Variety Show'];
@@ -239,6 +240,8 @@ const FilterPage = () => {
     const role = localStorage.getItem('role');
     return username ? { username, role } : null;
   });
+  const [posterEditItem, setPosterEditItem] = useState(null);
+  const isAdmin = authUser?.role === 'admin';
 
   const handleLogout = () => {
     logout();
@@ -323,8 +326,13 @@ const FilterPage = () => {
           const srcGenreIds = item.tmdb_genre_ids;
           const parsedCategories = srcGenreIds ? srcGenreIds.map((id) => TMDB_GENRES[id]).filter(Boolean) : [];
           const resolved = { ...item, parsedCategories };
-          if (item.poster_path && !item.tmdb_poster_path) {
-            resolved.tmdb_poster_path = item.poster_path;
+          if (!resolved.tmdb_poster_path) {
+            resolved.tmdb_poster_path =
+              item.poster_path ||
+              item.poster ||
+              item.tmdb_backdrop_path ||
+              item.backdrop_path ||
+              null;
           }
           resolved.parsedRegion = getRegionMapping(resolved);
           return resolved;
@@ -388,7 +396,14 @@ const FilterPage = () => {
 
             const resolvedItem = {
               ...item,
-              tmdb_poster_path: tmdbData?.poster_path || item.tmdb_poster_path || item.poster_path,
+              tmdb_poster_path:
+                tmdbData?.poster_path ||
+                tmdbData?.backdrop_path ||
+                item.tmdb_poster_path ||
+                item.poster_path ||
+                item.poster ||
+                item.tmdb_backdrop_path ||
+                item.backdrop_path,
               tmdb_rating: tmdbData?.rating || item.tmdb_rating,
               tmdb_genre_ids: srcGenreIds,
               original_language: tmdbData?.original_language || item.original_language,
@@ -535,7 +550,13 @@ const FilterPage = () => {
                     className="flex justify-center animate-fade-in-up"
                     style={{ animationDelay: `${Math.min(idx % GRID_PAGE_SIZE, 11) * 40}ms` }}
                   >
-                    <MovieCard item={item} delay={idx % GRID_PAGE_SIZE} posterFadeIn />
+                    <MovieCard
+                      item={item}
+                      delay={idx % GRID_PAGE_SIZE}
+                      posterFadeIn
+                      isAdmin={isAdmin}
+                      onEditPoster={(it) => setPosterEditItem(it)}
+                    />
                   </div>
                 ))}
               </div>
@@ -552,6 +573,16 @@ const FilterPage = () => {
           )}
         </div>
       </div>
+      {posterEditItem && (
+        <TmdbPosterEditModal
+          item={posterEditItem}
+          onClose={() => setPosterEditItem(null)}
+          onSaved={() => {
+            setPosterEditItem(null);
+            window.location.reload();
+          }}
+        />
+      )}
       <Footer />
     </div>
   );

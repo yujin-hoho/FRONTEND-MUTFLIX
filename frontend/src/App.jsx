@@ -1,6 +1,7 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ProtectedRoute, PublicRoute } from './components/ProtectedRoute';
+import { preloadContentDetailRoute, preloadWatchPageRoute } from './utils/routePreload';
 
 const Login = lazy(() => import('./pages/Login'));
 const Dashboard = lazy(() => import('./pages/Dashboard'));
@@ -17,6 +18,18 @@ const RouteFallback = () => (
 );
 
 function App() {
+  useEffect(() => {
+    const run = () => {
+      void preloadContentDetailRoute();
+      void preloadWatchPageRoute();
+    };
+    if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(run, { timeout: 1000 });
+    } else {
+      setTimeout(run, 0);
+    }
+  }, []);
+
   return (
     <BrowserRouter>
       <Suspense fallback={<RouteFallback />}>
