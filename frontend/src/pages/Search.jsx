@@ -134,6 +134,7 @@ const Search = () => {
               if (tmdbData) {
                 return {
                   ...item,
+                  tmdb_title: tmdbData.tmdb_title || tmdbData.title || item.tmdb_title,
                   tmdb_poster_path: tmdbData.poster_path || tmdbData.backdrop_path || item.tmdb_poster_path || item.poster_path,
                   tmdb_rating: tmdbData.rating || item.tmdb_rating,
                   tmdb_overview: tmdbData.overview || item.tmdb_overview,

@@ -319,7 +319,8 @@ const FilterPage = () => {
         const hasPosterAndGenres = (it) => {
           const pp = it.poster_path || it.tmdb_poster_path;
           const g = it.tmdb_genre_ids;
-          return !!(pp && Array.isArray(g) && g.length > 0);
+          const t = it.tmdb_title;
+          return !!(pp && Array.isArray(g) && g.length > 0 && typeof t === 'string' && t.trim().length > 0);
         };
 
         const quickResolved = uniqueDataList.map((item) => {
@@ -423,7 +424,9 @@ const FilterPage = () => {
                 item.poster ||
                 item.tmdb_backdrop_path ||
                 item.backdrop_path,
+              tmdb_title: tmdbData?.tmdb_title || tmdbData?.title || item.tmdb_title || null,
               tmdb_rating: tmdbData?.rating || item.tmdb_rating,
+              tmdb_overview: tmdbData?.overview || item.tmdb_overview,
               tmdb_genre_ids: srcGenreIds,
               original_language: tmdbData?.original_language || item.original_language,
               origin_country: tmdbData?.origin_country || item.origin_country,

@@ -121,6 +121,7 @@ const enrichFeaturedFast = async (items) => {
       if (!data) return item;
       return {
         ...item,
+          tmdb_title: data.tmdb_title || data.title || item.tmdb_title,
         tmdb_poster_path: item.tmdb_poster_path || item.poster_path || data.poster_path || data.backdrop_path,
         tmdb_backdrop_path: item.tmdb_backdrop_path || data.backdrop_path || data.poster_path,
         tmdb_overview: item.tmdb_overview || data.overview,
@@ -254,6 +255,7 @@ const Dashboard = () => {
         getTMDBInfo(searchTitle, opts).then(apiData => {
           if (apiData) {
             const resolvedItem = { ...item };
+            resolvedItem.tmdb_title = apiData.tmdb_title || apiData.title || item.tmdb_title;
             if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
             resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
             resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];

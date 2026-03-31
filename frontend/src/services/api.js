@@ -166,7 +166,8 @@ export const getTMDBInfo = async (title, options = {}) => {
     const light = !!options.light;
     const includeCredits = !light;
 
-    const cacheKeyFull = `mutflix_tmdb_info_${queryText.toLowerCase()}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
+    const TMDB_INFO_CACHE_VERSION = 'v4_title';
+    const cacheKeyFull = `mutflix_tmdb_info_${TMDB_INFO_CACHE_VERSION}_${queryText.toLowerCase()}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
     const cacheKeyLite = `${cacheKeyFull}_lite`;
     const inflightKey = light ? cacheKeyLite : cacheKeyFull;
 
@@ -247,6 +248,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                                 ? {
                                       tmdb_id: liteOnly.tmdb_id,
                                       media_type: 'movie',
+                                      tmdb_title: details.title || details.original_title || liteOnly.tmdb_title || liteOnly.title || null,
+                                      title: details.title || details.original_title || liteOnly.tmdb_title || liteOnly.title || null,
                                       poster_path: details.poster_path || liteOnly.poster_path,
                                       backdrop_path: details.backdrop_path || liteOnly.backdrop_path,
                                       rating: details.vote_average ?? liteOnly.rating,
@@ -264,6 +267,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                                 : {
                                       tmdb_id: liteOnly.tmdb_id,
                                       media_type: 'tv',
+                                      tmdb_title: details.name || liteOnly.tmdb_title || liteOnly.title || null,
+                                      title: details.name || liteOnly.tmdb_title || liteOnly.title || null,
                                       poster_path: details.poster_path || liteOnly.poster_path,
                                       backdrop_path: details.backdrop_path || liteOnly.backdrop_path,
                                       rating: details.vote_average ?? liteOnly.rating,
@@ -310,6 +315,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                     const result = {
                         tmdb_id: best.id,
                         media_type: 'movie',
+                        tmdb_title: best.title || best.original_title || best.name || null,
+                        title: best.title || best.original_title || best.name || null,
                         poster_path: best.poster_path || best.backdrop_path,
                         backdrop_path: best.backdrop_path,
                         rating: best.vote_average,
@@ -335,6 +342,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                 const result = {
                     tmdb_id: best.id,
                     media_type: 'movie',
+                    tmdb_title: details.title || details.original_title || best.title || best.original_title || best.name || null,
+                    title: details.title || details.original_title || best.title || best.original_title || best.name || null,
                     poster_path: details.poster_path || best.poster_path,
                     backdrop_path: details.backdrop_path || best.backdrop_path,
                     rating: details.vote_average || best.vote_average,
@@ -373,6 +382,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                     const result = {
                         tmdb_id: best.id,
                         media_type: 'tv',
+                        tmdb_title: best.name || best.original_name || best.title || null,
+                        title: best.name || best.original_name || best.title || null,
                         poster_path: best.poster_path || best.backdrop_path,
                         backdrop_path: best.backdrop_path,
                         rating: best.vote_average,
@@ -398,6 +409,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                 const result = {
                     tmdb_id: best.id,
                     media_type: 'tv',
+                    tmdb_title: details.name || details.original_name || best.name || best.original_name || best.title || null,
+                    title: details.name || details.original_name || best.name || best.original_name || best.title || null,
                     poster_path: details.poster_path || best.poster_path,
                     backdrop_path: details.backdrop_path || best.backdrop_path,
                     rating: details.vote_average || best.vote_average,
@@ -447,6 +460,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                         ? {
                               tmdb_id: bestResult.id,
                               media_type: 'movie',
+                              tmdb_title: bestResult.title || bestResult.original_title || bestResult.name || null,
+                              title: bestResult.title || bestResult.original_title || bestResult.name || null,
                               poster_path: bestResult.poster_path || bestResult.backdrop_path,
                               backdrop_path: bestResult.backdrop_path,
                               rating: bestResult.vote_average,
@@ -464,6 +479,8 @@ export const getTMDBInfo = async (title, options = {}) => {
                         : {
                               tmdb_id: bestResult.id,
                               media_type: 'tv',
+                              tmdb_title: bestResult.name || bestResult.original_name || bestResult.title || null,
+                              title: bestResult.name || bestResult.original_name || bestResult.title || null,
                               poster_path: bestResult.poster_path || bestResult.backdrop_path,
                               backdrop_path: bestResult.backdrop_path,
                               rating: bestResult.vote_average,
@@ -490,6 +507,14 @@ export const getTMDBInfo = async (title, options = {}) => {
             const result = {
                 tmdb_id: bestResult.id,
                 media_type: type,
+                tmdb_title:
+                    type === 'movie'
+                        ? details.title || details.original_title || bestResult.title || bestResult.name || null
+                        : details.name || details.original_name || bestResult.name || bestResult.title || null,
+                title:
+                    type === 'movie'
+                        ? details.title || details.original_title || bestResult.title || bestResult.name || null
+                        : details.name || details.original_name || bestResult.name || bestResult.title || null,
                 poster_path: details.poster_path || bestResult.poster_path,
                 backdrop_path: details.backdrop_path || bestResult.backdrop_path,
                 rating: details.vote_average || bestResult.vote_average,

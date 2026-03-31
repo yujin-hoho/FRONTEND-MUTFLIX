@@ -184,7 +184,7 @@ const WatchPage = () => {
     const episodesToShow = filteredEpisodes.length > 0 ? filteredEpisodes : videos;
 
     // ─── Derived values ────────────────────────────
-    const title = cleanTitleOutsideParentheses(decodedName) || decodedName;
+    const title = cleanTitleOutsideParentheses(tmdbData?.tmdb_title || tmdbData?.title || decodedName) || (tmdbData?.tmdb_title || tmdbData?.title || decodedName);
     const rating = tmdbData?.rating;
     const overview = tmdbData?.overview || '';
     const year = (tmdbData?.date || '').substring(0, 4) || '';

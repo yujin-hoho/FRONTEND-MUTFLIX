@@ -71,8 +71,9 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
     // Detail popup removed per user request
   };
 
-  const rawTitle = item?.tmdb_title || item?.folder_name || item?.name || 'Loading...';
-  const title = cleanTitleOutsideParentheses(rawTitle) || 'Loading...';
+  // Prefer TMDB title. Until TMDB title is available, avoid showing the (possibly wrong) folder_name as title.
+  const rawTitle = item?.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || null;
+  const title = rawTitle ? (cleanTitleOutsideParentheses(rawTitle) || rawTitle) : 'Loading...';
 
   /** Berubah saat admin edit query TMDB — harus refetch, jangan pakai tmdbData lama */
   const tmdbFetchSignature = [
@@ -86,21 +87,28 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
   ].join('|');
 
   useEffect(() => {
-    if (title === 'Loading...') return;
-    if (item.tmdb_poster_path || item.poster_path || item.poster) {
+    const hasPoster = item.tmdb_poster_path || item.poster_path || item.poster;
+    const hasTmdbTitle = !!item?.tmdb_title;
+
+    const searchTitle = item.tmdb_query || item?.tmdb_title || item?.folder_name || item?.name;
+    if (!searchTitle) return;
+
+    // If we already have a TMDB title, don't refetch. Otherwise, refetch even when poster exists
+    // so title shown always matches TMDB (fix: "No math" -> "No Math School Trip").
+    if (hasPoster && hasTmdbTitle) {
       setTmdbData(null);
       return;
     }
+
     setTmdbData(null);
     let cancelled = false;
-    const searchTitle = item.tmdb_query || title;
     getTMDBInfo(searchTitle, { ...tmdbOptsFromItem(item), light: true }).then((data) => {
       if (!cancelled && data) setTmdbData(data);
     });
     return () => {
       cancelled = true;
     };
-  }, [title, tmdbFetchSignature, item.tmdb_poster_path, item.poster_path, item.poster]);
+  }, [tmdbFetchSignature, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
 
   const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
