@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Play, Pause, Volume2, VolumeX,
@@ -171,6 +171,8 @@ const WatchPage = () => {
     const [resumeTime, setResumeTime] = useState(0);
     const hasSeekedRef = useRef(false);
     const [showResumeToast, setShowResumeToast] = useState(null);
+    const [isScrubbing, setIsScrubbing] = useState(false);
+    const [scrubTime, setScrubTime] = useState(0);
 
     // Derived
     // Important: if TMDB API key missing (tmdbData=null) and `type` query param is wrong,
@@ -193,6 +195,17 @@ const WatchPage = () => {
     const currentEpisodeName = currentEpData?.name || currentVideo?.name || `Episode ${currentEpisodeNum}`;
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
     const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
+    const episodeFallbackThumb = useMemo(() => {
+        const raw =
+            tmdbData?.backdrop_path ||
+            tmdbData?.tmdb_backdrop_path ||
+            tmdbData?.poster_path ||
+            tmdbData?.tmdb_poster_path ||
+            null;
+        if (!raw) return null;
+        if (raw.startsWith('http')) return raw;
+        return `https://image.tmdb.org/t/p/w500${raw.startsWith('/') ? raw : `/${raw}`}`;
+    }, [tmdbData]);
 
     // ─── Load Data ──────────────────────────────────
     useEffect(() => {
@@ -770,6 +783,17 @@ const WatchPage = () => {
         video.currentTime = pos * video.duration;
     };
 
+    const commitScrub = useCallback(() => {
+        const video = videoRef.current;
+        if (!video || !duration) return;
+        const clamped = Math.max(0, Math.min(scrubTime, duration));
+        if (Math.abs((video.currentTime || 0) - clamped) > 0.05) {
+            video.currentTime = clamped;
+        }
+        setCurrentTime(clamped);
+        setIsScrubbing(false);
+    }, [scrubTime, duration]);
+
     const changePlaybackRate = (rate) => {
         const video = videoRef.current;
         if (video) video.playbackRate = rate;
@@ -951,12 +975,15 @@ const WatchPage = () => {
                         <video
                             ref={videoRef}
                             className="w-full h-full object-contain bg-black"
-                            preload="metadata"
+                            preload="auto"
                             onTimeUpdate={handleTimeUpdate}
                             onPlay={handleVideoPlay}
                             onPause={handleVideoPause}
                             onLoadedMetadata={handleLoadedMetadata}
-                            onLoadedData={() => syncAudioTracksFromVideo()}
+                            onLoadedData={() => {
+                                setVideoLoading(false);
+                                syncAudioTracksFromVideo();
+                            }}
                             onError={handleVideoError}
                             onWaiting={handleWaiting}
                             onCanPlay={handleCanPlay}
@@ -1041,7 +1068,9 @@ const WatchPage = () => {
 
                                 {/* Progress Bar */}
                                 <div
+                                    ref={progressBarRef}
                                     className="relative h-1.5 rounded-full cursor-pointer group/progress mb-3 hover:h-2.5 transition-all w-full flex items-center bg-white/20"
+                                    onClick={handleProgressClick}
                                 >
                                     {/* Buffered */}
                                     <div
@@ -1063,14 +1092,31 @@ const WatchPage = () => {
                                         type="range"
                                         min="0"
                                         max={duration || 100}
-                                        value={currentTime}
+                                        value={isScrubbing ? scrubTime : currentTime}
                                         step="0.1"
                                         onChange={(e) => {
                                             const time = parseFloat(e.target.value);
-                                            if (videoRef.current) {
+                                            if (Number.isNaN(time)) return;
+                                            setScrubTime(time);
+                                            setCurrentTime(time);
+                                            if (!isScrubbing && videoRef.current) {
                                                 videoRef.current.currentTime = time;
                                             }
-                                            setCurrentTime(time);
+                                        }}
+                                        onMouseDown={() => {
+                                            setIsScrubbing(true);
+                                            setScrubTime(currentTime);
+                                        }}
+                                        onTouchStart={() => {
+                                            setIsScrubbing(true);
+                                            setScrubTime(currentTime);
+                                        }}
+                                        onMouseUp={commitScrub}
+                                        onTouchEnd={commitScrub}
+                                        onKeyUp={(e) => {
+                                            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+                                                commitScrub();
+                                            }
                                         }}
                                         className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20 m-0 p-0"
                                     />
@@ -1486,6 +1532,7 @@ const WatchPage = () => {
                                 {episodesToShow.map((video, idx) => {
                                     const epNum = video.episode || idx + 1;
                                     const epData = episodeData[`${video.season || 1}_${epNum}`];
+                                    const thumb = epData?.still_path || episodeFallbackThumb;
                                     const isActive = video === currentVideo;
                                     return (
                                         <div
@@ -1498,9 +1545,9 @@ const WatchPage = () => {
                                         >
                                             {/* Thumbnail */}
                                             <div className="w-28 aspect-video rounded-md overflow-hidden bg-[#1a1c22] flex-shrink-0 relative">
-                                                {epData?.still_path ? (
+                                                {thumb ? (
                                                     <img
-                                                        src={epData.still_path}
+                                                        src={thumb}
                                                         alt=""
                                                         loading="lazy"
                                                         decoding="async"

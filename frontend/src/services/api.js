@@ -738,7 +738,17 @@ export const getStreamDetails = async (filePath) => {
  */
 export const fetchSubtitle = async (subtitlePath) => {
     try {
-        const res = await fetch(`${BASE_URL}/subtitle/${encodeURIComponent(subtitlePath)}`);
+        // Always bypass browser cache. Subtitle can be replaced on server without changing the path.
+        const cacheBuster = Date.now();
+        const url = `${BASE_URL}/subtitle/${encodeURIComponent(subtitlePath)}?_=${cacheBuster}`;
+        const res = await fetch(url, {
+            cache: 'no-store',
+            headers: {
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                Pragma: 'no-cache',
+                Expires: '0',
+            },
+        });
         if (!res.ok) return null;
         return await res.text();
     } catch (e) {

@@ -343,6 +343,18 @@ const FilterPage = () => {
         setListLoading(false);
         setTmdbEnriching(true);
 
+        // Prioritize TMDB enrichment for what the user will see first (better UX).
+        const quickFilteredSorted = applySort(
+          filterItems(quickResolved, activeType, activeRegion, activeCategory),
+          sortBy
+        );
+        const priorityNames = new Set(
+          quickFilteredSorted
+            .slice(0, INITIAL_VISIBLE)
+            .map((it) => it.folder_name || it.path || it.id)
+            .filter(Boolean)
+        );
+
         const viteTmdbKey = import.meta.env.VITE_TMDB_API_KEY;
         const canClientTmdbFetch = !!(viteTmdbKey && viteTmdbKey !== 'MASUKKAN_KEY_TMDB_ANDA_DISINI');
 
@@ -350,6 +362,11 @@ const FilterPage = () => {
           .map((item, i) => ({ i, item }))
           .filter(({ item }) => !hasPosterAndGenres(item));
         needFetchIndices.sort((a, b) => {
+          const aKey = a.item.folder_name || a.item.path || a.item.id;
+          const bKey = b.item.folder_name || b.item.path || b.item.id;
+          const ap = aKey && priorityNames.has(aKey) ? 0 : 1;
+          const bp = bKey && priorityNames.has(bKey) ? 0 : 1;
+          if (ap !== bp) return ap - bp;
           const at = inferTmdbMediaType(a.item) === 'tv' ? 0 : 1;
           const bt = inferTmdbMediaType(b.item) === 'tv' ? 0 : 1;
           return at - bt;
@@ -358,6 +375,8 @@ const FilterPage = () => {
           needFetchIndices.slice(0, MAX_TMDB_ENRICH_FILTER).map(({ i }) => i)
         );
 
+        // Flush more aggressively early so posters "snap" faster, then batch to reduce re-render cost.
+        const EARLY_FLUSH_UNTIL = Math.min(INITIAL_VISIBLE, uniqueDataList.length);
         const FLUSH_EVERY = 14;
         const enriched = await mapWithConcurrency(
           uniqueDataList,
@@ -415,7 +434,8 @@ const FilterPage = () => {
           },
           (i, resolvedItem, completed) => {
             merged[i] = resolvedItem;
-            if (completed % FLUSH_EVERY === 0 || completed === uniqueDataList.length) {
+            const shouldFlushEarly = completed <= EARLY_FLUSH_UNTIL;
+            if (shouldFlushEarly || completed % FLUSH_EVERY === 0 || completed === uniqueDataList.length) {
               setAllResolved([...merged]);
             }
           }
@@ -546,7 +566,7 @@ const FilterPage = () => {
               <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
                 {visibleItems.map((item, idx) => (
                   <div
-                    key={item.folder_name || item.path || item.id || idx}
+                    key={`${item.media_type || item.type || 'x'}:${item.folder_name || item.path || item.id || idx}`}
                     className="flex justify-center animate-fade-in-up"
                     style={{ animationDelay: `${Math.min(idx % GRID_PAGE_SIZE, 11) * 40}ms` }}
                   >

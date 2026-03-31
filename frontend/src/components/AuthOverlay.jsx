@@ -17,6 +17,7 @@ const AuthOverlay = ({ initialMode = 'login', onLoginSuccess, onCancel }) => {
     setUsername('');
     setPassword('');
     setRegToken('');
+    setRememberMe(false);
     setError('');
     setSuccess('');
   };
@@ -156,6 +157,19 @@ const AuthOverlay = ({ initialMode = 'login', onLoginSuccess, onCancel }) => {
               />
             </div>
           </div>
+        )}
+
+        {mode === 'login' && (
+          <label className="flex items-center gap-3 text-sm text-gray-300 select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              disabled={loading}
+              className="h-4 w-4 rounded border-white/30 bg-white/5 text-brand focus:ring-brand/40"
+            />
+            <span className="font-semibold">Remember me</span>
+          </label>
         )}
 
         {/* Action Button */}
