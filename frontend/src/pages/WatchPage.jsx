@@ -676,6 +676,17 @@ const WatchPage = () => {
     const hasSubtitleSource = !!(subtitleUrl || embeddedSubsAvailable);
     const syncDelayAppliesToExternalFile = !!subtitleUrl;
 
+    /** Sembunyikan cursor seperti Netflix/YouTube saat UI sudah auto-hide (bukan saat menu terbuka / buffering). */
+    const hidePlayerCursor =
+        isPlaying &&
+        !showControls &&
+        !videoLoading &&
+        !videoError &&
+        !isScrubbing &&
+        !showSubSettings &&
+        !showSpeedMenu &&
+        !showAudioMenu;
+
     // ─── Controls auto-hide ─────────────────────────
     const resetControlsTimeout = useCallback(() => {
         setShowControls(true);
@@ -867,6 +878,13 @@ const WatchPage = () => {
         }
     };
 
+    /** `progress` lebih sering daripada `timeupdate` — bar buffer lebih akurat saat unduhan jauh di depan playhead. */
+    const handleBufferProgress = () => {
+        const video = videoRef.current;
+        if (!video || video.buffered.length === 0) return;
+        setBuffered(video.buffered.end(video.buffered.length - 1));
+    };
+
     const handleVideoPlay = () => setIsPlaying(true);
     const handleVideoPause = () => setIsPlaying(false);
     const handleLoadedMetadata = () => {
@@ -885,6 +903,7 @@ const WatchPage = () => {
         setVideoError(`Playback error${err?.message ? ': ' + err.message : ''}. Try refreshing.`);
     };
     const handleWaiting = () => setVideoLoading(true);
+    const handlePlaying = () => setVideoLoading(false);
     const handleCanPlay = () => {
         setVideoLoading(false);
         // If the browser natively paused it despite autoPlay (e.g. low power mode), we can try one more time securely.
@@ -967,18 +986,20 @@ const WatchPage = () => {
                 <div className="flex-1 min-w-0">
                     <div
                         ref={playerContainerRef}
-                        className={`relative bg-black group ${isFullscreen ? 'fixed inset-0 z-[9999]' : 'aspect-video w-full'}`}
+                        className={`relative bg-black group ${isFullscreen ? 'fixed inset-0 z-[9999]' : 'aspect-video w-full'} ${hidePlayerCursor ? 'cursor-none' : ''}`}
                         onMouseMove={resetControlsTimeout}
                         onMouseLeave={() => { if (isPlaying) setShowControls(false); }}
                     >
                         {/* Video Element */}
                         <video
                             ref={videoRef}
-                            className="w-full h-full object-contain bg-black"
+                            className={`w-full h-full object-contain bg-black ${hidePlayerCursor ? 'cursor-none' : ''}`}
                             preload="auto"
                             onTimeUpdate={handleTimeUpdate}
+                            onProgress={handleBufferProgress}
                             onPlay={handleVideoPlay}
                             onPause={handleVideoPause}
+                            onPlaying={handlePlaying}
                             onLoadedMetadata={handleLoadedMetadata}
                             onLoadedData={() => {
                                 setVideoLoading(false);
@@ -987,6 +1008,7 @@ const WatchPage = () => {
                             onError={handleVideoError}
                             onWaiting={handleWaiting}
                             onCanPlay={handleCanPlay}
+                            onCanPlayThrough={() => setVideoLoading(false)}
                             onEnded={playNextEpisode}
                             onClick={handleVideoClick}
                             autoPlay
