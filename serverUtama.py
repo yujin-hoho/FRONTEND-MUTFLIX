@@ -2206,6 +2206,7 @@ def fetch_gdrive_videos(service, folder_name):
             if not series_folder_ids: return {"videos": [], "has_season_folders": False}
             
             all_folder_ids = []; folder_id_to_name = {}
+            new_subfolder_ids = []
             for series_folder_id in series_folder_ids:
                 all_folder_ids.append(series_folder_id); folder_id_to_name[series_folder_id] = folder_name
                 subfolder_q = f"'{series_folder_id}' in parents and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false"
@@ -2214,23 +2215,51 @@ def fetch_gdrive_videos(service, folder_name):
                     fid = sub['id'] if sub['mimeType'] == 'application/vnd.google-apps.folder' else sub.get('shortcutDetails', {}).get('targetId')
                     if fid:
                         all_folder_ids.append(fid); folder_id_to_name[fid] = sub['name']
+                        new_subfolder_ids.append(fid)
                         if not has_season_folders_gdrive and re.search(r'(?:season|s)\s*\d+', sub['name'], re.IGNORECASE): has_season_folders_gdrive = True
+                        
+            # [NEW] Check sub-sub-folders (e.g. "Episode 3" inside "Season 3")
+            if new_subfolder_ids:
+                parent_clauses = " or ".join([f"'{fid}' in parents" for fid in new_subfolder_ids])
+                subsubfolder_q = f"({parent_clauses}) and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false"
+                page_token = None
+                while True:
+                    subsub_res = service.files().list(q=subsubfolder_q, pageSize=150, pageToken=page_token, fields="nextPageToken, files(id, name, mimeType, shortcutDetails(targetId), parents)").execute()
+                    for sub in subsub_res.get('files', []):
+                        fid = sub['id'] if sub['mimeType'] == 'application/vnd.google-apps.folder' else sub.get('shortcutDetails', {}).get('targetId')
+                        if fid:
+                            all_folder_ids.append(fid)
+                            parent_id = sub.get('parents', [None])[0]
+                            # Inherit "Season X" prefix if parent has it, for accurate episode detection
+                            if parent_id and parent_id in folder_id_to_name and re.search(r'(?:season|s)\s*\d+', folder_id_to_name[parent_id], re.IGNORECASE):
+                                folder_id_to_name[fid] = folder_id_to_name[parent_id] + " " + sub['name']
+                            else:
+                                folder_id_to_name[fid] = sub['name']
+                    page_token = subsub_res.get('nextPageToken')
+                    if not page_token: break
             
             if not all_folder_ids: return {"videos": [], "has_season_folders": False}
 
-            parent_clauses = " or ".join([f"'{fid}' in parents" for fid in all_folder_ids])
-            files_q = f"({parent_clauses}) and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt') and trashed = false"
-            
             video_files, subtitle_files = [], []
-            page_token = None
-            while True:
-                files_res = service.files().list(q=files_q, pageSize=PAGE_SIZE, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
-                for f in files_res.get('files', []):
-                    if 'video/' in f['mimeType']: video_files.append(f)
-                    elif f['name'].lower().endswith(('.srt', '.vtt')): subtitle_files.append(f)
-                page_token = files_res.get('nextPageToken'); 
-                if not page_token: break
-                time.sleep(0.05) 
+            CHUNK_SIZE = 20
+            # [Fix nested folders + HLS] Process folder queries in chunks to avoid GDrive query length limit
+            for i in range(0, len(all_folder_ids), CHUNK_SIZE):
+                chunk = all_folder_ids[i:i + CHUNK_SIZE]
+                parent_clauses = " or ".join([f"'{fid}' in parents" for fid in chunk])
+                files_q = f"({parent_clauses}) and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt' or name contains '.m3u8') and trashed = false"
+                
+                page_token = None
+                while True:
+                    files_res = service.files().list(q=files_q, pageSize=PAGE_SIZE, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
+                    for f in files_res.get('files', []):
+                        lname = f['name'].lower()
+                        if 'video/' in f['mimeType'] or lname.endswith('.m3u8'): 
+                            video_files.append(f)
+                        elif lname.endswith(('.srt', '.vtt')): 
+                            subtitle_files.append(f)
+                    page_token = files_res.get('nextPageToken')
+                    if not page_token: break
+                    time.sleep(0.05) 
 
             # Resolve actual folder name for Supabase subtitle lookup
             # Movies use gdrive_folder/XXXX or gdrive/XXXX as folder_name,
@@ -2294,7 +2323,7 @@ def fetch_gdrive_videos(service, folder_name):
                 if not final_subtitle_path and found_subtitle_gdrive:
                     final_subtitle_path = f"gdrive/{found_subtitle_gdrive['id']}"
 
-                gdrive_videos.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": final_subtitle_path, "season": season if season else 1, "episode": episode, "source": "Google Drive"})
+                gdrive_videos.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": final_subtitle_path, "season": season if season else 1, "episode": episode, "source": "Google Drive", "original_name": video['name']})
             
             return {"videos": gdrive_videos, "has_season_folders": has_season_folders_gdrive}
         except Exception as e:
@@ -2633,7 +2662,7 @@ def get_videos_in_folder(current_user, folder_name):
                                         if _clean_title_for_matching(s['name']) == cleaned_v:
                                             sub_path = f"gdrive/{s['id']}"; break
                             
-                            result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive"})
+                            result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": video['name']})
                         
                         final = {"videos": result_vids, "has_season_folders": False}
                         mem_set(key, final); _response_cache.pop(resp_key, None)
@@ -2664,7 +2693,7 @@ def get_videos_in_folder(current_user, folder_name):
                         sr = svc.files().list(q=sq, fields="files(id, name)").execute()
                         for s in sr.get('files', []):
                             if s['name'].lower().startswith(name.lower()): sub_path = f"gdrive/{s['id']}"; break
-                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive"}], "has_season_folders": False}
+                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False}
                     mem_set(key, final); _response_cache.pop(resp_key, None)
                     return orjson_jsonify(final, cache_key=resp_key)
              except Exception as e:
@@ -2756,6 +2785,101 @@ def get_gdrive_stream_details(current_user,file_path):
 ## NOTE:
 ## Telegram streaming endpoint moved to `telegram_api.py` blueprint (`/api/telegram/stream/...`)
 ## to guarantee it is registered whenever the Telegram blueprint is enabled.
+
+def _hls_cors_response(content, status=200):
+    """Helper: return HLS manifest with proper CORS headers."""
+    resp = Response(content, status=status, mimetype='application/vnd.apple.mpegurl')
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    resp.headers['Access-Control-Allow-Headers'] = 'Range'
+    return resp
+
+def _get_fresh_gdrive_token():
+    """Get a fresh GDrive bearer token, using server-side cache with auto-refresh."""
+    global _gdrive_token, _gdrive_token_ts
+    now = time.time()
+    if _gdrive_token and (now - _gdrive_token_ts) < _gdrive_token_ttl:
+        return _gdrive_token
+    svc = get_gdrive_service()
+    if not svc:
+        return None
+    with _gdrive_token_lock:
+        # Double-check after acquiring lock
+        if _gdrive_token and (time.time() - _gdrive_token_ts) < _gdrive_token_ttl:
+            return _gdrive_token
+        if svc._http.credentials.expired:
+            svc._http.credentials.refresh(Request())
+        token = svc._http.credentials.token
+        _gdrive_token = token
+        _gdrive_token_ts = time.time()
+        return token
+
+@app.route("/api/hls-manifest/<fid>")
+def get_hls_manifest(fid):
+    import requests as py_requests
+    # Accept access_token from query for backward compat, but always use server-side token
+    # so playback doesn't break when client token expires during long sessions.
+    access_token = request.args.get('access_token')
+    if not access_token:
+        return _hls_cors_response("Unauthorized", 401)
+    
+    svc = get_gdrive_service()
+    if not svc:
+        return _hls_cors_response("GDrive unavailable", 503)
+    
+    # Use server's own GDrive token — auto-refreshes, won't expire mid-playback
+    server_token = _get_fresh_gdrive_token()
+    if not server_token:
+        return _hls_cors_response("GDrive token unavailable", 503)
+    
+    headers = {"Authorization": f"Bearer {server_token}"}
+    m3u8_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    resp = py_requests.get(m3u8_url, headers=headers, timeout=15)
+    if resp.status_code != 200:
+        return _hls_cors_response(f"Failed to fetch m3u8 (status={resp.status_code})", resp.status_code)
+        
+    m3u8_content = resp.text
+    try:
+        meta = svc.files().get(fileId=fid, fields="parents").execute()
+        parents = meta.get('parents', [])
+        if not parents:
+            return _hls_cors_response(m3u8_content)
+        parent_id = parents[0]
+        
+        # Get all files in parent to map filenames to file IDs
+        files_q = f"'{parent_id}' in parents and trashed = false"
+        page_token = None
+        file_map = {}
+        while True:
+            res = svc.files().list(q=files_q, pageSize=1000, fields="nextPageToken, files(id, name)", pageToken=page_token).execute()
+            for f in res.get('files', []):
+                file_map[f['name']] = f['id']
+            page_token = res.get('nextPageToken')
+            if not page_token: break
+            
+        # Rewrite manifest: replace filenames with proxy URLs
+        # Use the same access_token param so the proxy endpoint can authenticate
+        lines = m3u8_content.splitlines()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#'):
+                if stripped in file_map:
+                    mapped_id = file_map[stripped]
+                    if stripped.lower().endswith('.m3u8'):
+                        new_lines.append(f"/api/hls-manifest/{mapped_id}?access_token={access_token}")
+                    else:
+                        new_lines.append(f"/gdrive-proxy/{mapped_id}?alt=media&access_token={access_token}")
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+                
+        rewritten_m3u8 = "\n".join(new_lines)
+        return _hls_cors_response(rewritten_m3u8)
+    except Exception as e:
+        print(f"[HLS] Error rewriting manifest: {e}")
+        return _hls_cors_response(m3u8_content)
 
 @app.route("/subtitle/<path:file_path>")
 @rate_limited(limit=120)

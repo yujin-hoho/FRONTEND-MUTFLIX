@@ -22,6 +22,7 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
+import Hls from 'hls.js';
 
 /** Stored delay: negative = tunda (subtitle lebih lambat), positive = percepat (lebih cepat). */
 const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
@@ -163,6 +164,7 @@ const WatchPage = () => {
 
     // Refs
     const videoRef = useRef(null);
+    const hlsInstanceRef = useRef(null);
     const playerContainerRef = useRef(null);
     const controlsTimeoutRef = useRef(null);
     const progressBarRef = useRef(null);
@@ -309,7 +311,7 @@ const WatchPage = () => {
     // ─── Fetch/Create Profile ───────────────────────
     useEffect(() => {
         if (!authUser || profileId) return;
-        
+
         const setupProfile = async () => {
             const profiles = await fetchProfiles();
             if (profiles.length > 0) {
@@ -330,7 +332,7 @@ const WatchPage = () => {
     // ─── Save History logic ─────────────────────────
     const triggerSaveHistory = useCallback(async () => {
         if (!profileId || !currentVideo || !videoRef.current) return;
-        
+
         const video = videoRef.current;
         if (!video.duration) return;
 
@@ -434,7 +436,7 @@ const WatchPage = () => {
 
         window.addEventListener('beforeunload', handleUnload);
         document.addEventListener('visibilitychange', handleVisibilityChange);
-        
+
         return () => {
             window.removeEventListener('beforeunload', handleUnload);
             document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -483,40 +485,76 @@ const WatchPage = () => {
                     const token = (details.headers?.Authorization || '').replace('Bearer ', '');
 
                     if (fileId && token) {
-                        // Use proxy: /gdrive-proxy/{fileId}?alt=media&access_token={token}
-                        // Dev: Vite proxy forwards to googleapis.com server-side (no CORS)
-                        // Prod: Flask handles this route (on HF Space)
-                        // The access_token is passed as URL param so the <video> element
-                        // can stream without custom headers (supports Range/seeking).
-                        const proxyPath = `/gdrive-proxy/${fileId}?alt=media&access_token=${encodeURIComponent(token)}`;
+                        if (hlsInstanceRef.current) {
+                            hlsInstanceRef.current.destroy();
+                            hlsInstanceRef.current = null;
+                        }
+
+                        const isHls = (currentVideo.original_name || currentVideo.name || '').toLowerCase().endsWith('.m3u8');
+
+                        let proxyPath = `/gdrive-proxy/${fileId}?alt=media&access_token=${encodeURIComponent(token)}`;
+                        if (isHls) {
+                            proxyPath = `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
+                        }
+
                         const proxyUrl = import.meta.env.DEV ? proxyPath : `${BASE_URL}${proxyPath}`;
+                        console.log('[Player] Loading:', proxyUrl.replace(token, '...'));
 
-                        console.log('[Player] Loading via proxy:', import.meta.env.DEV ? proxyPath.replace(token, '...') : `${BASE_URL}/gdrive-proxy/${fileId}?alt=media&access_token=...`);
-                        videoRef.current.src = proxyUrl;
-
-                        // We do NOT call .load() because setting src triggers load naturally, 
-                        // and explicitly calling load() can cancel the browser's native autoplay evaluation.
-                        const playPromise = videoRef.current.play();
-                        if (playPromise !== undefined) {
-                            playPromise.catch(e => {
-                                console.warn('Autoplay prevented by browser:', e);
-                                // Browser policy: retry with muted autoplay (most reliable path).
-                                try {
-                                    if (videoRef.current) {
-                                        videoRef.current.muted = true;
-                                        setIsMuted(true);
-                                        const mutedRetry = videoRef.current.play();
-                                        if (mutedRetry !== undefined) {
-                                            mutedRetry.catch(() => {
-                                                // If still blocked, show play button.
-                                                setVideoLoading(false);
-                                            });
-                                        }
-                                    }
-                                } catch {
-                                    setVideoLoading(false);
+                        if (isHls && Hls.isSupported()) {
+                            const hls = new Hls({
+                                maxBufferLength: 30,
+                                enableWorker: true,
+                            });
+                            hlsInstanceRef.current = hls;
+                            hls.loadSource(proxyUrl);
+                            hls.attachMedia(videoRef.current);
+                            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                                const playPromise = videoRef.current.play();
+                                if (playPromise !== undefined) {
+                                    playPromise.catch(e => {
+                                        console.warn('Autoplay prevented:', e);
+                                        try {
+                                            if (videoRef.current) {
+                                                videoRef.current.muted = true;
+                                                setIsMuted(true);
+                                                videoRef.current.play().catch(() => setVideoLoading(false));
+                                            }
+                                        } catch { setVideoLoading(false); }
+                                    });
                                 }
                             });
+                            hls.on(Hls.Events.ERROR, function (event, data) {
+                                if (data.fatal) {
+                                    switch (data.type) {
+                                        case Hls.ErrorTypes.NETWORK_ERROR:
+                                            hls.startLoad();
+                                            break;
+                                        case Hls.ErrorTypes.MEDIA_ERROR:
+                                            hls.recoverMediaError();
+                                            break;
+                                        default:
+                                            hls.destroy();
+                                            setVideoError('HLS Error: ' + data.details);
+                                            break;
+                                    }
+                                }
+                            });
+                        } else {
+                            // Standard playback / Safari native HLS
+                            videoRef.current.src = proxyUrl;
+                            const playPromise = videoRef.current.play();
+                            if (playPromise !== undefined) {
+                                playPromise.catch(e => {
+                                    console.warn('Autoplay prevented by browser:', e);
+                                    try {
+                                        if (videoRef.current) {
+                                            videoRef.current.muted = true;
+                                            setIsMuted(true);
+                                            videoRef.current.play().catch(() => setVideoLoading(false));
+                                        }
+                                    } catch { setVideoLoading(false); }
+                                });
+                            }
                         }
                     } else {
                         setVideoError('Invalid video URL or token');
@@ -700,6 +738,7 @@ const WatchPage = () => {
         return () => {
             if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
             if (prevSubtitleUrl.current) revokeSubtitleBlobUrl(prevSubtitleUrl.current);
+            if (hlsInstanceRef.current) hlsInstanceRef.current.destroy();
         };
     }, []);
 
