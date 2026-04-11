@@ -492,13 +492,75 @@ const WatchPage = () => {
 
                         const isHls = (currentVideo.original_name || currentVideo.name || '').toLowerCase().endsWith('.m3u8');
 
-                        let proxyPath = `/gdrive-proxy/${fileId}?alt=media&access_token=${encodeURIComponent(token)}`;
+                        // ── Cloudflare Worker URL (primary) vs old proxy (fallback) ──
+                        const cfWorkerUrl = import.meta.env.VITE_CF_WORKER_URL;
+                        const fallbackProxyPath = `/gdrive-proxy/${fileId}?alt=media&access_token=${encodeURIComponent(token)}`;
+                        const fallbackProxyUrl = import.meta.env.DEV ? fallbackProxyPath : `${BASE_URL}${fallbackProxyPath}`;
+
+                        let streamUrl;
                         if (isHls) {
-                            proxyPath = `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
+                            // HLS: selalu lewat backend (butuh file mapping untuk rewrite manifest)
+                            const hlsPath = `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
+                            streamUrl = import.meta.env.DEV ? hlsPath : `${BASE_URL}${hlsPath}`;
+                        } else if (cfWorkerUrl) {
+                            // Cloudflare Worker sebagai proxy utama
+                            streamUrl = `${cfWorkerUrl.replace(/\/$/, '')}/${fileId}?token=${encodeURIComponent(token)}`;
+                        } else {
+                            // Tidak ada CF Worker — gunakan proxy lama
+                            streamUrl = fallbackProxyUrl;
                         }
 
-                        const proxyUrl = import.meta.env.DEV ? proxyPath : `${BASE_URL}${proxyPath}`;
-                        console.log('[Player] Loading:', proxyUrl.replace(token, '...'));
+                        console.log('[Player] Loading via', cfWorkerUrl && !isHls ? 'CF Worker' : 'proxy', ':', streamUrl.replace(token, '...'));
+
+                        /**
+                         * Helper: coba play video, kalau gagal fallback ke proxy lama.
+                         * Hanya aktif jika awalnya pakai CF Worker (bukan proxy lama).
+                         */
+                        const usingCfWorker = !!(cfWorkerUrl && !isHls);
+
+                        const tryPlayWithFallback = (videoSrc) => {
+                            if (!videoRef.current) return;
+                            videoRef.current.src = videoSrc;
+
+                            const onErrorFallback = () => {
+                                if (!usingCfWorker || cancelled) return;
+                                // CF Worker gagal → fallback ke proxy lama
+                                console.warn('[Player] CF Worker failed, falling back to server proxy');
+                                videoRef.current.removeEventListener('error', onErrorFallback);
+                                videoRef.current.src = fallbackProxyUrl;
+                                const retryPlay = videoRef.current.play();
+                                if (retryPlay !== undefined) {
+                                    retryPlay.catch(e2 => {
+                                        console.warn('Fallback autoplay prevented:', e2);
+                                        try {
+                                            if (videoRef.current) {
+                                                videoRef.current.muted = true;
+                                                setIsMuted(true);
+                                                videoRef.current.play().catch(() => setVideoLoading(false));
+                                            }
+                                        } catch { setVideoLoading(false); }
+                                    });
+                                }
+                            };
+
+                            if (usingCfWorker) {
+                                videoRef.current.addEventListener('error', onErrorFallback, { once: true });
+                            }
+
+                            const playPromise = videoRef.current.play();
+                            if (playPromise !== undefined) {
+                                playPromise.catch(e => {
+                                    console.warn('Autoplay prevented by browser:', e);
+                                    try {
+                                        if (videoRef.current) {
+                                            videoRef.current.muted = true;
+                                            setIsMuted(true);
+                                            videoRef.current.play().catch(() => setVideoLoading(false));
+                                        }
+                                    } catch { setVideoLoading(false); }
+                                });
+                            }
+                        };
 
                         if (isHls && Hls.isSupported()) {
                             const hls = new Hls({
@@ -506,7 +568,7 @@ const WatchPage = () => {
                                 enableWorker: true,
                             });
                             hlsInstanceRef.current = hls;
-                            hls.loadSource(proxyUrl);
+                            hls.loadSource(streamUrl);
                             hls.attachMedia(videoRef.current);
                             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                                 const playPromise = videoRef.current.play();
@@ -540,21 +602,8 @@ const WatchPage = () => {
                                 }
                             });
                         } else {
-                            // Standard playback / Safari native HLS
-                            videoRef.current.src = proxyUrl;
-                            const playPromise = videoRef.current.play();
-                            if (playPromise !== undefined) {
-                                playPromise.catch(e => {
-                                    console.warn('Autoplay prevented by browser:', e);
-                                    try {
-                                        if (videoRef.current) {
-                                            videoRef.current.muted = true;
-                                            setIsMuted(true);
-                                            videoRef.current.play().catch(() => setVideoLoading(false));
-                                        }
-                                    } catch { setVideoLoading(false); }
-                                });
-                            }
+                            // Standard playback / Safari native HLS — with CF fallback
+                            tryPlayWithFallback(streamUrl);
                         }
                     } else {
                         setVideoError('Invalid video URL or token');

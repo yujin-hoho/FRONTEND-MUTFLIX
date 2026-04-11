@@ -2858,7 +2858,8 @@ def get_hls_manifest(fid):
             if not page_token: break
             
         # Rewrite manifest: replace filenames with proxy URLs
-        # Use the same access_token param so the proxy endpoint can authenticate
+        # Prefer CF Worker if configured, else fallback to /gdrive-proxy/
+        cf_worker_url = os.environ.get('CF_WORKER_URL', '').rstrip('/')
         lines = m3u8_content.splitlines()
         new_lines = []
         for line in lines:
@@ -2868,7 +2869,11 @@ def get_hls_manifest(fid):
                     mapped_id = file_map[stripped]
                     if stripped.lower().endswith('.m3u8'):
                         new_lines.append(f"/api/hls-manifest/{mapped_id}?access_token={access_token}")
+                    elif cf_worker_url:
+                        # Cloudflare Worker untuk segment streaming
+                        new_lines.append(f"{cf_worker_url}/{mapped_id}?token={access_token}")
                     else:
+                        # Fallback ke proxy lama
                         new_lines.append(f"/gdrive-proxy/{mapped_id}?alt=media&access_token={access_token}")
                 else:
                     new_lines.append(line)
