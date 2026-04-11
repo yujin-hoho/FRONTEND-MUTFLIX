@@ -3,4 +3,7 @@ main = "worker.js"
 compatibility_date = "2024-01-01"
 
 [vars]
-ALLOWED_ORIGINS = "https://melancholia112-mutflix.hf.space"
+# Allowed origins — bisa diisi comma-separated
+# Contoh: "https://mutflix.onrender.com,https://melancholia112-mutflix.hf.space"
+# Pakai * untuk izinkan semua (token sudah jadi auth layer)
+ALLOWED_ORIGINS = "*"
