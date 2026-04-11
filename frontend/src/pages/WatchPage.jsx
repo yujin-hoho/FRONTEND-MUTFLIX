@@ -63,6 +63,7 @@ const WatchPage = () => {
     const urlType = searchParams.get('type');
     const urlEp = parseInt(searchParams.get('ep')) || 1;
     const urlSeason = parseInt(searchParams.get('s')) || 1;
+    const urlTime = parseInt(searchParams.get('t'));
 
     const toInt = (value, fallback) => {
         const n =
@@ -360,17 +361,21 @@ const WatchPage = () => {
     useEffect(() => {
         if (!profileId || !currentVideo) return;
 
-        // Instant local seek hint while remote history is loading.
-        const localMap = getLocalResumeMap();
-        const localEntry = localMap[currentVideo.path];
-        if (localEntry && Number(localEntry.position_ms) >= 10000) {
-            const p = Number(localEntry.position_ms);
-            const d = Number(localEntry.duration_ms) || 0;
-            const progress = d > 0 ? (p / d) * 100 : 0;
-            if (progress < 95) setResumeTime(p / 1000);
-            else setResumeTime(0);
+        if (urlTime && !hasSeekedRef.current) {
+            setResumeTime(urlTime);
+            // Instant local seek hint override
         } else {
-            setResumeTime(0);
+            const localMap = getLocalResumeMap();
+            const localEntry = localMap[currentVideo.path];
+            if (localEntry && Number(localEntry.position_ms) >= 10000) {
+                const p = Number(localEntry.position_ms);
+                const d = Number(localEntry.duration_ms) || 0;
+                const progress = d > 0 ? (p / d) * 100 : 0;
+                if (progress < 95) setResumeTime(p / 1000);
+                else setResumeTime(0);
+            } else {
+                setResumeTime(0);
+            }
         }
 
         const fetchResumePosition = async () => {
@@ -379,13 +384,13 @@ const WatchPage = () => {
             if (entry && entry.position_ms >= 10000) {
                 const progress = (entry.position_ms / entry.duration_ms) * 100;
                 if (progress < 95) {
-                    setResumeTime(entry.position_ms / 1000);
+                    if (!urlTime) setResumeTime(entry.position_ms / 1000);
                     setLocalResumeForPath(entry.media_path, entry.position_ms, entry.duration_ms);
                 } else {
-                    setResumeTime(0);
+                    if (!urlTime) setResumeTime(0);
                 }
             } else {
-                setResumeTime(0);
+                if (!urlTime) setResumeTime(0);
             }
         };
         fetchResumePosition();

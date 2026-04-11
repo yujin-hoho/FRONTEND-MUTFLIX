@@ -55,7 +55,11 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
         }
       }
       const type = detailTypeOfItem(item);
-      navigate(`/watch/${encodeURIComponent(folderName)}?ep=${ep}&s=${s}&type=${type}`);
+      let targetUrl = `/watch/${encodeURIComponent(folderName)}?ep=${ep}&s=${s}&type=${type}`;
+      if (item.position_ms) {
+        targetUrl += `&t=${Math.floor(item.position_ms / 1000)}`;
+      }
+      navigate(targetUrl);
     } else {
       void preloadContentDetailRoute();
       navigate(`/detail/${encodeURIComponent(folderName)}?type=${detailTypeOfItem(item)}`);

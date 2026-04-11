@@ -109,6 +109,9 @@ GDRIVE_SUBTITLE_FOLDER_ID = os.environ.get('GDRIVE_SUBTITLE_FOLDER_ID')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
+# TMDB: dipakai server untuk poster + genre di /api/folders (frontend tidak wajib pakai VITE_TMDB_API_KEY)
+TMDB_API_KEY = (os.environ.get('TMDB_API_KEY') or os.environ.get('VITE_TMDB_API_KEY') or '').strip()
+
 # Discord Config
 DISCORD_PUBLIC_KEY = os.environ.get('DISCORD_PUBLIC_KEY') 
 DISCORD_ADMIN_ID = os.environ.get('DISCORD_ADMIN_ID')     
@@ -568,6 +571,20 @@ def init_db():
                 tmdb_overview TEXT,
                 tmdb_rating REAL,
                 created_at REAL,
+                updated_at REAL
+            );
+        """)
+        conn.commit()
+
+        # 9b. Cache TMDB per folder (poster_path + genre_ids di /api/folders — diisi server)
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS folder_tmdb_cache (
+                folder_name VARCHAR(512) PRIMARY KEY,
+                poster_path TEXT,
+                genre_ids TEXT,
+                tmdb_rating REAL,
+                original_language TEXT,
+                origin_country TEXT,
                 updated_at REAL
             );
         """)
@@ -1087,6 +1104,420 @@ def _merge_tmdb_overrides_into_folders(all_c):
     finally:
         release_db_connection(conn, db_type)
     return all_c
+
+# ==========================================
+# FOLDER POSTER (TMDB server-side) + poster_path di /api/folders
+# ==========================================
+
+_folder_tmdb_cache_mem = None
+_folder_tmdb_cache_mem_ts = 0.0
+_folder_tmdb_cache_lock = threading.Lock()
+_FOLDER_TMDB_CACHE_TTL = 300.0
+
+
+def _invalidate_folder_tmdb_cache_mem():
+    global _folder_tmdb_cache_mem
+    with _folder_tmdb_cache_lock:
+        _folder_tmdb_cache_mem = None
+
+
+def _load_folder_tmdb_cache_map():
+    """Load folder_tmdb_cache ke dict {folder_lower: row dict}; cache RAM 5 menit."""
+    global _folder_tmdb_cache_mem, _folder_tmdb_cache_mem_ts
+    now = time.time()
+    with _folder_tmdb_cache_lock:
+        if _folder_tmdb_cache_mem is not None and (now - _folder_tmdb_cache_mem_ts) < _FOLDER_TMDB_CACHE_TTL:
+            return _folder_tmdb_cache_mem
+    conn, db_type = None, None
+    out = {}
+    try:
+        conn, db_type = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT folder_name, poster_path, genre_ids, tmdb_rating, original_language, origin_country FROM folder_tmdb_cache"
+        )
+        for row in cur.fetchall() or []:
+            fn = row[0]
+            if not fn:
+                continue
+            gids = []
+            try:
+                if row[2]:
+                    gids = json.loads(row[2])
+                    if not isinstance(gids, list):
+                        gids = []
+            except Exception:
+                gids = []
+            oc = []
+            try:
+                if row[5]:
+                    oc = json.loads(row[5])
+                    if not isinstance(oc, list):
+                        oc = []
+            except Exception:
+                oc = []
+            out[fn.lower()] = {
+                "poster_path": row[1],
+                "genre_ids": gids,
+                "tmdb_rating": row[3],
+                "original_language": row[4] or "",
+                "origin_country": oc,
+            }
+    except Exception as e:
+        print(f"[FOLDER-TMDB-CACHE] load failed: {e}", flush=True)
+    finally:
+        release_db_connection(conn, db_type)
+    with _folder_tmdb_cache_lock:
+        _folder_tmdb_cache_mem = out
+        _folder_tmdb_cache_mem_ts = time.time()
+    return out
+
+
+def _merge_content_releases_into_folders(all_c):
+    """Sisipkan tmdb_* dari content_releases ke item folder (sama seperti search index)."""
+    if not all_c:
+        return all_c
+    try:
+        releases = mem_get("content_releases")
+        if releases is None:
+            releases = _load_releases()
+        by_fn = {r.get("folder_name", "").lower(): r for r in releases if r.get("folder_name")}
+        for cat in ("series", "movies"):
+            for item in all_c.get(cat) or []:
+                name = item.get("name")
+                if not name:
+                    continue
+                rel = by_fn.get(name.lower())
+                if not rel:
+                    continue
+                if rel.get("tmdb_title"):
+                    item["tmdb_title"] = rel["tmdb_title"]
+                if rel.get("tmdb_poster_path"):
+                    item["tmdb_poster_path"] = rel["tmdb_poster_path"]
+                if rel.get("tmdb_rating") is not None:
+                    item["tmdb_rating"] = rel["tmdb_rating"]
+                if rel.get("tmdb_overview"):
+                    item["tmdb_overview"] = rel["tmdb_overview"]
+                if rel.get("media_type"):
+                    item["media_type"] = rel["media_type"]
+    except Exception as e:
+        print(f"[FOLDERS] merge content_releases failed: {e}", flush=True)
+    return all_c
+
+
+def _merge_folder_tmdb_cache_into_folders(all_c):
+    """Sisipkan poster + genre dari folder_tmdb_cache (DB)."""
+    if not all_c:
+        return all_c
+    try:
+        cmap = _load_folder_tmdb_cache_map()
+        for cat in ("series", "movies"):
+            for item in all_c.get(cat) or []:
+                name = item.get("name")
+                if not name:
+                    continue
+                row = cmap.get(name.lower())
+                if not row:
+                    continue
+                if row.get("poster_path"):
+                    item["tmdb_poster_path"] = item.get("tmdb_poster_path") or row["poster_path"]
+                if row.get("genre_ids"):
+                    item["tmdb_genre_ids"] = row["genre_ids"]
+                if row.get("tmdb_rating") is not None and item.get("tmdb_rating") is None:
+                    item["tmdb_rating"] = row["tmdb_rating"]
+                if row.get("original_language"):
+                    item["original_language"] = row["original_language"]
+                if row.get("origin_country"):
+                    item["origin_country"] = row["origin_country"]
+    except Exception as e:
+        print(f"[FOLDERS] merge folder_tmdb_cache failed: {e}", flush=True)
+    return all_c
+
+
+def _apply_poster_path_field(all_c):
+    """Field eksplisit poster_path untuk klien (path TMDB relatif, sama seperti tmdb_poster_path)."""
+    if not all_c:
+        return all_c
+    for cat in ("series", "movies"):
+        for item in all_c.get(cat) or []:
+            pp = item.get("tmdb_poster_path") or item.get("poster_path")
+            if pp:
+                item["poster_path"] = pp
+            elif "poster_path" not in item:
+                item["poster_path"] = None
+    return all_c
+
+
+def _merge_folder_poster_pipeline(all_c):
+    """Urutan merge untuk GET /api/folders."""
+    _merge_tmdb_overrides_into_folders(all_c)
+    _merge_content_releases_into_folders(all_c)
+    _merge_folder_tmdb_cache_into_folders(all_c)
+    _apply_poster_path_field(all_c)
+    return all_c
+
+
+def _infer_media_type_folder(item):
+    mt = (item.get("tmdb_override_media_type") or item.get("media_type") or "").strip().lower()
+    if mt in ("movie", "tv"):
+        return "movie" if mt == "movie" else "tv"
+    t = (item.get("type") or "").lower()
+    if t == "movie":
+        return "movie"
+    if t in ("series", "tv"):
+        return "tv"
+    if item.get("episodes") or item.get("first_air_date"):
+        return "tv"
+    return None
+
+
+def _tmdb_http_resolve_item(item):
+    """Satu judul folder → poster_path + genre_ids + rating (tanpa credits)."""
+    if not TMDB_API_KEY:
+        return None
+    query = (item.get("tmdb_query") or item.get("tmdb_title") or item.get("name") or "").strip()
+    query = re.sub(r"\(\d{4}\)", "", query).strip()
+    if not query:
+        return None
+    media_type = None
+    if item.get("tmdb_query"):
+        media_type = (item.get("tmdb_override_media_type") or "tv").strip().lower()
+        if media_type not in ("movie", "tv"):
+            media_type = "tv"
+    else:
+        media_type = _infer_media_type_folder(item)
+    adult = "true" if item.get("include_adult") else "false"
+    year = item.get("override_year")
+    region = (item.get("override_region") or "").strip() or None
+    base = "https://api.themoviedb.org/3"
+    key = TMDB_API_KEY
+
+    def pick_tv_with_region(results, reg):
+        if not reg or not results:
+            return results[0] if results else None
+        for r in results:
+            if r.get("origin_country") and reg in r["origin_country"]:
+                return r
+        return results[0]
+
+    try:
+        if media_type == "movie":
+            params = {"api_key": key, "query": query, "language": "en-US", "include_adult": adult}
+            if year is not None:
+                try:
+                    params["year"] = int(year)
+                except Exception:
+                    pass
+            r = requests.get(f"{base}/search/movie", params=params, timeout=14)
+            data = r.json()
+            res = data.get("results") or []
+            if not res:
+                return None
+            best = next((x for x in res if x.get("poster_path") or x.get("backdrop_path")), res[0])
+            pb = best.get("poster_path") or best.get("backdrop_path")
+            gids = best.get("genre_ids") or []
+            if pb and gids:
+                return {
+                    "poster_path": best.get("poster_path") or best.get("backdrop_path"),
+                    "genre_ids": gids,
+                    "tmdb_rating": best.get("vote_average"),
+                    "original_language": best.get("original_language") or "",
+                    "origin_country": [],
+                }
+            dr = requests.get(f"{base}/movie/{best['id']}", params={"api_key": key, "language": "en-US"}, timeout=14)
+            details = dr.json()
+            gids = [g["id"] for g in (details.get("genres") or [])]
+            pc = [c.get("iso_3166_1") for c in (details.get("production_countries") or []) if c.get("iso_3166_1")]
+            return {
+                "poster_path": details.get("poster_path") or best.get("poster_path") or best.get("backdrop_path"),
+                "genre_ids": gids or best.get("genre_ids") or [],
+                "tmdb_rating": details.get("vote_average") or best.get("vote_average"),
+                "original_language": details.get("original_language") or best.get("original_language") or "",
+                "origin_country": pc,
+            }
+
+        if media_type == "tv":
+            params = {"api_key": key, "query": query, "language": "en-US", "include_adult": adult}
+            if year is not None:
+                try:
+                    params["first_air_date_year"] = int(year)
+                except Exception:
+                    pass
+            r = requests.get(f"{base}/search/tv", params=params, timeout=14)
+            data = r.json()
+            res = data.get("results") or []
+            if not res:
+                return None
+            pool = [x for x in res if x.get("poster_path") or x.get("backdrop_path")] or res
+            best = pick_tv_with_region(pool, region) if region else (pool[0] if pool else res[0])
+            pb = best.get("poster_path") or best.get("backdrop_path")
+            gids = best.get("genre_ids") or []
+            if pb and gids:
+                return {
+                    "poster_path": best.get("poster_path") or best.get("backdrop_path"),
+                    "genre_ids": gids,
+                    "tmdb_rating": best.get("vote_average"),
+                    "original_language": best.get("original_language") or "",
+                    "origin_country": best.get("origin_country") or [],
+                }
+            dr = requests.get(f"{base}/tv/{best['id']}", params={"api_key": key, "language": "en-US"}, timeout=14)
+            details = dr.json()
+            gids = [g["id"] for g in (details.get("genres") or [])]
+            return {
+                "poster_path": details.get("poster_path") or best.get("poster_path") or best.get("backdrop_path"),
+                "genre_ids": gids or best.get("genre_ids") or [],
+                "tmdb_rating": details.get("vote_average") or best.get("vote_average"),
+                "original_language": details.get("original_language") or best.get("original_language") or "",
+                "origin_country": details.get("origin_country") or best.get("origin_country") or [],
+            }
+
+        # multi
+        r = requests.get(
+            f"{base}/search/multi",
+            params={"api_key": key, "query": query, "language": "en-US", "include_adult": adult},
+            timeout=14,
+        )
+        data = r.json()
+        res = [x for x in (data.get("results") or []) if x.get("media_type") in ("movie", "tv")]
+        if not res:
+            res = data.get("results") or []
+        if not res:
+            return None
+        best = next((x for x in res if x.get("poster_path") or x.get("backdrop_path")), res[0])
+        mt = best.get("media_type")
+        if mt not in ("movie", "tv"):
+            mt = "tv"
+        pb = best.get("poster_path") or best.get("backdrop_path")
+        gids = best.get("genre_ids") or []
+        if pb and gids:
+            return {
+                "poster_path": best.get("poster_path") or best.get("backdrop_path"),
+                "genre_ids": gids,
+                "tmdb_rating": best.get("vote_average"),
+                "original_language": best.get("original_language") or "",
+                "origin_country": best.get("origin_country") or [],
+            }
+        dr = requests.get(f"{base}/{mt}/{best['id']}", params={"api_key": key, "language": "en-US"}, timeout=14)
+        details = dr.json()
+        gids = [g["id"] for g in (details.get("genres") or [])]
+        oc = details.get("origin_country") or best.get("origin_country") or []
+        if mt == "movie":
+            pc = [c.get("iso_3166_1") for c in (details.get("production_countries") or []) if c.get("iso_3166_1")]
+            oc = pc or oc
+        return {
+            "poster_path": details.get("poster_path") or best.get("poster_path") or best.get("backdrop_path"),
+            "genre_ids": gids or best.get("genre_ids") or [],
+            "tmdb_rating": details.get("vote_average") or best.get("vote_average"),
+            "original_language": details.get("original_language") or best.get("original_language") or "",
+            "origin_country": oc,
+        }
+    except Exception as e:
+        print(f"[TMDB] resolve failed for {query!r}: {e}", flush=True)
+        return None
+
+
+def _upsert_folder_tmdb_cache_db(folder_name, res):
+    if not folder_name or not res or not res.get("poster_path"):
+        return
+    conn, db_type = None, None
+    try:
+        conn, db_type = get_db_connection()
+        cur = conn.cursor()
+        ph = "%s" if db_type == "postgres" else "?"
+        gids = json.dumps(res.get("genre_ids") or [])
+        oc = json.dumps(res.get("origin_country") or [])
+        orig = res.get("original_language") or ""
+        now = time.time()
+        cur.execute(
+            f"UPDATE folder_tmdb_cache SET poster_path={ph}, genre_ids={ph}, tmdb_rating={ph}, original_language={ph}, origin_country={ph}, updated_at={ph} WHERE folder_name={ph}",
+            (
+                res["poster_path"],
+                gids,
+                res.get("tmdb_rating"),
+                orig,
+                oc,
+                now,
+                folder_name,
+            ),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                f"INSERT INTO folder_tmdb_cache (folder_name, poster_path, genre_ids, tmdb_rating, original_language, origin_country, updated_at) VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                (folder_name, res["poster_path"], gids, res.get("tmdb_rating"), orig, oc, now),
+            )
+        conn.commit()
+        _invalidate_folder_tmdb_cache_mem()
+    except Exception as e:
+        print(f"[FOLDER-TMDB-CACHE] upsert failed {folder_name}: {e}", flush=True)
+    finally:
+        release_db_connection(conn, db_type)
+
+
+def _warm_folder_posters_batch(max_items=80):
+    """Isi cache DB dari TMDB untuk folder yang belum punya poster; dipanggil thread background."""
+    if not TMDB_API_KEY:
+        return 0
+    folders = mem_get("folders_list")
+    if not folders:
+        return 0
+    try:
+        payload = copy.deepcopy(folders)
+        _merge_folder_poster_pipeline(payload)
+    except Exception as e:
+        print(f"[POSTER-WARM] merge: {e}", flush=True)
+        return 0
+    todo = []
+    for cat in ("series", "movies"):
+        for item in payload.get(cat) or []:
+            name = item.get("name")
+            if not name:
+                continue
+            pp = item.get("poster_path") or item.get("tmdb_poster_path")
+            gids = item.get("tmdb_genre_ids")
+            if pp and gids:
+                continue
+            todo.append(item)
+            if len(todo) >= max_items:
+                break
+        if len(todo) >= max_items:
+            break
+    done = 0
+    for item in todo:
+        try:
+            res = _tmdb_http_resolve_item(item)
+            if not res or not res.get("poster_path"):
+                time.sleep(0.04)
+                continue
+            _upsert_folder_tmdb_cache_db(item["name"], res)
+            done += 1
+            time.sleep(0.06)
+        except Exception as e:
+            print(f"[POSTER-WARM] {item.get('name')}: {e}", flush=True)
+    if done:
+        try:
+            _response_cache.pop("resp_folders", None)
+        except Exception:
+            pass
+        print(f"[POSTER-WARM] cached {done} folder poster(s)", flush=True)
+    return done
+
+
+def _poster_warmer_daemon():
+    time.sleep(25)
+    while True:
+        try:
+            _warm_folder_posters_batch(max_items=100)
+        except Exception as e:
+            print(f"[POSTER-WARM] daemon: {e}", flush=True)
+        time.sleep(120)
+
+
+try:
+    threading.Thread(target=_poster_warmer_daemon, daemon=True).start()
+    print("[INIT] folder poster warmer thread started (TMDB server-side cache)", flush=True)
+except Exception as _pwm_err:
+    print(f"[INIT] folder poster warmer failed: {_pwm_err}", flush=True)
+
 
 # ==========================================
 # INTRO MARKERS API (Skip Intro - Admin only write)
@@ -1875,38 +2306,29 @@ def build_search_index():
     global _search_index_built
     folders = mem_get('folders_list')
     if not folders: return
-    
-    # Pre-build TMDB lookup from content_releases cache for enrichment
-    releases = mem_get('content_releases') or []
-    tmdb_by_folder = {}
-    for rel in releases:
-        fn = rel.get('folder_name')
-        if fn:
-            tmdb_by_folder[fn.lower()] = rel
-    
+
+    folders_merged = copy.deepcopy(folders)
+    _merge_folder_poster_pipeline(folders_merged)
+
     new_index = defaultdict(list)
     seen = set()  # Avoid duplicates
-    
+
     for media_type in ['series', 'movies']:
-        for item in folders.get(media_type, []):
+        for item in folders_merged.get(media_type, []):
             name = item.get('name', '')
             if name in seen: continue
             seen.add(name)
-            
+
             entry = {
                 'name': name,
                 'folder_name': name,
                 'type': item.get('type', media_type.rstrip('s')),
                 'source': item.get('source', '')
             }
-            # Enrich with TMDB data from content releases if available
-            rel = tmdb_by_folder.get(name.lower())
-            if rel:
-                if rel.get('tmdb_title'): entry['tmdb_title'] = rel['tmdb_title']
-                if rel.get('tmdb_poster_path'): entry['tmdb_poster_path'] = rel['tmdb_poster_path']
-                if rel.get('tmdb_rating'): entry['tmdb_rating'] = rel['tmdb_rating']
-                if rel.get('tmdb_overview'): entry['tmdb_overview'] = rel['tmdb_overview']
-            
+            for k in ('tmdb_title', 'tmdb_poster_path', 'poster_path', 'tmdb_rating', 'tmdb_overview', 'tmdb_genre_ids'):
+                if k in item and item.get(k) is not None:
+                    entry[k] = item[k]
+
             # Index setiap kata dari nama
             words = _normalize_text(name)
             for word in words:
@@ -2206,7 +2628,6 @@ def fetch_gdrive_videos(service, folder_name):
             if not series_folder_ids: return {"videos": [], "has_season_folders": False}
             
             all_folder_ids = []; folder_id_to_name = {}
-            new_subfolder_ids = []
             for series_folder_id in series_folder_ids:
                 all_folder_ids.append(series_folder_id); folder_id_to_name[series_folder_id] = folder_name
                 subfolder_q = f"'{series_folder_id}' in parents and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false"
@@ -2215,51 +2636,23 @@ def fetch_gdrive_videos(service, folder_name):
                     fid = sub['id'] if sub['mimeType'] == 'application/vnd.google-apps.folder' else sub.get('shortcutDetails', {}).get('targetId')
                     if fid:
                         all_folder_ids.append(fid); folder_id_to_name[fid] = sub['name']
-                        new_subfolder_ids.append(fid)
                         if not has_season_folders_gdrive and re.search(r'(?:season|s)\s*\d+', sub['name'], re.IGNORECASE): has_season_folders_gdrive = True
-                        
-            # [NEW] Check sub-sub-folders (e.g. "Episode 3" inside "Season 3")
-            if new_subfolder_ids:
-                parent_clauses = " or ".join([f"'{fid}' in parents" for fid in new_subfolder_ids])
-                subsubfolder_q = f"({parent_clauses}) and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false"
-                page_token = None
-                while True:
-                    subsub_res = service.files().list(q=subsubfolder_q, pageSize=150, pageToken=page_token, fields="nextPageToken, files(id, name, mimeType, shortcutDetails(targetId), parents)").execute()
-                    for sub in subsub_res.get('files', []):
-                        fid = sub['id'] if sub['mimeType'] == 'application/vnd.google-apps.folder' else sub.get('shortcutDetails', {}).get('targetId')
-                        if fid:
-                            all_folder_ids.append(fid)
-                            parent_id = sub.get('parents', [None])[0]
-                            # Inherit "Season X" prefix if parent has it, for accurate episode detection
-                            if parent_id and parent_id in folder_id_to_name and re.search(r'(?:season|s)\s*\d+', folder_id_to_name[parent_id], re.IGNORECASE):
-                                folder_id_to_name[fid] = folder_id_to_name[parent_id] + " " + sub['name']
-                            else:
-                                folder_id_to_name[fid] = sub['name']
-                    page_token = subsub_res.get('nextPageToken')
-                    if not page_token: break
             
             if not all_folder_ids: return {"videos": [], "has_season_folders": False}
 
+            parent_clauses = " or ".join([f"'{fid}' in parents" for fid in all_folder_ids])
+            files_q = f"({parent_clauses}) and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt') and trashed = false"
+            
             video_files, subtitle_files = [], []
-            CHUNK_SIZE = 20
-            # [Fix nested folders + HLS] Process folder queries in chunks to avoid GDrive query length limit
-            for i in range(0, len(all_folder_ids), CHUNK_SIZE):
-                chunk = all_folder_ids[i:i + CHUNK_SIZE]
-                parent_clauses = " or ".join([f"'{fid}' in parents" for fid in chunk])
-                files_q = f"({parent_clauses}) and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt' or name contains '.m3u8') and trashed = false"
-                
-                page_token = None
-                while True:
-                    files_res = service.files().list(q=files_q, pageSize=PAGE_SIZE, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
-                    for f in files_res.get('files', []):
-                        lname = f['name'].lower()
-                        if 'video/' in f['mimeType'] or lname.endswith('.m3u8'): 
-                            video_files.append(f)
-                        elif lname.endswith(('.srt', '.vtt')): 
-                            subtitle_files.append(f)
-                    page_token = files_res.get('nextPageToken')
-                    if not page_token: break
-                    time.sleep(0.05) 
+            page_token = None
+            while True:
+                files_res = service.files().list(q=files_q, pageSize=PAGE_SIZE, fields="nextPageToken, files(id, name, mimeType, parents)", pageToken=page_token).execute()
+                for f in files_res.get('files', []):
+                    if 'video/' in f['mimeType']: video_files.append(f)
+                    elif f['name'].lower().endswith(('.srt', '.vtt')): subtitle_files.append(f)
+                page_token = files_res.get('nextPageToken'); 
+                if not page_token: break
+                time.sleep(0.05) 
 
             # Resolve actual folder name for Supabase subtitle lookup
             # Movies use gdrive_folder/XXXX or gdrive/XXXX as folder_name,
@@ -2323,7 +2716,7 @@ def fetch_gdrive_videos(service, folder_name):
                 if not final_subtitle_path and found_subtitle_gdrive:
                     final_subtitle_path = f"gdrive/{found_subtitle_gdrive['id']}"
 
-                gdrive_videos.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": final_subtitle_path, "season": season if season else 1, "episode": episode, "source": "Google Drive", "original_name": video['name']})
+                gdrive_videos.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": final_subtitle_path, "season": season if season else 1, "episode": episode, "source": "Google Drive"})
             
             return {"videos": gdrive_videos, "has_season_folders": has_season_folders_gdrive}
         except Exception as e:
@@ -2476,9 +2869,16 @@ def get_folders(current_user):
         # RAM first → pre-serialized response (~0.01ms); merge TMDB overrides dari DB per request
         cached = mem_get(key)
         if cached:
+            # Fast-path: if we already have pre-serialized merged payload, don't deep-copy/merge again.
+            cached_bytes = _response_cache.get('resp_folders')
+            if cached_bytes:
+                return add_cache_headers(
+                    app.response_class(cached_bytes, mimetype='application/json', status=200),
+                    max_age=CACHE_DURATION_FOLDERS,
+                )
             payload = copy.deepcopy(cached)
-            _merge_tmdb_overrides_into_folders(payload)
-            return add_no_cache_headers(orjson_jsonify(payload))
+            _merge_folder_poster_pipeline(payload)
+            return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
@@ -2525,13 +2925,13 @@ def get_folders(current_user):
         _response_cache.pop('resp_folders', None)  # Invalidate old serialized
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         payload = copy.deepcopy(all_c)
-        _merge_tmdb_overrides_into_folders(payload)
-        return add_no_cache_headers(orjson_jsonify(payload))
+        _merge_folder_poster_pipeline(payload)
+        return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=CACHE_DURATION_FOLDERS)
     stale = mem_get(key)
     if stale:
         payload = copy.deepcopy(stale)
-        _merge_tmdb_overrides_into_folders(payload)
-        return add_no_cache_headers(orjson_jsonify(payload))
+        _merge_folder_poster_pipeline(payload)
+        return add_cache_headers(orjson_jsonify(payload, cache_key='resp_folders'), max_age=60)
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
 
 @app.route("/api/videos/<path:folder_name>")
@@ -2673,7 +3073,7 @@ def get_videos_in_folder(current_user, folder_name):
                                         if _clean_title_for_matching(s['name']) == cleaned_v:
                                             sub_path = f"gdrive/{s['id']}"; break
                             
-                            result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": video['name']})
+                            result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive"})
                         
                         final = {"videos": result_vids, "has_season_folders": False}
                         mem_set(key, final); _response_cache.pop(resp_key, None)
@@ -2704,7 +3104,7 @@ def get_videos_in_folder(current_user, folder_name):
                         sr = svc.files().list(q=sq, fields="files(id, name)").execute()
                         for s in sr.get('files', []):
                             if s['name'].lower().startswith(name.lower()): sub_path = f"gdrive/{s['id']}"; break
-                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False}
+                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive"}], "has_season_folders": False}
                     mem_set(key, final); _response_cache.pop(resp_key, None)
                     return orjson_jsonify(final, cache_key=resp_key)
              except Exception as e:
@@ -2797,106 +3197,6 @@ def get_gdrive_stream_details(current_user,file_path):
 ## Telegram streaming endpoint moved to `telegram_api.py` blueprint (`/api/telegram/stream/...`)
 ## to guarantee it is registered whenever the Telegram blueprint is enabled.
 
-def _hls_cors_response(content, status=200):
-    """Helper: return HLS manifest with proper CORS headers."""
-    resp = Response(content, status=status, mimetype='application/vnd.apple.mpegurl')
-    resp.headers['Access-Control-Allow-Origin'] = '*'
-    resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    resp.headers['Access-Control-Allow-Headers'] = 'Range'
-    return resp
-
-def _get_fresh_gdrive_token():
-    """Get a fresh GDrive bearer token, using server-side cache with auto-refresh."""
-    global _gdrive_token, _gdrive_token_ts
-    now = time.time()
-    if _gdrive_token and (now - _gdrive_token_ts) < _gdrive_token_ttl:
-        return _gdrive_token
-    svc = get_gdrive_service()
-    if not svc:
-        return None
-    with _gdrive_token_lock:
-        # Double-check after acquiring lock
-        if _gdrive_token and (time.time() - _gdrive_token_ts) < _gdrive_token_ttl:
-            return _gdrive_token
-        if svc._http.credentials.expired:
-            svc._http.credentials.refresh(Request())
-        token = svc._http.credentials.token
-        _gdrive_token = token
-        _gdrive_token_ts = time.time()
-        return token
-
-@app.route("/api/hls-manifest/<fid>")
-def get_hls_manifest(fid):
-    import requests as py_requests
-    # Accept access_token from query for backward compat, but always use server-side token
-    # so playback doesn't break when client token expires during long sessions.
-    access_token = request.args.get('access_token')
-    if not access_token:
-        return _hls_cors_response("Unauthorized", 401)
-    
-    svc = get_gdrive_service()
-    if not svc:
-        return _hls_cors_response("GDrive unavailable", 503)
-    
-    # Use server's own GDrive token — auto-refreshes, won't expire mid-playback
-    server_token = _get_fresh_gdrive_token()
-    if not server_token:
-        return _hls_cors_response("GDrive token unavailable", 503)
-    
-    headers = {"Authorization": f"Bearer {server_token}"}
-    m3u8_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
-    resp = py_requests.get(m3u8_url, headers=headers, timeout=15)
-    if resp.status_code != 200:
-        return _hls_cors_response(f"Failed to fetch m3u8 (status={resp.status_code})", resp.status_code)
-        
-    m3u8_content = resp.text
-    try:
-        meta = svc.files().get(fileId=fid, fields="parents").execute()
-        parents = meta.get('parents', [])
-        if not parents:
-            return _hls_cors_response(m3u8_content)
-        parent_id = parents[0]
-        
-        # Get all files in parent to map filenames to file IDs
-        files_q = f"'{parent_id}' in parents and trashed = false"
-        page_token = None
-        file_map = {}
-        while True:
-            res = svc.files().list(q=files_q, pageSize=1000, fields="nextPageToken, files(id, name)", pageToken=page_token).execute()
-            for f in res.get('files', []):
-                file_map[f['name']] = f['id']
-            page_token = res.get('nextPageToken')
-            if not page_token: break
-            
-        # Rewrite manifest: replace filenames with proxy URLs
-        # Prefer CF Worker if configured, else fallback to /gdrive-proxy/
-        cf_worker_url = os.environ.get('CF_WORKER_URL', '').rstrip('/')
-        lines = m3u8_content.splitlines()
-        new_lines = []
-        for line in lines:
-            stripped = line.strip()
-            if stripped and not stripped.startswith('#'):
-                if stripped in file_map:
-                    mapped_id = file_map[stripped]
-                    if stripped.lower().endswith('.m3u8'):
-                        new_lines.append(f"/api/hls-manifest/{mapped_id}?access_token={access_token}")
-                    elif cf_worker_url:
-                        # Cloudflare Worker untuk segment streaming
-                        new_lines.append(f"{cf_worker_url}/{mapped_id}?token={access_token}")
-                    else:
-                        # Fallback ke proxy lama
-                        new_lines.append(f"/gdrive-proxy/{mapped_id}?alt=media&access_token={access_token}")
-                else:
-                    new_lines.append(line)
-            else:
-                new_lines.append(line)
-                
-        rewritten_m3u8 = "\n".join(new_lines)
-        return _hls_cors_response(rewritten_m3u8)
-    except Exception as e:
-        print(f"[HLS] Error rewriting manifest: {e}")
-        return _hls_cors_response(m3u8_content)
-
 @app.route("/subtitle/<path:file_path>")
 @rate_limited(limit=120)
 def serve_subtitle(file_path):
@@ -2984,15 +3284,29 @@ def search_content(current_user):
     # Final TMDB enrichment for fallback results (Strategy 1 already has it, but it's safe to overwrite/ensure)
     releases = mem_get('content_releases') or []
     tmdb_by_folder = {r.get('folder_name', '').lower(): r for r in releases if r.get('folder_name')}
-    
+    cmap = _load_folder_tmdb_cache_map()
+
     for res in results[:50]:
         rel = tmdb_by_folder.get(res['name'].lower())
         if rel:
-            if rel.get('tmdb_title'): res['tmdb_title'] = rel['tmdb_title']
-            if rel.get('tmdb_poster_path'): res['tmdb_poster_path'] = rel['tmdb_poster_path']
-            if rel.get('tmdb_rating'): res['tmdb_rating'] = rel['tmdb_rating']
-            if rel.get('tmdb_overview'): res['tmdb_overview'] = rel['tmdb_overview']
-            
+            if rel.get('tmdb_title'):
+                res['tmdb_title'] = rel['tmdb_title']
+            if rel.get('tmdb_poster_path'):
+                res['tmdb_poster_path'] = rel['tmdb_poster_path']
+            if rel.get('tmdb_rating'):
+                res['tmdb_rating'] = rel['tmdb_rating']
+            if rel.get('tmdb_overview'):
+                res['tmdb_overview'] = rel['tmdb_overview']
+        row = cmap.get(res['name'].lower())
+        if row:
+            if row.get('poster_path'):
+                res['poster_path'] = row['poster_path']
+                res['tmdb_poster_path'] = res.get('tmdb_poster_path') or row['poster_path']
+            if row.get('genre_ids'):
+                res['tmdb_genre_ids'] = row['genre_ids']
+            if row.get('tmdb_rating') is not None and res.get('tmdb_rating') is None:
+                res['tmdb_rating'] = row['tmdb_rating']
+
     return orjson_jsonify(results[:50])  # Max 50 results
 
 # ==========================================

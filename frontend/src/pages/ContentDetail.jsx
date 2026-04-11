@@ -136,7 +136,7 @@ const ContentDetail = () => {
             flatHistory.sort((a, b) => new Date(a.last_watched) - new Date(b.last_watched));
             flatHistory.forEach(h => {
               const progress = (h.position_ms / h.duration_ms) * 100;
-              if (h.position_ms >= 5000) newHistoryMap[h.media_path] = progress;
+              if (h.position_ms >= 5000) newHistoryMap[h.media_path] = { progress, position_ms: h.position_ms };
             });
 
             // "Continue Watching" Logic
@@ -147,7 +147,7 @@ const ContentDetail = () => {
             if (relevant.length > 0) {
               const last = relevant[0];
               const match = videosList.find(v => v.path === last.media_path);
-              if (match) setLastWatchedMedia(match);
+              if (match) setLastWatchedMedia({ ...match, position_ms: last.position_ms });
             }
 
             setHistoryMap(newHistoryMap);
@@ -366,7 +366,11 @@ const ContentDetail = () => {
                 const target = lastWatchedMedia || videos[0] || { episode: 1, season: 1 };
                 const epParam = target.episode || 1;
                 const sParam = target.season || 1;
-                navigate(`/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`);
+                let targetUrl = `/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`;
+                if (target.position_ms) {
+                  targetUrl += `&t=${Math.floor(target.position_ms / 1000)}`;
+                }
+                navigate(targetUrl);
               }}
               className="bg-[#00dc41] hover:bg-[#00f048] text-black font-bold text-sm px-6 py-2.5 rounded flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.3)]"
             >
@@ -450,11 +454,16 @@ const ContentDetail = () => {
                       index={idx}
                       posterFallback={posterPath}
                       tmdbData={epData}
-                      progress={historyMap[video.path]}
+                      progress={historyMap[video.path]?.progress}
                       onPlay={() => {
                         const epParam = video.episode || idx + 1;
                         const sParam = video.season || 1;
-                        navigate(`/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`);
+                        let targetUrl = `/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`;
+                        const pos = historyMap[video.path]?.position_ms;
+                        if (pos) {
+                          targetUrl += `&t=${Math.floor(pos / 1000)}`;
+                        }
+                        navigate(targetUrl);
                       }}
                     />
                   );
