@@ -124,6 +124,8 @@ const WatchPage = () => {
             backgroundOpacity: 0.7,
             backgroundColor: '#000000',
             textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
+            outlineStyle: 'drop-shadow',
+            outlineThickness: 2,
             marginBottom: 8,
             delay: 0
         };
@@ -140,6 +142,8 @@ const WatchPage = () => {
                 ...defaults,
                 ...parsed,
                 delay,
+                outlineStyle: parsed.outlineStyle ?? defaults.outlineStyle,
+                outlineThickness: parsed.outlineThickness ?? defaults.outlineThickness,
                 delayConvention: SUB_DELAY_UI_CONVENTION
             };
         } catch {
@@ -1115,6 +1119,26 @@ const WatchPage = () => {
                                 style={{ bottom: `${subSettings.marginBottom}%` }}
                             >
                                 {activeCues.map((text, i) => {
+                                    // Build outline/text-shadow based on outlineStyle + outlineThickness
+                                    const t = subSettings.outlineThickness ?? 2;
+                                    let computedTextShadow = 'none';
+                                    let computedStroke = 'unset';
+                                    if (subSettings.outlineStyle === 'drop-shadow') {
+                                        computedTextShadow = `${t}px ${t}px ${t * 2}px rgba(0,0,0,0.8)`;
+                                    } else if (subSettings.outlineStyle === 'hard-outline') {
+                                        // Multi-directional shadow for thick solid outline
+                                        const shadows = [];
+                                        for (let dx = -t; dx <= t; dx++) {
+                                            for (let dy = -t; dy <= t; dy++) {
+                                                if (dx === 0 && dy === 0) continue;
+                                                shadows.push(`${dx}px ${dy}px 0 #000`);
+                                            }
+                                        }
+                                        computedTextShadow = shadows.length > 0 ? shadows.join(', ') : 'none';
+                                        computedStroke = t > 0 ? `${Math.min(t, 3)}px #000` : 'unset';
+                                    }
+                                    // outlineStyle === 'none' → both stay at initial values
+
                                     return (
                                         <div
                                             key={i}
@@ -1123,7 +1147,9 @@ const WatchPage = () => {
                                                 fontSize: `${subSettings.fontSize}px`,
                                                 fontFamily: subSettings.fontFamily,
                                                 color: '#ffffff',
-                                                textShadow: subSettings.textShadow,
+                                                textShadow: computedTextShadow,
+                                                WebkitTextStroke: computedStroke,
+                                                paintOrder: 'stroke fill',
                                                 backgroundColor: subSettings.backgroundColor === 'transparent' ? 'transparent' : `rgba(0,0,0,${subSettings.backgroundOpacity})`,
                                                 whiteSpace: 'pre-wrap',
                                                 maxWidth: '90%'
@@ -1378,19 +1404,34 @@ const WatchPage = () => {
                                                     />
                                                 </div>
 
-                                                {/* Outline / Text Shadow */}
-                                                <div className="mb-1">
+                                                {/* Outline Style */}
+                                                <div className="mb-3">
                                                     <div className="text-[11px] text-gray-500 mb-1">Outline Style</div>
                                                     <select
-                                                        value={subSettings.textShadow}
-                                                        onChange={(e) => setSubSettings({ ...subSettings, textShadow: e.target.value })}
+                                                        value={subSettings.outlineStyle || 'drop-shadow'}
+                                                        onChange={(e) => setSubSettings({ ...subSettings, outlineStyle: e.target.value })}
                                                         className="w-full bg-black/40 border border-white/10 rounded px-2 py-1 text-[12px] text-white outline-none focus:border-[#00dc41]"
                                                     >
-                                                        <option value="2px 2px 4px rgba(0,0,0,0.8)">Drop Shadow</option>
-                                                        <option value="-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000">Hard Outline</option>
+                                                        <option value="drop-shadow">Drop Shadow</option>
+                                                        <option value="hard-outline">Hard Outline</option>
                                                         <option value="none">None</option>
                                                     </select>
                                                 </div>
+
+                                                {/* Outline Thickness */}
+                                                {subSettings.outlineStyle !== 'none' && (
+                                                    <div className="mb-1">
+                                                        <div className="text-[11px] text-gray-500 mb-1 flex justify-between">
+                                                            <span>Outline Thickness</span> <span>{subSettings.outlineThickness ?? 2}px</span>
+                                                        </div>
+                                                        <input
+                                                            type="range" min="1" max="6" step="0.5"
+                                                            value={subSettings.outlineThickness ?? 2}
+                                                            onChange={(e) => setSubSettings({ ...subSettings, outlineThickness: parseFloat(e.target.value) })}
+                                                            className="w-full h-1 bg-white/20 rounded-lg appearance-none cursor-pointer accent-[#00dc41]"
+                                                        />
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
 
