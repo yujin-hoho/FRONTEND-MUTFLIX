@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useSearchParams, useLocation } from 'react-router-dom';
 import {
     ArrowLeft, Play, Pause, Volume2, VolumeX,
     Maximize, Minimize, Subtitles, Settings,
@@ -30,6 +30,7 @@ const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mu
 const LOCAL_RESUME_KEY = 'mutflix_resume_positions';
 const MIN_RESUME_POSITION_MS = 5000;
 const RECENT_LOCAL_RESUME_MS = 10 * 60 * 1000;
+const STREAM_READY_TIMEOUT_MS = 12000;
 
 const normalizeTmdbImageUrl = (path, size = 'w300') => {
     if (!path || typeof path !== 'string') return null;
@@ -65,7 +66,6 @@ const setLocalResumeForPath = (mediaPath, positionMs, durationMs) => {
 const WatchPage = () => {
     const { folderName } = useParams();
     const [searchParams] = useSearchParams();
-    const navigate = useNavigate();
     const location = useLocation();
     const decodedName = decodeURIComponent(folderName);
     const urlType = searchParams.get('type');
@@ -196,9 +196,11 @@ const WatchPage = () => {
     const currentTimeRef = useRef(0);
     const pendingStreamSeekRef = useRef(0);
     const streamRecoveryRef = useRef({ videoPath: null, attempts: 0, lastAt: 0 });
+    const streamLoadSeqRef = useRef(0);
+    const streamReadyWatchdogRef = useRef(null);
     const [resumeTime, setResumeTime] = useState(0);
     const hasSeekedRef = useRef(false);
-    const [showResumeToast, setShowResumeToast] = useState(null);
+    const [, setShowResumeToast] = useState(null);
     const [isScrubbing, setIsScrubbing] = useState(false);
     const [scrubTime, setScrubTime] = useState(0);
 
@@ -216,11 +218,9 @@ const WatchPage = () => {
     const rating = tmdbData?.rating;
     const overview = tmdbData?.overview || '';
     const year = (tmdbData?.date || '').substring(0, 4) || '';
-    const directorName = credits?.director || '';
     const castList = credits?.cast || [];
     const currentEpisodeNum = currentVideo?.episode || 1;
     const currentEpData = episodeData[`${currentVideo?.season || 1}_${currentEpisodeNum}`];
-    const currentEpisodeName = currentEpData?.name || currentVideo?.name || `Episode ${currentEpisodeNum}`;
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
     const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
     const episodeFallbackThumb = useMemo(() => {
@@ -537,6 +537,36 @@ const WatchPage = () => {
     }, [profileId, currentVideo, triggerSaveHistory]);
 
     // ─── Load Stream when currentVideo changes ──────
+    const clearStreamWatchdog = useCallback(() => {
+        if (streamReadyWatchdogRef.current) {
+            clearTimeout(streamReadyWatchdogRef.current);
+            streamReadyWatchdogRef.current = null;
+        }
+    }, []);
+
+    const resetVideoElement = useCallback(() => {
+        const video = videoRef.current;
+        if (!video) return;
+        try {
+            video.pause();
+        } catch {
+            /* ignore */
+        }
+        video.removeAttribute('src');
+        video.querySelectorAll('track').forEach((t) => t.remove());
+        try {
+            video.load();
+        } catch {
+            /* ignore */
+        }
+    }, []);
+
+    const addStreamCacheBuster = useCallback((url) => {
+        if (!url) return url;
+        const separator = url.includes('?') ? '&' : '?';
+        return `${url}${separator}_=${Date.now()}_${streamReloadNonce}`;
+    }, [streamReloadNonce]);
+
     const requestStreamRecovery = useCallback((reason = 'playback-error') => {
         const video = videoRef.current;
         if (!currentVideo || !video) return false;
@@ -557,17 +587,35 @@ const WatchPage = () => {
         pendingStreamSeekRef.current = lastKnownTime > 1 ? Math.max(0, lastKnownTime - 0.5) : 0;
 
         console.warn(`[Player] Recovering stream after ${reason}. Attempt ${recovery.attempts}/3`);
+        clearStreamWatchdog();
+        resetVideoElement();
         setVideoLoading(true);
         setVideoError(null);
         setStreamReloadNonce((value) => value + 1);
         return true;
-    }, [currentVideo]);
+    }, [clearStreamWatchdog, currentVideo, resetVideoElement]);
+
+    const armStreamReadyWatchdog = useCallback((loadSeq, reason) => {
+        clearStreamWatchdog();
+        streamReadyWatchdogRef.current = setTimeout(() => {
+            const video = videoRef.current;
+            if (streamLoadSeqRef.current !== loadSeq || !currentVideo || !video) return;
+            if (videoError) return;
+            if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
+            console.warn(`[Player] Stream did not produce video data after ${STREAM_READY_TIMEOUT_MS}ms (${reason})`);
+            requestStreamRecovery(`stalled-${reason}`);
+        }, STREAM_READY_TIMEOUT_MS);
+    }, [clearStreamWatchdog, currentVideo, requestStreamRecovery, videoError]);
 
     useEffect(() => {
         if (!currentVideo) return;
         let cancelled = false;
 
         const loadStream = async () => {
+            const loadSeq = streamLoadSeqRef.current + 1;
+            streamLoadSeqRef.current = loadSeq;
+            clearStreamWatchdog();
+            resetVideoElement();
             setVideoLoading(true);
             setVideoError(null);
             setAudioTrackList([]);
@@ -625,13 +673,13 @@ const WatchPage = () => {
                         if (isHls) {
                             // HLS: selalu lewat backend (butuh file mapping untuk rewrite manifest)
                             const hlsPath = `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
-                            streamUrl = import.meta.env.DEV ? hlsPath : `${BASE_URL}${hlsPath}`;
+                            streamUrl = addStreamCacheBuster(import.meta.env.DEV ? hlsPath : `${BASE_URL}${hlsPath}`);
                         } else if (cfWorkerUrl) {
                             // Cloudflare Worker sebagai proxy utama
-                            streamUrl = `${cfWorkerUrl.replace(/\/$/, '')}/${fileId}?token=${encodeURIComponent(token)}`;
+                            streamUrl = addStreamCacheBuster(`${cfWorkerUrl.replace(/\/$/, '')}/${fileId}?token=${encodeURIComponent(token)}`);
                         } else {
                             // Tidak ada CF Worker — gunakan proxy lama
-                            streamUrl = fallbackProxyUrl;
+                            streamUrl = addStreamCacheBuster(fallbackProxyUrl);
                         }
 
                         console.log('[Player] Loading via', cfWorkerUrl && !isHls ? 'CF Worker' : 'proxy', ':', streamUrl.replace(token, '...'));
@@ -645,13 +693,17 @@ const WatchPage = () => {
                         const tryPlayWithFallback = (videoSrc) => {
                             if (!videoRef.current) return;
                             videoRef.current.src = videoSrc;
+                            videoRef.current.load();
+                            armStreamReadyWatchdog(loadSeq, usingCfWorker ? 'cf-worker' : 'proxy');
 
                             const onErrorFallback = () => {
                                 if (!usingCfWorker || cancelled) return;
                                 // CF Worker gagal → fallback ke proxy lama
                                 console.warn('[Player] CF Worker failed, falling back to server proxy');
                                 videoRef.current.removeEventListener('error', onErrorFallback);
-                                videoRef.current.src = fallbackProxyUrl;
+                                videoRef.current.src = addStreamCacheBuster(fallbackProxyUrl);
+                                videoRef.current.load();
+                                armStreamReadyWatchdog(loadSeq, 'proxy-fallback');
                                 const retryPlay = videoRef.current.play();
                                 if (retryPlay !== undefined) {
                                     retryPlay.catch(e2 => {
@@ -700,6 +752,7 @@ const WatchPage = () => {
                             hlsInstanceRef.current = hls;
                             hls.loadSource(streamUrl);
                             hls.attachMedia(videoRef.current);
+                            armStreamReadyWatchdog(loadSeq, 'hls');
                             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                                 const playPromise = videoRef.current.play();
                                 if (playPromise !== undefined) {
@@ -741,27 +794,32 @@ const WatchPage = () => {
                         }
                     } else {
                         setVideoError('Invalid video URL or token');
+                        setVideoLoading(false);
                     }
                 } else {
                     setVideoError('Could not load video stream');
+                    setVideoLoading(false);
                 }
             } catch (e) {
                 console.error('[Player] Stream load error:', e);
-                if (!cancelled) setVideoError('Error loading video');
+                if (!cancelled) {
+                    setVideoError('Error loading video');
+                    setVideoLoading(false);
+                }
             }
-
-            if (!cancelled) setVideoLoading(false);
         };
         loadStream();
 
         return () => {
             cancelled = true;
+            clearStreamWatchdog();
             if (hlsInstanceRef.current) {
                 hlsInstanceRef.current.destroy();
                 hlsInstanceRef.current = null;
             }
+            resetVideoElement();
         };
-    }, [currentVideo, streamReloadNonce, requestStreamRecovery]);
+    }, [addStreamCacheBuster, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, requestStreamRecovery, resetVideoElement, streamReloadNonce]);
 
     // ─── Handle Subtitle Delay/Text Changes ─────────
     useEffect(() => {
@@ -925,11 +983,13 @@ const WatchPage = () => {
 
     useEffect(() => {
         return () => {
+            clearStreamWatchdog();
             if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
             if (prevSubtitleUrl.current) revokeSubtitleBlobUrl(prevSubtitleUrl.current);
             if (hlsInstanceRef.current) hlsInstanceRef.current.destroy();
+            resetVideoElement();
         };
-    }, []);
+    }, [clearStreamWatchdog, resetVideoElement]);
 
     // ─── Keyboard shortcuts ─────────────────────────
     useEffect(() => {
@@ -1149,6 +1209,7 @@ const WatchPage = () => {
         syncAudioTracksFromVideo();
     };
     const handleVideoError = () => {
+        clearStreamWatchdog();
         const video = videoRef.current;
         // Ignore errors when no source is loaded yet
         if (!video || !video.src || video.src === window.location.href) return;
@@ -1172,8 +1233,12 @@ const WatchPage = () => {
         setVideoError(`Playback error${err?.message ? ': ' + err.message : ''}. Try refreshing.`);
     };
     const handleWaiting = () => setVideoLoading(true);
-    const handlePlaying = () => setVideoLoading(false);
+    const handlePlaying = () => {
+        clearStreamWatchdog();
+        setVideoLoading(false);
+    };
     const handleCanPlay = () => {
+        clearStreamWatchdog();
         setVideoLoading(false);
         // If the browser natively paused it despite autoPlay (e.g. low power mode), we can try one more time securely.
         const video = videoRef.current;
@@ -1188,10 +1253,15 @@ const WatchPage = () => {
     // ─── Episode switching ─────────────────────────
     const playEpisode = (video) => {
         if (video === currentVideo) return;
+        clearStreamWatchdog();
+        resetVideoElement();
         setCurrentVideo(video);
         setIsPlaying(false);
+        setVideoError(null);
+        setVideoLoading(true);
         setCurrentTime(0);
         setDuration(0);
+        setBuffered(0);
         // Update URL without full navigation
         const newParams = new URLSearchParams(searchParams);
         newParams.set('ep', video.episode || 1);
@@ -1272,13 +1342,17 @@ const WatchPage = () => {
                             onPlaying={handlePlaying}
                             onLoadedMetadata={handleLoadedMetadata}
                             onLoadedData={() => {
+                                clearStreamWatchdog();
                                 setVideoLoading(false);
                                 syncAudioTracksFromVideo();
                             }}
                             onError={handleVideoError}
                             onWaiting={handleWaiting}
                             onCanPlay={handleCanPlay}
-                            onCanPlayThrough={() => setVideoLoading(false)}
+                            onCanPlayThrough={() => {
+                                clearStreamWatchdog();
+                                setVideoLoading(false);
+                            }}
                             onEnded={playNextEpisode}
                             onClick={handleVideoClick}
                             autoPlay
@@ -1347,7 +1421,11 @@ const WatchPage = () => {
                                 <div className="text-center">
                                     <p className="text-red-400 mb-3">{videoError}</p>
                                     <button
-                                        onClick={() => { setVideoError(null); setCurrentVideo({ ...currentVideo }); }}
+                                        onClick={() => {
+                                            setVideoError(null);
+                                            resetVideoElement();
+                                            setStreamReloadNonce((value) => value + 1);
+                                        }}
                                         className="bg-[#00dc41] text-black px-4 py-2 rounded-lg font-medium hover:bg-[#00f048] transition"
                                     >
                                         Retry

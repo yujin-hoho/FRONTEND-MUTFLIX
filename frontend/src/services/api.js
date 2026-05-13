@@ -804,8 +804,14 @@ export const isLoggedIn = () => !!localStorage.getItem('token');
  */
 export const getStreamDetails = async (filePath) => {
     try {
-        const res = await fetch(`${BASE_URL}/api/gdrive-stream-details/${encodeURIComponent(filePath)}`, {
-            headers: getAuthHeaders()
+        const res = await fetch(`${BASE_URL}/api/gdrive-stream-details/${encodeURIComponent(filePath)}?_=${Date.now()}`, {
+            cache: 'no-store',
+            headers: {
+                ...getAuthHeaders(),
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                Pragma: 'no-cache',
+                Expires: '0',
+            }
         });
         if (!res.ok) return null;
         return await res.json();

@@ -100,7 +100,7 @@ const useNearViewport = (rootMargin = '900px', initial = false) => {
 export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster, posterFadeIn }) => {
   const isHorizontal = variant === 'horizontal';
   const [tmdbData, setTmdbData] = useState(null);
-  const [posterLoaded, setPosterLoaded] = useState(true);
+  const [loadedPosterSrc, setLoadedPosterSrc] = useState('');
   const [cardRef, isNearViewport] = useNearViewport('900px', !!isFirst);
   const navigate = useNavigate();
   const cardWidth = isHorizontal ? 260 : 190;
@@ -222,7 +222,8 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
   const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
   const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=1200&auto=format&fit=crop';
-  const shouldLoadMedia = isNearViewport || !!rawPoster;
+  const shouldLoadMedia = !!rawPoster || (isNearViewport && !posterFadeIn);
+  const posterLoaded = !posterFadeIn || !rawPoster || loadedPosterSrc === poster;
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
 
@@ -257,13 +258,13 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
             loading={isFirst ? 'eager' : 'lazy'} 
             fetchPriority={isFirst ? 'high' : 'auto'}
             decoding="async" 
-            onLoad={() => posterFadeIn && setPosterLoaded(true)}
-            onError={() => posterFadeIn && setPosterLoaded(true)}
+            onLoad={() => posterFadeIn && setLoadedPosterSrc(poster)}
+            onError={() => posterFadeIn && setLoadedPosterSrc(poster)}
             className={`w-full h-full object-cover transition-opacity duration-500 transition-transform duration-500 group-hover:scale-105 ${
               posterFadeIn && rawPoster
                 ? posterLoaded
                   ? 'opacity-100'
-                  : 'opacity-30 grayscale'
+                  : 'opacity-0'
                 : !rawPoster
                   ? 'opacity-30 grayscale'
                   : 'opacity-100'

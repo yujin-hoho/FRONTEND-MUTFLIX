@@ -16,6 +16,7 @@ import copy
 from functools import wraps, lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
+from urllib.parse import quote
 import unicodedata
 from time import monotonic as _monotonic
 
@@ -334,11 +335,14 @@ def _is_user_cache_valid(cache_type, cache_key):
         return False
     if ram_ts is None:
         return False
-    inv_key = f"_inv_{cache_type}_{cache_key}"
+    inv_keys = [f"_inv_{cache_type}_{cache_key}"]
+    if cache_type == 'history' and '_limit' in str(cache_key):
+        inv_keys.append(f"_inv_{cache_type}_{str(cache_key).split('_limit', 1)[0]}")
     try:
-        inv_ts = disk_cache.get(inv_key)
-        if inv_ts is not None and inv_ts > ram_ts:
-            return False  # Ada invalidasi dari worker lain yang lebih baru
+        for inv_key in inv_keys:
+            inv_ts = disk_cache.get(inv_key)
+            if inv_ts is not None and inv_ts > ram_ts:
+                return False  # Ada invalidasi dari worker lain yang lebih baru
     except: pass
     return True
 
@@ -490,12 +494,29 @@ def init_db():
                 source TEXT,
                 still_path TEXT,
                 subtitle_path TEXT,
+                season INTEGER,
+                episode INTEGER,
                 position_ms INTEGER NOT NULL,
                 duration_ms INTEGER NOT NULL,
                 last_watched TIMESTAMP DEFAULT {now_func},
                 UNIQUE (user_id, profile_id, media_path)
             );
         """)
+        # Migration: persist episode metadata for continue-watching cards.
+        for column_sql in (
+            "ALTER TABLE watch_history ADD COLUMN season INTEGER",
+            "ALTER TABLE watch_history ADD COLUMN episode INTEGER",
+        ):
+            try:
+                cur.execute(column_sql)
+                conn.commit()
+            except Exception:
+                conn.rollback() if db_type == 'postgres' else None  # Column already exists
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_watch_history_user_profile_last ON watch_history (user_id, profile_id, last_watched DESC)")
+            conn.commit()
+        except Exception:
+            conn.rollback() if db_type == 'postgres' else None
 
         # 6. Tabel My List
         cur.execute(f"""
@@ -1469,7 +1490,7 @@ def get_profiles(current_user):
         with _user_data_lock:
             _user_profiles_cache[uid] = res
             _user_profiles_cache_ts[uid] = now
-        return orjson_jsonify(res)
+        return add_no_cache_headers(orjson_jsonify(res))
     finally: release_db_connection(conn, db_type)
 
 @app.route('/api/profiles/add', methods=['POST'])
@@ -1522,7 +1543,12 @@ def delete_profile(current_user):
 @token_required(check_expiry=True)
 def get_history(current_user, profile_id):
     active_only = request.args.get('active_only', 'false').lower() == 'true'
-    cache_key = f"{current_user['id']}_{profile_id}{'_active' if active_only else ''}"
+    try:
+        limit = int(request.args.get('limit', '0') or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    limit = max(0, min(limit, 100))
+    cache_key = f"{current_user['id']}_{profile_id}{'_active' if active_only else ''}{f'_limit{limit}' if limit else ''}"
     # [FIX] Cross-worker validation sebelum serve dari RAM cache
     cached = _user_history_cache.get(cache_key)
     if cached is not None and _is_user_cache_valid('history', cache_key):
@@ -1534,9 +1560,12 @@ def get_history(current_user, profile_id):
     params = [current_user['id'], profile_id]
     if active_only:
         where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
-        params.append(0.90)
-    sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, position_ms, duration_ms, last_watched 
+        params.append(0.95)
+    sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, last_watched
               FROM watch_history WHERE {where} ORDER BY last_watched DESC'''
+    if limit:
+        sql += f' LIMIT {ph}'
+        params.append(limit)
     try:
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -1548,7 +1577,7 @@ def get_history(current_user, profile_id):
         with _user_data_lock:
             _user_history_cache[cache_key] = res
             _user_history_cache_ts[cache_key] = now
-        return orjson_jsonify(res)
+        return add_no_cache_headers(orjson_jsonify(res))
     finally: release_db_connection(conn, db_type)
 
 @app.route('/api/history/save', methods=['POST'])
@@ -1562,10 +1591,10 @@ def save_history(current_user):
         cur.execute(f"DELETE FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}", 
                    (current_user['id'], data['profile_id'], data['media_path']))
         sql_insert = f'''
-            INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, position_ms, duration_ms, last_watched)
-            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, CURRENT_TIMESTAMP)
+            INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, last_watched)
+            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, CURRENT_TIMESTAMP)
         '''
-        params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data['position_ms'], data['duration_ms'])
+        params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'])
         cur.execute(sql_insert, params)
         conn.commit()
         # Cross-worker invalidate history cache
@@ -2847,7 +2876,7 @@ def get_gdrive_stream_details(current_user,file_path):
         # If cached token failed, force refresh next time
         _gdrive_token = None
         _gdrive_token_ts = 0
-        return orjson_jsonify({"error": "Error getting details"}, 500)
+        return add_no_cache_headers(orjson_jsonify({"error": "Error getting details"}, 500))
 
 
 ## NOTE:
@@ -2860,6 +2889,9 @@ def _hls_cors_response(content, status=200):
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     resp.headers['Access-Control-Allow-Headers'] = 'Range'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
     return resp
 
 def _get_fresh_gdrive_token():
@@ -2899,6 +2931,8 @@ def get_hls_manifest(fid):
     server_token = _get_fresh_gdrive_token()
     if not server_token:
         return _hls_cors_response("GDrive token unavailable", 503)
+    rewrite_token = quote(server_token, safe='')
+    manifest_nonce = str(int(time.time() * 1000))
     
     headers = {"Authorization": f"Bearer {server_token}"}
     m3u8_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
@@ -2936,13 +2970,13 @@ def get_hls_manifest(fid):
                 if stripped in file_map:
                     mapped_id = file_map[stripped]
                     if stripped.lower().endswith('.m3u8'):
-                        new_lines.append(f"/api/hls-manifest/{mapped_id}?access_token={access_token}")
+                        new_lines.append(f"/api/hls-manifest/{mapped_id}?access_token={rewrite_token}&_={manifest_nonce}")
                     elif cf_worker_url:
                         # Cloudflare Worker untuk segment streaming
-                        new_lines.append(f"{cf_worker_url}/{mapped_id}?token={access_token}")
+                        new_lines.append(f"{cf_worker_url}/{mapped_id}?token={rewrite_token}&_={manifest_nonce}")
                     else:
                         # Fallback ke proxy lama
-                        new_lines.append(f"/gdrive-proxy/{mapped_id}?alt=media&access_token={access_token}")
+                        new_lines.append(f"/gdrive-proxy/{mapped_id}?alt=media&access_token={rewrite_token}&_={manifest_nonce}")
                 else:
                     new_lines.append(line)
             else:

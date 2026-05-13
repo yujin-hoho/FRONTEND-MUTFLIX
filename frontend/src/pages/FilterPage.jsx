@@ -203,9 +203,60 @@ const applySort = (items, sortKey) => {
   return items;
 };
 
-const GRID_PAGE_SIZE = 24;
+const getDisplayPosterPath = (item = {}) =>
+  item.poster_path ||
+  item.tmdb_poster_path ||
+  item.poster ||
+  item.tmdb_backdrop_path ||
+  item.backdrop_path ||
+  '';
+
+const tmdbImageUrl = (path, size = 'w342') => {
+  if (!path || typeof path !== 'string') return '';
+  if (path.startsWith('http')) return path;
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return `https://image.tmdb.org/t/p/${size}${p}`;
+};
+
+const preloadImage = (src) =>
+  new Promise((resolve) => {
+    if (!src || typeof window === 'undefined') {
+      resolve(false);
+      return;
+    }
+    const img = new Image();
+    img.onload = async () => {
+      try {
+        if (img.decode) await img.decode();
+      } catch {
+        /* decode can reject for cached images; loaded is enough */
+      }
+      resolve(true);
+    };
+    img.onerror = () => resolve(false);
+    img.src = src;
+  });
+
+const GRID_PAGE_SIZE = 36;
 /** Batch pertama lebih besar supaya sentinel cepat masuk area scroll / intersection */
 const INITIAL_VISIBLE = Math.min(GRID_PAGE_SIZE * 2, 200);
+const FIRST_GRID_PRELOAD = 18;
+
+const FilterGridSkeleton = ({ count = GRID_PAGE_SIZE }) => (
+  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8 animate-fade-in">
+    {Array.from({ length: count }).map((_, i) => (
+      <div key={i} className="flex justify-center">
+        <div className="w-[190px] min-w-[190px]">
+          <div className="h-[285px] rounded bg-[#1b1d22] border border-white/5 overflow-hidden relative">
+            <div className="absolute inset-0 bg-gradient-to-br from-white/10 via-white/[0.03] to-transparent animate-pulse" />
+          </div>
+          <div className="mt-2.5 h-4 w-4/5 bg-[#22252b]/70 rounded animate-pulse" />
+          <div className="mt-2 h-3 w-1/2 bg-[#22252b]/50 rounded animate-pulse" />
+        </div>
+      </div>
+    ))}
+  </div>
+);
 
 const FilterPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -216,11 +267,15 @@ const FilterPage = () => {
   const sortBy = searchParams.get('sort') || 'default';
 
   const [listLoading, setListLoading] = useState(true);
+  const [gridPreparing, setGridPreparing] = useState(true);
   const [, setTmdbEnriching] = useState(false);
   const [allResolved, setAllResolved] = useState([]);
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const loadMoreSentinelRef = useRef(null);
   const filteredSortedLengthRef = useRef(0);
+  const gridPrepareSeqRef = useRef(0);
+  const gridPrepareFilterKeyRef = useRef('');
+  const activeFilterSnapshotRef = useRef({ activeType, activeRegion, activeCategory, sortBy });
 
   const filteredSorted = useMemo(
     () => applySort(filterItems(allResolved, activeType, activeRegion, activeCategory), sortBy),
@@ -233,6 +288,16 @@ const FilterPage = () => {
     () => filteredSorted.slice(0, visibleCount),
     [filteredSorted, visibleCount]
   );
+
+  const firstGridSignature = useMemo(
+    () =>
+      filteredSorted
+        .slice(0, Math.min(INITIAL_VISIBLE, filteredSorted.length))
+        .map((item, idx) => `${item.folder_name || item.path || item.id || idx}:${getDisplayPosterPath(item)}`)
+        .join('|'),
+    [filteredSorted]
+  );
+  const gridFilterKey = `${activeType}|${activeRegion}|${activeCategory}|${sortBy}`;
 
   const [, setShowLoginModal] = useState(false);
   const [authUser, setAuthUser] = useState(() => {
@@ -271,10 +336,59 @@ const FilterPage = () => {
   };
 
   useEffect(() => {
+    activeFilterSnapshotRef.current = { activeType, activeRegion, activeCategory, sortBy };
+  }, [activeType, activeRegion, activeCategory, sortBy]);
+
+  useEffect(() => {
     const max = filteredSortedLengthRef.current;
     if (max === 0) return;
     setVisibleCount(Math.min(INITIAL_VISIBLE, max));
+    setGridPreparing(true);
   }, [activeType, activeRegion, activeCategory, sortBy]);
+
+  useEffect(() => {
+    if (listLoading) {
+      setGridPreparing(true);
+      return undefined;
+    }
+
+    if (!gridPreparing && gridPrepareFilterKeyRef.current === gridFilterKey) {
+      return undefined;
+    }
+    gridPrepareFilterKeyRef.current = gridFilterKey;
+
+    const firstPage = filteredSorted.slice(0, Math.min(INITIAL_VISIBLE, filteredSorted.length));
+    if (!firstPage.length) {
+      setGridPreparing(false);
+      return undefined;
+    }
+
+    const seq = gridPrepareSeqRef.current + 1;
+    gridPrepareSeqRef.current = seq;
+    setGridPreparing(true);
+
+    const posterUrls = firstPage
+      .map((item) => tmdbImageUrl(getDisplayPosterPath(item)))
+      .filter(Boolean);
+    const minimumReady = Math.min(FIRST_GRID_PRELOAD, firstPage.length);
+    const enoughPostersForFirstPaint = posterUrls.length >= minimumReady;
+    const fallbackDelay = enoughPostersForFirstPaint ? 1200 : 1800;
+
+    const timeout = window.setTimeout(() => {
+      if (gridPrepareSeqRef.current === seq) setGridPreparing(false);
+    }, fallbackDelay);
+
+    if (enoughPostersForFirstPaint) {
+      Promise.allSettled(posterUrls.slice(0, minimumReady).map(preloadImage)).then(() => {
+        if (gridPrepareSeqRef.current === seq) {
+          window.clearTimeout(timeout);
+          setGridPreparing(false);
+        }
+      });
+    }
+
+    return () => window.clearTimeout(timeout);
+  }, [listLoading, filteredSorted, firstGridSignature, gridPreparing, gridFilterKey]);
 
   // Infinite scroll: jangan masukkan visibleCount ke deps — observer harus stabil agar intersection tidak “hilang” tiap batch
   useEffect(() => {
@@ -345,9 +459,15 @@ const FilterPage = () => {
         setTmdbEnriching(true);
 
         // Prioritize TMDB enrichment for what the user will see first (better UX).
+        const filterSnapshot = activeFilterSnapshotRef.current;
         const quickFilteredSorted = applySort(
-          filterItems(quickResolved, activeType, activeRegion, activeCategory),
-          sortBy
+          filterItems(
+            quickResolved,
+            filterSnapshot.activeType,
+            filterSnapshot.activeRegion,
+            filterSnapshot.activeCategory
+          ),
+          filterSnapshot.sortBy
         );
         const priorityNames = new Set(
           quickFilteredSorted
@@ -377,7 +497,7 @@ const FilterPage = () => {
         );
 
         // Flush more aggressively early so posters "snap" faster, then batch to reduce re-render cost.
-        const EARLY_FLUSH_UNTIL = Math.min(INITIAL_VISIBLE, uniqueDataList.length);
+        const EARLY_FLUSH_UNTIL = Math.min(FIRST_GRID_PRELOAD, uniqueDataList.length);
         const FLUSH_EVERY = 14;
         const enriched = await mapWithConcurrency(
           uniqueDataList,
@@ -562,22 +682,20 @@ const FilterPage = () => {
 
         {/* Filter Results */}
         <div className="border-t border-white/5 pt-8">
-          {listLoading ? (
-            <div className="flex justify-center mt-20">
-              <div className="w-10 h-10 border-4 border-brand border-t-transparent rounded-full animate-spin" />
-            </div>
+          {listLoading || gridPreparing ? (
+            <FilterGridSkeleton count={Math.min(INITIAL_VISIBLE, 36)} />
           ) : filteredSorted.length > 0 ? (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
+              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8 animate-fade-in">
                 {visibleItems.map((item, idx) => (
                   <div
                     key={`${item.media_type || item.type || 'x'}:${item.folder_name || item.path || item.id || idx}`}
-                    className="flex justify-center animate-fade-in-up"
-                    style={{ animationDelay: `${Math.min(idx % GRID_PAGE_SIZE, 11) * 40}ms` }}
+                    className="flex justify-center"
                   >
                     <MovieCard
                       item={item}
                       delay={idx % GRID_PAGE_SIZE}
+                      isFirst={idx < 12}
                       posterFadeIn
                       isAdmin={isAdmin}
                       onEditPoster={(it) => setPosterEditItem(it)}
