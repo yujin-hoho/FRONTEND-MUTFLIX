@@ -1,20 +1,26 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
+import { useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList } from '../services/api';
-import MovieCarousel from '../components/MovieCarousel';
+import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList, fetchFolders } from '../services/api';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
+import { findCatalogItemForDetail, mergeDetailMetadata, tmdbOptsFromCatalogItem } from '../utils/detailMetadata';
 
 const ContentDetail = () => {
   const { folderName } = useParams();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const decodedName = decodeURIComponent(folderName);
   const urlType = searchParams.get('type'); // 'movie' or 'series'
+  const navigationDetailItem = location.state?.detailItem;
+  const initialDetailMetadata = useMemo(
+    () => mergeDetailMetadata(navigationDetailItem || { folder_name: decodedName }, null, decodedName, urlType),
+    [navigationDetailItem, decodedName, urlType]
+  );
 
   const toInt = (value, fallback) => {
     const n =
@@ -23,10 +29,10 @@ const ContentDetail = () => {
   };
 
   const [videos, setVideos] = useState([]);
-  const [tmdbData, setTmdbData] = useState(null);
+  const [tmdbData, setTmdbData] = useState(initialDetailMetadata);
   const [credits, setCredits] = useState(null);
   const [episodeData, setEpisodeData] = useState({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('episodes');
   const [expandedDesc, setExpandedDesc] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -76,14 +82,32 @@ const ContentDetail = () => {
       setLoading(true);
       setLastWatchedMedia(null);
       setEpisodeData({});
+      setTmdbData(initialDetailMetadata);
       setCredits(null);
       fetchedSeasonStillsRef.current = new Set();
       try {
-        // Step 1: Fetch Basic Info (Videos + TMDB)
-        const [videosResp, tmdb] = await Promise.all([
-          fetchVideos(decodedName),
-          getTMDBInfo(decodedName)
-        ]);
+        const fallbackCatalogItem = navigationDetailItem || { folder_name: decodedName };
+        const foldersPromise = navigationDetailItem ? Promise.resolve(null) : fetchFolders();
+
+        const loadVisualMetadata = (catalogItem) => {
+          const tmdbSearchTitle = catalogItem.tmdb_query || catalogItem.tmdb_title || catalogItem.folder_name || catalogItem.name || decodedName;
+          const immediateMetadata = mergeDetailMetadata(catalogItem, null, decodedName, urlType);
+          setTmdbData(immediateMetadata);
+
+          getTMDBInfo(tmdbSearchTitle, tmdbOptsFromCatalogItem(catalogItem, urlType))
+            .then(async (tmdb) => {
+              if (!isMounted) return;
+              const detailMetadata = mergeDetailMetadata(catalogItem, tmdb, decodedName, urlType);
+              setTmdbData(detailMetadata);
+              if (detailMetadata?.tmdb_id) {
+                const creditsData = await getTMDBCredits(detailMetadata.tmdb_id, detailMetadata.media_type);
+                if (isMounted) setCredits(creditsData);
+              }
+            })
+            .catch(() => { /* ignore */ });
+        };
+
+        const videosResp = await fetchVideos(decodedName);
         
         if (!isMounted) return;
 
@@ -99,19 +123,24 @@ const ContentDetail = () => {
         });
 
         setVideos(videosList);
-        setTmdbData(tmdb);
+        setTmdbData((prev) => prev || mergeDetailMetadata(fallbackCatalogItem, null, decodedName, urlType));
 
         // Compute active tab from the fastest available data (don't block UI).
-        const isSeries = urlType === 'series' || (tmdb?.media_type === 'tv') || videosList.length > 1;
+        const isSeries = urlType === 'series' || (fallbackCatalogItem?.media_type === 'tv') || videosList.length > 1;
         setActiveTab(isSeries ? 'episodes' : 'cast');
         setLoading(false);
 
         // Step 2: Background fetches (non-blocking).
-        // 2a. Visual Metadata (Cast only here; episode stills are lazy-loaded per season)
-        if (tmdb?.tmdb_id) {
-          getTMDBCredits(tmdb.tmdb_id, tmdb.media_type).then(data => {
-            if (isMounted) setCredits(data);
-          }).catch(() => { /* ignore */ });
+        // 2a. Visual Metadata. Episode stills are lazy-loaded per season after TMDB id is known.
+        if (navigationDetailItem) {
+          loadVisualMetadata(navigationDetailItem);
+        } else {
+          foldersPromise.then((foldersResp) => {
+            if (!isMounted) return;
+            loadVisualMetadata(findCatalogItemForDetail(foldersResp, decodedName) || fallbackCatalogItem);
+          }).catch(() => {
+            if (isMounted) loadVisualMetadata(fallbackCatalogItem);
+          });
         }
 
         // 2b. User Data (History, My List)
@@ -163,7 +192,7 @@ const ContentDetail = () => {
 
     loadData();
     return () => { isMounted = false; };
-  }, [decodedName, urlType, authUser, profileId]);
+  }, [decodedName, urlType, authUser, profileId, navigationDetailItem, initialDetailMetadata]);
 
   // Lazy-load episode stills + episode names per selected season.
   useEffect(() => {
@@ -241,19 +270,22 @@ const ContentDetail = () => {
   const castList = credits?.cast || [];
   const castNames = castList.map(c => c.name).slice(0, 8).join(', ') || 'Cast information unavailable';
 
-  const backdropPath = tmdbData?.backdrop_path
-    ? `https://image.tmdb.org/t/p/w1280${tmdbData.backdrop_path.startsWith('/') ? tmdbData.backdrop_path : `/${tmdbData.backdrop_path}`}`
-    : tmdbData?.poster_path
-      ? `https://image.tmdb.org/t/p/w780${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
-      : 'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
+  const normalizeImageUrl = (path, size) => {
+    if (!path || typeof path !== 'string') return '';
+    if (path.startsWith('http')) return path;
+    return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
+  };
 
-  const posterPath = tmdbData?.poster_path
-    ? `https://image.tmdb.org/t/p/w342${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
-    : backdropPath;
+  const backdropPath =
+    normalizeImageUrl(tmdbData?.backdrop_path, 'w1280') ||
+    normalizeImageUrl(tmdbData?.poster_path, 'w780') ||
+    'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
+
+  const posterPath = normalizeImageUrl(tmdbData?.poster_path, 'w342') || backdropPath;
 
   const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];
 
-  if (loading) {
+  if (loading && !tmdbData) {
     return <LoadingScreen />;
   }
 
@@ -370,7 +402,14 @@ const ContentDetail = () => {
                 if (target.position_ms) {
                   targetUrl += `&t=${Math.floor(target.position_ms / 1000)}`;
                 }
-                navigate(targetUrl);
+                navigate(targetUrl, {
+                  state: {
+                    watchMeta: {
+                      tmdbData,
+                      episodeData,
+                    },
+                  },
+                });
               }}
               className="bg-[#00dc41] hover:bg-[#00f048] text-black font-bold text-sm px-6 py-2.5 rounded flex items-center gap-2 transition-all hover:scale-105 active:scale-95 shadow-[0_0_20px_rgba(0,220,65,0.3)]"
             >
@@ -463,7 +502,14 @@ const ContentDetail = () => {
                         if (pos) {
                           targetUrl += `&t=${Math.floor(pos / 1000)}`;
                         }
-                        navigate(targetUrl);
+                        navigate(targetUrl, {
+                          state: {
+                            watchMeta: {
+                              tmdbData,
+                              episodeData,
+                            },
+                          },
+                        });
                       }}
                     />
                   );

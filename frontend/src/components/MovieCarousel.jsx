@@ -5,6 +5,7 @@ import { getTMDBInfo, fetchVideos } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute, preloadWatchPageRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
+import { createDetailNavigationState } from '../utils/detailMetadata';
 
 const tmdbOptsFromItem = (item) => {
   if (!item?.tmdb_query) return {};
@@ -16,6 +17,55 @@ const tmdbOptsFromItem = (item) => {
   if (item.override_region) o.region = item.override_region;
   if (item.include_adult) o.includeAdult = true;
   return o;
+};
+
+const firstText = (...values) => {
+  for (const value of values) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text) return text;
+  }
+  return '';
+};
+
+const toPositiveInt = (value) => {
+  const n = value == null || value === '' ? NaN : Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+};
+
+const inferEpisodeMeta = (item = {}) => {
+  const directSeason = toPositiveInt(item.season);
+  const directEpisode = toPositiveInt(item.episode);
+  if (directSeason || directEpisode) {
+    return { season: directSeason, episode: directEpisode };
+  }
+
+  const text = firstText(item.media_title, item.original_name, item.name);
+  if (!text) return { season: null, episode: null };
+
+  const seasonEpisode = text.match(/(?:^|[\s._-])s(\d{1,2})\s*e(\d{1,4})(?:[\s._-]|$)/i);
+  if (seasonEpisode) {
+    return { season: Number(seasonEpisode[1]), episode: Number(seasonEpisode[2]) };
+  }
+
+  const seasonText = text.match(/season[\s._-]*(\d{1,2})/i);
+  const episodeText = text.match(/(?:episode|ep)[\s._-]*(\d{1,4})|(?:^|[\s._-])e(\d{1,4})(?:[\s._-]|$)/i);
+  return {
+    season: seasonText ? Number(seasonText[1]) : null,
+    episode: episodeText ? Number(episodeText[1] || episodeText[2]) : null,
+  };
+};
+
+const getHistoryEpisodeLabel = (item = {}, title = '') => {
+  const { season, episode } = inferEpisodeMeta(item);
+  if (episode) {
+    return season && season > 1 ? `Season ${season} · EP${episode}` : `EP${episode}`;
+  }
+
+  const mediaTitle = firstText(item.media_title);
+  if (!mediaTitle) return '';
+  const cleanedMediaTitle = cleanTitleOutsideParentheses(mediaTitle) || mediaTitle;
+  return cleanedMediaTitle.toLowerCase() !== title.toLowerCase() ? cleanedMediaTitle : '';
 };
 
 const useNearViewport = (rootMargin = '900px', initial = false) => {
@@ -86,10 +136,33 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       if (item.position_ms) {
         targetUrl += `&t=${Math.floor(item.position_ms / 1000)}`;
       }
-      navigate(targetUrl);
+      const episodeKey = `${s || 1}_${ep || 1}`;
+      const fallbackTitle = firstText(item.series_title, item.folder_name, item.name, item.media_title);
+      const fallbackImage = firstText(item.still_path, item.tmdb_backdrop_path, item.backdrop_path, item.tmdb_poster_path, item.poster_path, item.poster);
+      navigate(targetUrl, {
+        state: {
+          watchMeta: {
+            tmdbData: tmdbData || {
+              media_type: type === 'movie' ? 'movie' : 'tv',
+              tmdb_title: fallbackTitle,
+              title: fallbackTitle,
+              backdrop_path: fallbackImage,
+              poster_path: fallbackImage,
+            },
+            episodeData: {
+              [episodeKey]: {
+                name: firstText(item.media_title, item.name),
+                still_path: firstText(item.still_path, fallbackImage),
+              },
+            },
+          },
+        },
+      });
     } else {
       void preloadContentDetailRoute();
-      navigate(`/detail/${encodeURIComponent(folderName)}?type=${detailTypeOfItem(item)}`);
+      navigate(`/detail/${encodeURIComponent(folderName)}?type=${detailTypeOfItem(item)}`, {
+        state: createDetailNavigationState(item, tmdbData),
+      });
     }
   };
 
@@ -98,9 +171,11 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
     void preloadContentDetailRoute();
   };
 
-  // Prefer TMDB title. Until TMDB title is available, avoid showing the (possibly wrong) folder_name as title.
-  const rawTitle = item?.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || null;
+  const isContinueWatching = progress !== undefined;
+  // Prefer TMDB title. For history cards, fall back to saved history title so the row never gets stuck on Loading.
+  const rawTitle = item?.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || (isContinueWatching ? firstText(item?.series_title, item?.folder_name, item?.name, item?.media_title) : null);
   const title = rawTitle ? (cleanTitleOutsideParentheses(rawTitle) || rawTitle) : 'Loading...';
+  const episodeLabel = isContinueWatching ? getHistoryEpisodeLabel(item, title) : '';
 
   /** Berubah saat admin edit query TMDB — harus refetch, jangan pakai tmdbData lama */
   const tmdbFetchSignature = [
@@ -116,6 +191,10 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
   useEffect(() => {
     const hasPoster = item.tmdb_poster_path || item.poster_path || item.poster;
     const hasTmdbTitle = !!item?.tmdb_title;
+    const hasSavedHistoryTitle = isContinueWatching && !!firstText(item?.series_title, item?.folder_name, item?.name, item?.media_title);
+
+    // Continue Watching already has reliable history metadata. Avoid extra TMDB calls on dashboard paint.
+    if (hasSavedHistoryTitle) return;
 
     const searchTitle = item.tmdb_query || item?.tmdb_title || item?.folder_name || item?.name;
     if (!isNearViewport && !(hasPoster && hasTmdbTitle)) return;
@@ -138,7 +217,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       cancelled = true;
       clearTimeout(resetId);
     };
-  }, [isNearViewport, tmdbFetchSignature, item, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
+  }, [isNearViewport, tmdbFetchSignature, item, isContinueWatching, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
 
   const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
@@ -266,6 +345,9 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       {/* Title Below Poster */}
       <div className="mt-2 px-0.5">
         <h3 className="text-white text-[15px] font-bold line-clamp-2 transition-colors">{title}</h3>
+        {isHorizontal && episodeLabel && (
+          <p className="mt-0.5 text-gray-400 text-[12px] font-medium line-clamp-1">{episodeLabel}</p>
+        )}
       </div>
 
       {/* Detail popup removed per user request */}

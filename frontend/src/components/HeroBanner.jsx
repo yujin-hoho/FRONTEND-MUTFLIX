@@ -5,6 +5,7 @@ import { getTMDBInfo } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
+import { createDetailNavigationState } from '../utils/detailMetadata';
 
 const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -230,7 +231,9 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                     onMouseEnter={() => void preloadContentDetailRoute()}
                     onClick={() => {
                       void preloadContentDetailRoute();
-                      navigate(`/detail/${encodeURIComponent(item.folder_name || rawTitle)}?type=${detailTypeOfItem(item)}`);
+                      navigate(`/detail/${encodeURIComponent(item.folder_name || rawTitle)}?type=${detailTypeOfItem(item)}`, {
+                        state: createDetailNavigationState(item, tmdbData),
+                      });
                     }}
                     className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-white px-8 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95 group/play"
                   >

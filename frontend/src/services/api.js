@@ -161,6 +161,7 @@ const mapCastFromCredits = (credits) =>
  * @param {string} title - judul fallback / folder
  * @param {object} [options]
  * @param {string} [options.query] - query pencarian TMDB (override judul)
+ * @param {number|string} [options.tmdbId] - ID TMDB exact jika sudah diketahui dari hasil dashboard
  * @param {'movie'|'tv'} [options.mediaType]
  * @param {number|null} [options.year] - tahun rilis (movie) atau tahun tayang (tv)
  * @param {string|null} [options.region] - kode negara ISO 3166-1 (opsional)
@@ -171,10 +172,11 @@ export const getTMDBInfo = async (title, options = {}) => {
     const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
     if (!tmdbKey || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
 
-    const queryText = (options.query || title || '').replace(/\(\d{4}\)/g, '').trim();
-    if (!queryText) return null;
-
     const mediaType = options.mediaType;
+    const tmdbId = options.tmdbId != null && options.tmdbId !== '' ? String(options.tmdbId) : null;
+    const queryText = (options.query || title || '').replace(/\(\d{4}\)/g, '').trim();
+    if (!queryText && !tmdbId) return null;
+
     const year = options.year != null && options.year !== '' ? Number(options.year) : null;
     const region = (options.region || '').trim() || null;
     const includeAdult = !!options.includeAdult;
@@ -182,7 +184,8 @@ export const getTMDBInfo = async (title, options = {}) => {
     const includeCredits = !light;
 
     const TMDB_INFO_CACHE_VERSION = 'v4_title';
-    const cacheKeyFull = `mutflix_tmdb_info_${TMDB_INFO_CACHE_VERSION}_${queryText.toLowerCase()}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
+    const cacheKeySubject = tmdbId && mediaType ? `id_${mediaType}_${tmdbId}` : queryText.toLowerCase();
+    const cacheKeyFull = `mutflix_tmdb_info_${TMDB_INFO_CACHE_VERSION}_${cacheKeySubject}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
     const cacheKeyLite = `${cacheKeyFull}_lite`;
     const inflightKey = light ? cacheKeyLite : cacheKeyFull;
 
@@ -238,6 +241,35 @@ export const getTMDBInfo = async (title, options = {}) => {
 
         const creditsParam = includeCredits ? '&append_to_response=credits' : '';
 
+        const resultFromDetails = (details, type, fallback = {}) => ({
+            tmdb_id: details.id || fallback.id || tmdbId,
+            media_type: type,
+            tmdb_title:
+                type === 'movie'
+                    ? details.title || details.original_title || fallback.title || fallback.original_title || fallback.name || null
+                    : details.name || details.original_name || fallback.name || fallback.original_name || fallback.title || null,
+            title:
+                type === 'movie'
+                    ? details.title || details.original_title || fallback.title || fallback.original_title || fallback.name || null
+                    : details.name || details.original_name || fallback.name || fallback.original_name || fallback.title || null,
+            poster_path: details.poster_path || fallback.poster_path,
+            backdrop_path: details.backdrop_path || fallback.backdrop_path,
+            rating: details.vote_average || fallback.vote_average,
+            overview: details.overview || fallback.overview,
+            date: details.release_date || details.first_air_date || fallback.release_date || fallback.first_air_date,
+            genres: details.genres || [],
+            genre_ids: (details.genres || []).map((g) => g.id),
+            cast: includeCredits ? mapCastFromCredits(details.credits) : [],
+            total_episodes: type === 'movie' ? null : details.number_of_episodes || null,
+            total_seasons: type === 'movie' ? null : details.number_of_seasons || null,
+            runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
+            origin_country:
+                type === 'movie'
+                    ? details.production_countries?.map((c) => c.iso_3166_1) || []
+                    : details.origin_country || fallback.origin_country || [],
+            original_language: details.original_language || fallback.original_language,
+        });
+
         const save = (result) => {
             if (!result) return;
             try {
@@ -247,6 +279,18 @@ export const getTMDBInfo = async (title, options = {}) => {
         };
 
         try {
+            if (tmdbId && (mediaType === 'movie' || mediaType === 'tv')) {
+                const detailRes = await fetch(
+                    `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${tmdbKey}&language=en-US${creditsParam}`
+                );
+                const details = await detailRes.json();
+                if (details?.id) {
+                    const result = resultFromDetails(details, mediaType);
+                    save(result);
+                    return result;
+                }
+            }
+
             if (!light) {
                 const fullAgain = readFull();
                 if (fullAgain) return fullAgain;
@@ -832,9 +876,13 @@ export const createProfile = async (id, name, avatar_seed) => {
     }
 };
 
-export const fetchHistory = async (profileId) => {
+export const fetchHistory = async (profileId, options = {}) => {
     try {
-        const res = await fetch(`${BASE_URL}/api/history/get/${profileId}`, {
+        const params = new URLSearchParams();
+        if (options.activeOnly) params.set('active_only', 'true');
+        if (options.limit) params.set('limit', String(options.limit));
+        const qs = params.toString();
+        const res = await fetch(`${BASE_URL}/api/history/get/${profileId}${qs ? `?${qs}` : ''}`, {
             headers: getAuthHeaders()
         });
         if (!res.ok) return [];

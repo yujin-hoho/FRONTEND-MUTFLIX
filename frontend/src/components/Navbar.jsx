@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { searchContent, getTMDBInfo } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
+import { createDetailNavigationState } from '../utils/detailMetadata';
 
 /** Genre singkat → `/filter?category=…` (Variety Show di ujung) */
 const MORE_GENRE_LINKS = [
@@ -207,7 +208,9 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
                       <div
                         key={idx}
                         className="flex items-center gap-3 cursor-pointer group p-2 hover:bg-white/5 rounded-lg transition-colors"
-                        onMouseDown={() => navigate(`/detail/${encodeURIComponent(item.folder_name || item.name || '')}?type=${detailTypeOfItem(item)}`)}
+                        onMouseDown={() => navigate(`/detail/${encodeURIComponent(item.folder_name || item.name || '')}?type=${detailTypeOfItem(item)}`, {
+                          state: createDetailNavigationState(item),
+                        })}
                       >
                         <div className="w-8 h-11 rounded overflow-hidden bg-white/5 flex items-center justify-center flex-shrink-0 border border-white/5 group-hover:border-white/20 transition-colors">
                           {(item.tmdb_poster_path || item.poster_path) ? (

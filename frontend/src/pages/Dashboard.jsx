@@ -121,7 +121,9 @@ const enrichFeaturedFast = async (items) => {
       if (!data) return item;
       return {
         ...item,
-          tmdb_title: data.tmdb_title || data.title || item.tmdb_title,
+        tmdb_id: data.tmdb_id || item.tmdb_id,
+        media_type: data.media_type || item.media_type,
+        tmdb_title: data.tmdb_title || data.title || item.tmdb_title,
         tmdb_poster_path: item.tmdb_poster_path || item.poster_path || data.poster_path || data.backdrop_path,
         tmdb_backdrop_path: item.tmdb_backdrop_path || data.backdrop_path || data.poster_path,
         tmdb_overview: item.tmdb_overview || data.overview,
@@ -233,6 +235,44 @@ const Dashboard = () => {
     return sections.slice(0, 22);
   }, []);
 
+  const buildContinueWatchingItems = useCallback((histories) => {
+    const flatHistory = (histories || []).flat();
+    const uniqueHistoryMap = new Map();
+    flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
+
+    flatHistory.forEach(h => {
+      const dur = Number(h.duration_ms) || 0;
+      const progress = dur > 0 ? (Number(h.position_ms) / dur) * 100 : 0;
+      const okProgress = Number.isFinite(progress);
+      if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && okProgress && progress < 95) {
+        uniqueHistoryMap.set(h.media_path, {
+          ...h,
+          name: h.series_title || h.media_title,
+          poster: h.still_path,
+          folder_name: h.series_title || h.media_title,
+          progress: progress
+        });
+      }
+    });
+
+    return Array.from(uniqueHistoryMap.values())
+      .filter(h => !hiddenHistory.includes(h.media_path))
+      .filter((item, index, self) =>
+        index === self.findIndex((t) => (t.folder_name === item.folder_name))
+      )
+      .slice(0, 15);
+  }, [hiddenHistory]);
+
+  const fetchAllProfileContinueWatching = useCallback(async (profiles) => {
+    if (!profiles?.length) return [];
+
+    const allHistories = await Promise.all(
+      profiles.map(p => fetchHistory(p.id, { activeOnly: true, limit: 30 }))
+    );
+
+    return buildContinueWatchingItems(allHistories);
+  }, [buildContinueWatchingItems]);
+
   // Phase 2: TMDB enrichment
   const enrichWithTMDB = useCallback(async (items, currentFetchId) => {
     const resolvedItems = [...items]; // Copy so we can update in-place
@@ -272,6 +312,8 @@ const Dashboard = () => {
         const apiData = await getTMDBInfo(searchTitle, { ...opts, light: true });
         if (!apiData || fetchIdRef.current !== currentFetchId) return;
         const resolvedItem = { ...item };
+        resolvedItem.tmdb_id = apiData.tmdb_id || item.tmdb_id;
+        resolvedItem.media_type = apiData.media_type || item.media_type;
         resolvedItem.tmdb_title = apiData.tmdb_title || apiData.title || item.tmdb_title;
         if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
         resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
@@ -304,6 +346,8 @@ const Dashboard = () => {
         if (!apiData || fetchIdRef.current !== currentFetchId) return;
         resolvedItems[idx] = {
           ...item,
+          tmdb_id: apiData.tmdb_id || item.tmdb_id,
+          media_type: apiData.media_type || item.media_type,
           tmdb_title: apiData.tmdb_title || apiData.title || item.tmdb_title,
           tmdb_poster_path: apiData.poster_path || item.tmdb_poster_path,
           tmdb_backdrop_path: apiData.backdrop_path || item.tmdb_backdrop_path,
@@ -348,6 +392,12 @@ const Dashboard = () => {
     try {
       setLoading(true);
 
+      const lastProfileId = authUser ? localStorage.getItem('mutflix_last_profile_id') : null;
+      const primaryHistoryPromise = lastProfileId
+        ? fetchHistory(lastProfileId, { activeOnly: true, limit: 30 })
+        : Promise.resolve([]);
+      const profilesPromise = authUser ? fetchProfiles() : Promise.resolve([]);
+
       // Fast path: serve cache instantly (if available), then refresh in background.
       // We intentionally skip onUpdate callback to avoid recursive reload loops.
       const foldersResp = await fetchFolders();
@@ -363,50 +413,37 @@ const Dashboard = () => {
 
       const historyPromise = authUser ? (async () => {
         try {
-          const profiles = await fetchProfiles();
-          if (profiles.length === 0 || fetchIdRef.current !== currentFetchId) return [];
+          if (lastProfileId) {
+            const primaryHistory = await primaryHistoryPromise;
+            if (fetchIdRef.current !== currentFetchId) return [];
 
-          const allHistories = await Promise.all(
-            profiles.map(p => fetchHistory(p.id))
-          );
-
-          if (fetchIdRef.current !== currentFetchId) return [];
-
-          const flatHistory = allHistories.flat();
-          const uniqueHistoryMap = new Map();
-          flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
-
-          flatHistory.forEach(h => {
-            const dur = Number(h.duration_ms) || 0;
-            const progress = dur > 0 ? (Number(h.position_ms) / dur) * 100 : 0;
-            const okProgress = Number.isFinite(progress);
-            if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && okProgress && progress < 95) {
-              uniqueHistoryMap.set(h.media_path, {
-                ...h,
-                name: h.series_title || h.media_title,
-                poster: h.still_path,
-                folder_name: h.series_title || h.media_title,
-                progress: progress
-              });
+            const primaryContinueWatching = buildContinueWatchingItems(primaryHistory);
+            if (primaryContinueWatching.length > 0) {
+              return primaryContinueWatching;
             }
-          });
+          }
 
-          return Array.from(uniqueHistoryMap.values())
-            .filter(h => !hiddenHistory.includes(h.media_path))
-            .filter((item, index, self) =>
-              index === self.findIndex((t) => (t.folder_name === item.folder_name))
-            )
-            .slice(0, 15);
+          const profiles = await profilesPromise;
+          if (profiles.length === 0 || fetchIdRef.current !== currentFetchId) return [];
+          if (!lastProfileId && profiles[0]?.id) {
+            localStorage.setItem('mutflix_last_profile_id', profiles[0].id);
+          }
+
+          const allContinueWatching = await fetchAllProfileContinueWatching(profiles);
+          if (fetchIdRef.current !== currentFetchId) return [];
+          return allContinueWatching;
         } catch (e) {
           console.error("History fetch error:", e);
           return [];
         }
       })() : Promise.resolve([]);
 
-      const cwList = await historyPromise;
       if (fetchIdRef.current !== currentFetchId) return;
 
       // Paint cepat: data folder + history — tanpa tunggu ratusan panggilan TMDB
+      const cwList = await historyPromise;
+      if (fetchIdRef.current !== currentFetchId) return;
+
       setFeaturedList(shuffledData.slice(0, 6));
       setGenreSections(buildSections(shuffledData));
       setContinueWatching(cwList);
@@ -415,6 +452,16 @@ const Dashboard = () => {
       // This prevents HeroBanner background from staying blank until phase 2 enrichment completes.
       preloadDashboardImages(shuffledData, cwList, []);
       setLoading(false);
+
+      if (authUser) {
+        void profilesPromise.then(async (profiles) => {
+          if (fetchIdRef.current !== currentFetchId || !profiles?.length) return;
+          const fullContinueWatching = await fetchAllProfileContinueWatching(profiles);
+          if (fetchIdRef.current !== currentFetchId) return;
+          setContinueWatching(fullContinueWatching);
+          preloadDashboardImages(shuffledData, fullContinueWatching, []);
+        }).catch(() => { /* keep initial Continue Watching */ });
+      }
 
       // Make hero metadata arrive early (poster/backdrop/synopsis/rating) before full enrichment.
       void enrichFeaturedFast(shuffledData).then((featuredQuick) => {
@@ -435,7 +482,7 @@ const Dashboard = () => {
       console.error("Error loading dashboard data:", error);
       if (fetchIdRef.current === currentFetchId) setLoading(false);
     }
-  }, [processData, buildSections, enrichWithTMDB, authUser, hiddenHistory]);
+  }, [processData, buildSections, buildContinueWatchingItems, fetchAllProfileContinueWatching, enrichWithTMDB, authUser, hiddenHistory]);
 
   useEffect(() => {
     const id = setTimeout(() => loadData(), 0);

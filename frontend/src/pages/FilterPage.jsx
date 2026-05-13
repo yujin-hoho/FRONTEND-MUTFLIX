@@ -416,6 +416,8 @@ const FilterPage = () => {
 
             const resolvedItem = {
               ...item,
+              tmdb_id: tmdbData?.tmdb_id || item.tmdb_id,
+              media_type: tmdbData?.media_type || item.media_type,
               tmdb_poster_path:
                 tmdbData?.poster_path ||
                 tmdbData?.backdrop_path ||
