@@ -30,8 +30,7 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
     if (!path || typeof path !== 'string') return null;
     if (path.startsWith('http')) return path;
     const p = path.startsWith('/') ? path : `/${path}`;
-    // Use the same rendition tier as MovieCarousel to reduce load-time delay.
-    return `https://image.tmdb.org/t/p/original${p}`;
+    return `https://image.tmdb.org/t/p/w1280${p}`;
   };
 
   // Auto rotate

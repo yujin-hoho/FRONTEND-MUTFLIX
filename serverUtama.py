@@ -193,8 +193,9 @@ else:
 # Cache Config — HuggingFace MAXED OUT (5GB disk cache limit)
 CACHE_DIR = "cache"
 if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
-CACHE_DURATION_FOLDERS = 86400    # 24h — BG worker proactively refreshes every 5 min
-CACHE_DURATION_VIDEOS  = 86400    # 24h — data selalu fresh dari BG worker
+CACHE_REFRESH_INTERVAL = 300    # 5 min - BG worker refreshes every content cycle
+CACHE_DURATION_FOLDERS = 300    # 5 min - folder response cache
+CACHE_DURATION_VIDEOS  = 300    # 5 min - video response cache
 CACHE_DURATION_EMPTY   = 300      # 5 min — empty results retry lebih cepat
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
@@ -269,6 +270,12 @@ _response_cache = {}       # {cache_key: orjson_bytes}
 _response_cache_ts = {}    # {cache_key: timestamp}
 _response_lock = threading.Lock()
 
+# === TMDB OVERRIDE RAM CACHE ===
+# Avoids DB reads + deepcopy/merge work on every /api/folders request.
+_tmdb_overrides_cache = None      # {folder_name: override_dict}
+_tmdb_overrides_ts = 0
+_tmdb_overrides_lock = threading.Lock()
+
 # === GDRIVE BEARER TOKEN CACHE ===
 # Token valid ~1 jam, cache 45 menit — eliminates credential check per request
 # ~50-100ms saved per /api/gdrive-stream-details/ call
@@ -288,6 +295,12 @@ _user_profiles_cache_ts = {}   # {user_id: timestamp}
 _user_history_cache_ts = {}    # {user_id_profile_id: timestamp}
 _user_mylist_cache_ts = {}     # {user_id_profile_id: timestamp}
 _user_data_lock = threading.Lock()
+
+def _invalidate_response_cache(*keys):
+    with _response_lock:
+        for key in keys:
+            _response_cache.pop(key, None)
+            _response_cache_ts.pop(key, None)
 
 def _invalidate_user_cache(cache_type, cache_key):
     """Cross-worker invalidation: write timestamp ke diskcache (shared),
@@ -1020,7 +1033,7 @@ def set_tmdb_override(current_user):
             """, (folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
         
         conn.commit()
-        _response_cache.pop('resp_folders', None)  # Response cache serialized; clients get merged overrides on next GET
+        _invalidate_tmdb_override_cache()
         print(f"[TMDB-OVERRIDE] Admin {current_user['username']} set override: '{folder_name}' -> '{tmdb_query}' ({media_type}, year={override_year}, lang={override_language}, adult={include_adult}, region={override_region})", flush=True)
         return orjson_jsonify({'success': True, 'folder_name': folder_name, 'tmdb_query': tmdb_query})
     except Exception as e:
@@ -1041,6 +1054,7 @@ def delete_tmdb_override(current_user, folder_name):
         cur = conn.cursor() if db_type == 'postgres' else conn
         cur.execute(f'DELETE FROM tmdb_overrides WHERE folder_name = {ph}', (folder_name,))
         conn.commit()
+        _invalidate_tmdb_override_cache()
         print(f"[TMDB-OVERRIDE] Admin {current_user['username']} deleted override: '{folder_name}'", flush=True)
         return orjson_jsonify({'success': True})
     except Exception as e:
@@ -1049,13 +1063,20 @@ def delete_tmdb_override(current_user, folder_name):
         release_db_connection(conn, db_type)
 
 
-def _merge_tmdb_overrides_into_folders(all_c):
-    """
-    Sisipkan metadata override TMDB dari DB ke setiap item (match key: item['name'] == folder_name).
-    Mem-cache daftar folder tetap tanpa override; merge dilakukan pada setiap response GET /api/folders.
-    """
-    if not all_c:
-        return all_c
+def _invalidate_tmdb_override_cache():
+    global _tmdb_overrides_cache, _tmdb_overrides_ts
+    with _tmdb_overrides_lock:
+        _tmdb_overrides_cache = None
+        _tmdb_overrides_ts = 0
+    _invalidate_response_cache('resp_folders', 'resp_folders_merged')
+
+def _get_tmdb_overrides_map():
+    global _tmdb_overrides_cache, _tmdb_overrides_ts
+    now = time.time()
+    with _tmdb_overrides_lock:
+        if _tmdb_overrides_cache is not None and (now - _tmdb_overrides_ts) < 300:
+            return _tmdb_overrides_cache
+
     conn, db_type = None, None
     try:
         conn, db_type = get_db_connection()
@@ -1069,6 +1090,28 @@ def _merge_tmdb_overrides_into_folders(all_c):
             conn.row_factory = sqlite3.Row
             rows = [dict(r) for r in conn.execute(f'SELECT {select_cols} FROM tmdb_overrides').fetchall()]
         by_name = {r['folder_name']: r for r in rows}
+        with _tmdb_overrides_lock:
+            _tmdb_overrides_cache = by_name
+            _tmdb_overrides_ts = now
+        return by_name
+    except Exception as e:
+        print(f"[TMDB-OVERRIDE] load override cache failed: {e}", flush=True)
+        with _tmdb_overrides_lock:
+            return _tmdb_overrides_cache or {}
+    finally:
+        release_db_connection(conn, db_type)
+
+def _merge_tmdb_overrides_into_folders(all_c):
+    """
+    Sisipkan metadata override TMDB dari DB ke setiap item (match key: item['name'] == folder_name).
+    Mem-cache daftar folder tetap tanpa override; merge dilakukan pada setiap response GET /api/folders.
+    """
+    if not all_c:
+        return all_c
+    try:
+        by_name = _get_tmdb_overrides_map()
+        if not by_name:
+            return all_c
         for cat in ('series', 'movies'):
             for item in all_c.get(cat) or []:
                 name = item.get('name')
@@ -1084,8 +1127,6 @@ def _merge_tmdb_overrides_into_folders(all_c):
                 item['include_adult'] = bool(ia) if ia is not None else False
     except Exception as e:
         print(f"[TMDB-OVERRIDE] merge into folders failed: {e}", flush=True)
-    finally:
-        release_db_connection(conn, db_type)
     return all_c
 
 # ==========================================
@@ -1480,7 +1521,8 @@ def delete_profile(current_user):
 @app.route('/api/history/get/<profile_id>', methods=['GET'])
 @token_required(check_expiry=True)
 def get_history(current_user, profile_id):
-    cache_key = f"{current_user['id']}_{profile_id}"
+    active_only = request.args.get('active_only', 'false').lower() == 'true'
+    cache_key = f"{current_user['id']}_{profile_id}{'_active' if active_only else ''}"
     # [FIX] Cross-worker validation sebelum serve dari RAM cache
     cached = _user_history_cache.get(cache_key)
     if cached is not None and _is_user_cache_valid('history', cache_key):
@@ -1488,14 +1530,19 @@ def get_history(current_user, profile_id):
     
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
+    where = f'user_id = {ph} AND profile_id = {ph}'
+    params = [current_user['id'], profile_id]
+    if active_only:
+        where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
+        params.append(0.90)
     sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, position_ms, duration_ms, last_watched 
-              FROM watch_history WHERE user_id = {ph} AND profile_id = {ph} ORDER BY last_watched DESC'''
+              FROM watch_history WHERE {where} ORDER BY last_watched DESC'''
     try:
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute(sql, (current_user['id'], profile_id))
+            cur.execute(sql, tuple(params))
             res = [dict(r) for r in cur.fetchall()]
-        else: res = [dict(r) for r in conn.execute(sql, (current_user['id'], profile_id)).fetchall()]
+        else: res = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
         
         now = time.time()
         with _user_data_lock:
@@ -1524,6 +1571,7 @@ def save_history(current_user):
         # Cross-worker invalidate history cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
         _invalidate_user_cache('history', cache_key)
+        _invalidate_user_cache('history', f"{cache_key}_active")
         return orjson_jsonify({"message": "Saved"})
     except: return orjson_jsonify({"message": "Error saving"}, 500)
     finally: release_db_connection(conn, db_type)
@@ -1542,6 +1590,7 @@ def delete_history(current_user):
         # Cross-worker invalidate history cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
         _invalidate_user_cache('history', cache_key)
+        _invalidate_user_cache('history', f"{cache_key}_active")
         return orjson_jsonify({"message": "Deleted"})
     except Exception as e:
         return orjson_jsonify({"message": "Error deleting", "error": str(e)}, 500)
@@ -1592,7 +1641,7 @@ def add_to_mylist(current_user):
         try: cur.execute(f"INSERT INTO my_list (user_id, profile_id, folder_name, media_type, meta_json, status) VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})", (current_user['id'], data['profile_id'], data['folder_name'], data.get('media_type', 'movie'), meta_json_str, status))
         except:
              conn.rollback()
-             cur.execute(f"UPDATE my_list SET meta_json = {ph}, added_at = CURRENT_TIMESTAMP WHERE user_id={ph} AND profile_id={ph} AND folder_name={ph}", (meta_json_str, current_user['id'], data['profile_id'], data['folder_name']))
+             cur.execute(f"UPDATE my_list SET meta_json = {ph}, status = {ph}, added_at = CURRENT_TIMESTAMP WHERE user_id={ph} AND profile_id={ph} AND folder_name={ph}", (meta_json_str, status, current_user['id'], data['profile_id'], data['folder_name']))
         conn.commit()
         # Cross-worker invalidate mylist cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
@@ -1634,6 +1683,9 @@ def update_mylist_status(current_user):
         cur = conn.cursor()
         cur.execute(f"UPDATE my_list SET status = {ph} WHERE user_id = {ph} AND profile_id = {ph} AND folder_name = {ph}",
                     (new_status, current_user['id'], profile_id, folder_name))
+        if cur.rowcount == 0:
+            conn.rollback()
+            return orjson_jsonify({"message": "Item not found"}, 404)
         conn.commit()
         cache_key = f"{current_user['id']}_{profile_id}"
         _invalidate_user_cache('mylist', cache_key)
@@ -2354,6 +2406,7 @@ def background_cache_worker():
     Cycle setiap 5 menit — data selalu fresh di RAM untuk response <0.1ms."""
     time.sleep(10)
     while True:
+        cycle_started_at = time.time()
         try:
             service = get_gdrive_service()
             updated_count, priority_new_items = 0, set()
@@ -2377,7 +2430,7 @@ def background_cache_worker():
                                     if k not in old_keys: priority_new_items.add(k)
                             mem_set(folders_key, folders_data); updated_count += 1
                             # Invalidate pre-serialized response cache for folders
-                            _response_cache.pop('resp_folders', None)
+                            _invalidate_response_cache('resp_folders', 'resp_folders_merged')
                             # Also refresh category folder IDs cache
                             _get_category_folder_ids(service)
                 finally: release_lock(folders_key)
@@ -2396,7 +2449,7 @@ def background_cache_worker():
             if folders_data:
                 all_items = folders_data.get('series', []) + folders_data.get('movies', [])
                 
-                # Collect items that need refresh
+                # Refresh every content item on each cycle so cache stays fresh.
                 items_to_refresh = []
                 for item in all_items:
                     folder_name = item['name']; source_path = item.get('source')
@@ -2405,9 +2458,7 @@ def background_cache_worker():
                     # so fetch_gdrive_videos can find the folder by name in GDrive
                     resolve_target = folder_name if target.startswith(("gdrive_folder/", "gdrive/")) else target
                     cache_key = f"videos_{target}"; is_priority = target in priority_new_items
-                    needs_refresh = is_priority or mem_get(cache_key) is None
-                    if needs_refresh:
-                        items_to_refresh.append((resolve_target, cache_key, is_priority))
+                    items_to_refresh.append((resolve_target, cache_key, is_priority))
                 
                 # [OPTIMIZATION] Process 4 items in parallel instead of 1-by-1
                 BATCH_SIZE = 4
@@ -2461,7 +2512,8 @@ def background_cache_worker():
             sub_stats = len(_subtitle_cache)
             resp_stats = len(_response_cache)
         except Exception as e: print(f"    [BG-WORKER] Error: {e}", flush=True)
-        time.sleep(1800)  # 30 menit — reduced to save Neon CU + Supabase egress
+        elapsed = time.time() - cycle_started_at
+        time.sleep(max(0, CACHE_REFRESH_INTERVAL - elapsed))
 
 # --- ROUTES FETCH CONTENT ---
 def add_cache_headers(response, max_age=3600): response.headers['Cache-Control'] = f'public, max-age={max_age}'; return response
@@ -2473,12 +2525,17 @@ def add_no_cache_headers(response): response.headers['Cache-Control'] = 'no-cach
 def get_folders(current_user):
     force = request.args.get('refresh', 'false').lower() == 'true'; key = "folders_list"
     if not force:
-        # RAM first → pre-serialized response (~0.01ms); merge TMDB overrides dari DB per request
+        cached_bytes = _response_cache.get('resp_folders_merged')
+        if cached_bytes:
+            return add_no_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200))
+
+        # RAM first; first request after invalidation merges overrides, later requests
+        # reuse pre-serialized merged bytes.
         cached = mem_get(key)
         if cached:
             payload = copy.deepcopy(cached)
             _merge_tmdb_overrides_into_folders(payload)
-            return add_no_cache_headers(orjson_jsonify(payload))
+            return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
@@ -2522,16 +2579,16 @@ def get_folders(current_user):
         all_c["movies"].sort(key=lambda x: x['name'])
 
         mem_set(key, all_c)
-        _response_cache.pop('resp_folders', None)  # Invalidate old serialized
+        _invalidate_response_cache('resp_folders', 'resp_folders_merged')
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         payload = copy.deepcopy(all_c)
         _merge_tmdb_overrides_into_folders(payload)
-        return add_no_cache_headers(orjson_jsonify(payload))
+        return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
     stale = mem_get(key)
     if stale:
         payload = copy.deepcopy(stale)
         _merge_tmdb_overrides_into_folders(payload)
-        return add_no_cache_headers(orjson_jsonify(payload))
+        return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
 
 @app.route("/api/videos/<path:folder_name>")
@@ -2933,6 +2990,12 @@ def search_content(current_user):
     query = request.args.get('q', '').strip()
     if not query or len(query) < 1:
         return orjson_jsonify([])
+
+    normalized_query = query.lower()
+    resp_key = "resp_search_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
+    cached_bytes = _response_cache.get(resp_key)
+    if cached_bytes:
+        return add_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200), max_age=30)
     
     words = _normalize_text(query)
     
@@ -2959,7 +3022,7 @@ def search_content(current_user):
     
     # Strategy 2: Substring fallback — search folder names directly if index gave nothing
     if not results:
-        query_lower = query.lower()
+        query_lower = normalized_query
         folders = mem_get('folders_list')
         if folders:
             for media_type in ['series', 'movies']:
@@ -2978,7 +3041,7 @@ def search_content(current_user):
                         })
     
     # Sort by relevance: exact prefix match first, then alphabetical
-    query_lower = query.lower()
+    query_lower = normalized_query
     results.sort(key=lambda x: (0 if x['name'].lower().startswith(query_lower) else 1, x['name']))
     
     # Final TMDB enrichment for fallback results (Strategy 1 already has it, but it's safe to overwrite/ensure)
@@ -2993,7 +3056,7 @@ def search_content(current_user):
             if rel.get('tmdb_rating'): res['tmdb_rating'] = rel['tmdb_rating']
             if rel.get('tmdb_overview'): res['tmdb_overview'] = rel['tmdb_overview']
             
-    return orjson_jsonify(results[:50])  # Max 50 results
+    return add_cache_headers(orjson_jsonify(results[:50], cache_key=resp_key), max_age=30)  # Max 50 results
 
 # ==========================================
 # CONTENT RELEASES API (Publish / Schedule)

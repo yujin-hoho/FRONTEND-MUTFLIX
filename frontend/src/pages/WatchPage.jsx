@@ -22,7 +22,6 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
-import Hls from 'hls.js';
 
 /** Stored delay: negative = tunda (subtitle lebih lambat), positive = percepat (lebih cepat). */
 const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
@@ -175,6 +174,8 @@ const WatchPage = () => {
     const progressBarRef = useRef(null);
     const prevSubtitleUrl = useRef(null);
     const embeddedSubCleanupRef = useRef(null);
+    const lastPlaybackUiTickRef = useRef(0);
+    const lastBufferUiTickRef = useRef(0);
     const [resumeTime, setResumeTime] = useState(0);
     const hasSeekedRef = useRef(false);
     const [showResumeToast, setShowResumeToast] = useState(null);
@@ -571,7 +572,13 @@ const WatchPage = () => {
                             }
                         };
 
-                        if (isHls && Hls.isSupported()) {
+                        if (isHls) {
+                            const { default: Hls } = await import('hls.js');
+                            if (cancelled) return;
+                            if (!Hls.isSupported()) {
+                                tryPlayWithFallback(streamUrl);
+                                return;
+                            }
                             const hls = new Hls({
                                 maxBufferLength: 30,
                                 enableWorker: true,
@@ -969,6 +976,9 @@ const WatchPage = () => {
     const handleTimeUpdate = () => {
         const video = videoRef.current;
         if (!video) return;
+        const now = performance.now();
+        if (now - lastPlaybackUiTickRef.current < 250) return;
+        lastPlaybackUiTickRef.current = now;
         setCurrentTime(video.currentTime);
         if (video.buffered.length > 0) {
             setBuffered(video.buffered.end(video.buffered.length - 1));
@@ -979,6 +989,9 @@ const WatchPage = () => {
     const handleBufferProgress = () => {
         const video = videoRef.current;
         if (!video || video.buffered.length === 0) return;
+        const now = performance.now();
+        if (now - lastBufferUiTickRef.current < 500) return;
+        lastBufferUiTickRef.current = now;
         setBuffered(video.buffered.end(video.buffered.length - 1));
     };
 

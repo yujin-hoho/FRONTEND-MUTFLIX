@@ -1,7 +1,7 @@
-import { Play, BookmarkPlus, ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo, TMDB_GENRES, fetchVideos } from '../services/api';
+import { getTMDBInfo, fetchVideos } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute, preloadWatchPageRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -18,13 +18,40 @@ const tmdbOptsFromItem = (item) => {
   return o;
 };
 
-export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster, posterFadeIn }) => {
+const useNearViewport = (rootMargin = '900px', initial = false) => {
+  const ref = useRef(null);
+  const [isNear, setIsNear] = useState(initial);
+
+  useEffect(() => {
+    if (isNear) return undefined;
+    const node = ref.current;
+    if (!node) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      const id = setTimeout(() => setIsNear(true), 0);
+      return () => clearTimeout(id);
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        setIsNear(true);
+        observer.disconnect();
+      },
+      { rootMargin, threshold: 0 }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [isNear, rootMargin]);
+
+  return [ref, isNear];
+};
+
+export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', onDelete, isRemoving, delay = 0, isAdmin, onEditPoster, posterFadeIn }) => {
   const isHorizontal = variant === 'horizontal';
-  const [isHovered, setIsHovered] = useState(false);
   const [tmdbData, setTmdbData] = useState(null);
-  const [posterLoaded, setPosterLoaded] = useState(false);
-  const hoverTimeoutRef = useRef(null);
-  const imgRef = useRef(null);
+  const [posterLoaded, setPosterLoaded] = useState(true);
+  const [cardRef, isNearViewport] = useNearViewport('900px', !!isFirst);
   const navigate = useNavigate();
   const cardWidth = isHorizontal ? 260 : 190;
   const posterHeight = isHorizontal ? 165 : 285;
@@ -71,10 +98,6 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
     void preloadContentDetailRoute();
   };
 
-  const handleMouseLeave = () => {
-    // Detail popup removed per user request
-  };
-
   // Prefer TMDB title. Until TMDB title is available, avoid showing the (possibly wrong) folder_name as title.
   const rawTitle = item?.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || null;
   const title = rawTitle ? (cleanTitleOutsideParentheses(rawTitle) || rawTitle) : 'Loading...';
@@ -95,68 +118,52 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
     const hasTmdbTitle = !!item?.tmdb_title;
 
     const searchTitle = item.tmdb_query || item?.tmdb_title || item?.folder_name || item?.name;
+    if (!isNearViewport && !(hasPoster && hasTmdbTitle)) return;
     if (!searchTitle) return;
 
     // If we already have a TMDB title, don't refetch. Otherwise, refetch even when poster exists
     // so title shown always matches TMDB (fix: "No math" -> "No Math School Trip").
     if (hasPoster && hasTmdbTitle) {
-      setTmdbData(null);
       return;
     }
 
-    setTmdbData(null);
     let cancelled = false;
+    const resetId = setTimeout(() => {
+      if (!cancelled) setTmdbData(null);
+    }, 0);
     getTMDBInfo(searchTitle, { ...tmdbOptsFromItem(item), light: true }).then((data) => {
       if (!cancelled && data) setTmdbData(data);
     });
     return () => {
       cancelled = true;
+      clearTimeout(resetId);
     };
-  }, [tmdbFetchSignature, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
+  }, [isNearViewport, tmdbFetchSignature, item, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
 
   const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
-  const poster = posterPath ? tmdbImageUrl(posterPath, 'w500') : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=2059&auto=format&fit=crop';
-
-  useEffect(() => {
-    setPosterLoaded(false);
-  }, [poster]);
-
-  // Safety net: some browsers/cached images may skip load event.
-  // If image is already complete, mark as loaded so grayscale/opacity won't get stuck.
-  useEffect(() => {
-    const img = imgRef.current;
-    if (!img) return;
-    if (img.complete && img.naturalWidth > 0) {
-      setPosterLoaded(true);
-    }
-  }, [poster]);
+  const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=1200&auto=format&fit=crop';
+  const shouldLoadMedia = isNearViewport || !!rawPoster;
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
-  const overview = item?.tmdb_overview || tmdbData?.overview || "A thrilling story awaits in this masterpiece.";
-  const year = (tmdbData?.date || "2024").substring(0, 4);
 
   const isSeries = isSeriesLike(item);
   const episodesCount = item?.episodes ? `${item.episodes} Episodes` : (isSeries ? "24 Episodes" : "Movie");
   const bottomText = rating > 0 && tag !== 'Free' ? `★ ${Number(rating).toFixed(1)}` : episodesCount;
 
-  const genres = tmdbData?.genre_ids && tmdbData.genre_ids.length > 0
-    ? tmdbData.genre_ids.slice(0, 3).map(id => TMDB_GENRES[id]).filter(Boolean)
-    : ["South Korea", "Romance", "Drama"];
-
   return (
     <div
+      ref={cardRef}
       className={`relative flex-none transition-all duration-[400ms] ease-[cubic-bezier(0.4,0,0.2,1)] 
         ${isRemoving ? 'opacity-0 scale-75 translate-y-4 !w-0 !mr-[-1rem] pointer-events-none' : 'opacity-100 scale-100 translate-y-0'}
         ${posterFadeIn ? '' : 'animate-poster-reveal'} group cursor-pointer shrink-0`}
       style={{ 
-        zIndex: isHovered ? 50 : 1, 
+        zIndex: 1, 
         width: `${cardWidth}px`, 
         minWidth: `${cardWidth}px`,
         animationDelay: posterFadeIn ? undefined : `${delay * 105}ms`
       }}
       onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       {/* Poster Container */}
       <div
@@ -164,24 +171,28 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
         className="w-full rounded overflow-hidden bg-[#1b1d22] relative border border-transparent group-hover:border-white/20 transition-colors duration-300"
         style={{ height: `${posterHeight}px` }}
       >
-        <img 
-          ref={imgRef}
-          src={poster} 
-          alt={title} 
-          loading="lazy" 
-          decoding="async" 
-          onLoad={() => posterFadeIn && setPosterLoaded(true)}
-          onError={() => posterFadeIn && setPosterLoaded(true)}
-          className={`w-full h-full object-cover transition-opacity duration-500 transition-transform duration-500 group-hover:scale-105 ${
-            posterFadeIn && rawPoster
-              ? posterLoaded
-                ? 'opacity-100'
-                : 'opacity-30 grayscale'
-              : !rawPoster
-                ? 'opacity-30 grayscale'
-                : 'opacity-100'
-          }`} 
-        />
+        {shouldLoadMedia ? (
+          <img 
+            src={poster} 
+            alt={title} 
+            loading={isFirst ? 'eager' : 'lazy'} 
+            fetchPriority={isFirst ? 'high' : 'auto'}
+            decoding="async" 
+            onLoad={() => posterFadeIn && setPosterLoaded(true)}
+            onError={() => posterFadeIn && setPosterLoaded(true)}
+            className={`w-full h-full object-cover transition-opacity duration-500 transition-transform duration-500 group-hover:scale-105 ${
+              posterFadeIn && rawPoster
+                ? posterLoaded
+                  ? 'opacity-100'
+                  : 'opacity-30 grayscale'
+                : !rawPoster
+                  ? 'opacity-30 grayscale'
+                  : 'opacity-100'
+            }`} 
+          />
+        ) : (
+          <div className="w-full h-full bg-[#22252b]/60 animate-pulse" />
+        )}
         
         {!rawPoster && (
           <div className="absolute inset-0 flex items-center justify-center p-4 text-center">
@@ -265,6 +276,8 @@ export const MovieCard = ({ item, tag, isFirst, isLast, progress, variant = 'ver
 const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, removingId, isAdmin, onEditPoster }) => {
   const isHorizontal = variant === 'horizontal';
   const scrollRef = useRef(null);
+  const [sectionRef, isSectionNear] = useNearViewport('1400px', tagType === 'top' || isHorizontal);
+  const shouldRenderItems = isSectionNear || !items?.length;
 
   const scrollLeft = () => {
     if (scrollRef.current) {
@@ -281,7 +294,11 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
   };
 
   return (
-    <div className={`${isHorizontal ? 'mb-6' : 'mb-10'} px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-start transition-all`}>
+    <div
+      ref={sectionRef}
+      className={`${isHorizontal ? 'mb-6' : 'mb-10'} px-6 md:px-[60px] w-full relative group/carousel flex flex-col items-start transition-all`}
+      style={{ contentVisibility: 'auto', containIntrinsicSize: isHorizontal ? '280px' : '380px' }}
+    >
       <div className="w-full flex items-center justify-between mb-4">
         <h2 className="text-[20px] md:text-[22px] font-bold text-[#f5f5f5] tracking-wide">{title}</h2>
         {/* Only show 'More' if not TOP 10 section to match image closely */}
@@ -313,7 +330,7 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
           className="flex flex-nowrap items-start gap-3 md:gap-4 no-scrollbar py-2 pb-4 px-1 w-full overflow-x-auto scroll-smooth snap-x"
           style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
         >
-          {items?.length > 0 ? (
+          {items?.length > 0 && shouldRenderItems ? (
             items.map((item, idx) => (
               <div
                 key={item.folder_name || item.name || item.media_path || `row-${idx}`}

@@ -50,6 +50,7 @@ const getAuthHeaders = () => {
 
 const _memCache = {};
 const _memCacheTs = {};
+const _swrInflight = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 function cacheGet(key) {
@@ -98,21 +99,35 @@ export const cacheClear = () => {
 async function cachedFetch(key, fetchFn, onUpdate) {
     const cached = cacheGet(key);
     if (cached) {
-        // Return cached immediately, refresh in background
-        fetchFn().then(fresh => {
-            // Only update if fresh data is valid
-            if (fresh && !fresh.__error) {
-                cacheSet(key, fresh);
-                if (onUpdate) onUpdate(fresh);
-            }
-        }).catch(() => { });
+        // Return cached immediately, refresh in background once per key.
+        if (!_swrInflight.has(key)) {
+            const refresh = fetchFn()
+                .then(fresh => {
+                    // Only update if fresh data is valid
+                    if (fresh && !fresh.__error) {
+                        cacheSet(key, fresh);
+                        if (onUpdate) onUpdate(fresh);
+                    }
+                    return fresh;
+                })
+                .catch(() => null)
+                .finally(() => _swrInflight.delete(key));
+            _swrInflight.set(key, refresh);
+        }
         return cached;
     }
     // No cache — fetch synchronously
-    const data = await fetchFn();
-    if (data && !data.__error) {
-        cacheSet(key, data);
-    }
+    if (_swrInflight.has(key)) return _swrInflight.get(key);
+    const request = fetchFn()
+        .then((data) => {
+            if (data && !data.__error) {
+                cacheSet(key, data);
+            }
+            return data;
+        })
+        .finally(() => _swrInflight.delete(key));
+    _swrInflight.set(key, request);
+    const data = await request;
     return data;
 }
 
@@ -564,7 +579,7 @@ export const getTMDBCredits = async (tmdbId, mediaType) => {
         const cacheKey = `mutflix_tmdb_credits_${tmdbId}_${mediaType}`;
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
-            try { return JSON.parse(cached); } catch (e) { }
+            try { return JSON.parse(cached); } catch { /* ignore broken cache */ }
         }
 
         const type = mediaType === 'movie' ? 'movie' : 'tv';
@@ -579,7 +594,7 @@ export const getTMDBCredits = async (tmdbId, mediaType) => {
             })),
             director: (data.crew || []).find(c => c.job === 'Director')?.name || null
         };
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch { /* ignore storage quota */ }
         return result;
     } catch (e) {
         console.error("TMDB credits fetch error:", e);
@@ -594,13 +609,13 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
         const cacheKey = `mutflix_tmdb_season_${tmdbId}_${seasonNumber}`;
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
-            try { return JSON.parse(cached); } catch (e) { }
+            try { return JSON.parse(cached); } catch { /* ignore broken cache */ }
         }
 
         const response = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
         if (!response.ok) return null;
         const result = await response.json();
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch (e) { }
+        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch { /* ignore storage quota */ }
         return result;
     } catch (error) {
         console.error("Error fetching TMDB season details:", error);

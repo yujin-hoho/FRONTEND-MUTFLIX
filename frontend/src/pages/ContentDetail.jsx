@@ -242,13 +242,13 @@ const ContentDetail = () => {
   const castNames = castList.map(c => c.name).slice(0, 8).join(', ') || 'Cast information unavailable';
 
   const backdropPath = tmdbData?.backdrop_path
-    ? `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path.startsWith('/') ? tmdbData.backdrop_path : `/${tmdbData.backdrop_path}`}`
+    ? `https://image.tmdb.org/t/p/w1280${tmdbData.backdrop_path.startsWith('/') ? tmdbData.backdrop_path : `/${tmdbData.backdrop_path}`}`
     : tmdbData?.poster_path
-      ? `https://image.tmdb.org/t/p/original${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
+      ? `https://image.tmdb.org/t/p/w780${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
       : 'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
 
   const posterPath = tmdbData?.poster_path
-    ? `https://image.tmdb.org/t/p/w500${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
+    ? `https://image.tmdb.org/t/p/w342${tmdbData.poster_path.startsWith('/') ? tmdbData.poster_path : `/${tmdbData.poster_path}`}`
     : backdropPath;
 
   const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];

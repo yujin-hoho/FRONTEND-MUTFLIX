@@ -24,7 +24,7 @@ const Search = () => {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [, setShowLoginModal] = useState(false);
   const [authUser, setAuthUser] = useState(() => {
     const username = localStorage.getItem('username');
     const role = localStorage.getItem('role');
@@ -37,10 +37,18 @@ const Search = () => {
   };
 
   useEffect(() => {
+    let cancelled = false;
     if (!query) {
-      setResults([]);
-      setLoading(false);
-      return;
+      const id = setTimeout(() => {
+        if (!cancelled) {
+          setResults([]);
+          setLoading(false);
+        }
+      }, 0);
+      return () => {
+        cancelled = true;
+        clearTimeout(id);
+      };
     }
 
     const doSearch = async () => {
@@ -93,7 +101,7 @@ const Search = () => {
                 const hasActor = cacheData.cast?.some(c => c?.name?.toLowerCase().includes(queryLower));
                 const hasGenre = cacheData.genres?.some(g => g?.name?.toLowerCase().includes(queryLower));
                 if (hasActor || hasGenre) matched = true;
-              } catch (e) { /* ignore */ }
+              } catch { /* ignore */ }
             }
           }
            
@@ -118,9 +126,10 @@ const Search = () => {
             uniqueResults.push(item);
           }
         }
+        if (cancelled) return;
         setResults(uniqueResults);
+        setLoading(false);
         const finalMappedResults = uniqueResults;
-        // setLoading(false); // We now wait for enrichment below
 
         // PHASE 2: Enrich top results with TMDB posters (background)
         const topToEnrich = finalMappedResults.slice(0, 20);
@@ -156,16 +165,20 @@ const Search = () => {
           return enrichedMap.get(name) || item;
         });
 
-        setResults(finalResults);
-        setLoading(false); // Now we are ready!
+        if (!cancelled) setResults(finalResults);
       } catch (e) {
         console.error('Search error:', e);
-        setResults([]);
-        setLoading(false);
+        if (!cancelled) {
+          setResults([]);
+          setLoading(false);
+        }
       }
     };
 
     doSearch();
+    return () => {
+      cancelled = true;
+    };
   }, [query]);
 
   return (
@@ -206,4 +219,3 @@ const Search = () => {
 };
 
 export default Search;
-

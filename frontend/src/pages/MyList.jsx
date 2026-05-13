@@ -7,6 +7,20 @@ import { fetchMyList, removeFromMyList, updateMyListStatus, fetchProfiles, logou
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 
+const mapWithConcurrency = async (items, concurrency, mapper) => {
+    let next = 0;
+    async function worker() {
+        while (next < items.length) {
+            const index = next++;
+            await mapper(items[index], index);
+        }
+    }
+
+    await Promise.all(
+        Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+    );
+};
+
 const MyList = () => {
     const navigate = useNavigate();
     const [activeTab, setActiveTab] = useState('plan_to_watch'); // 'plan_to_watch' | 'completed'
@@ -50,10 +64,11 @@ const MyList = () => {
 
             // Set initial data
             setMylist(data);
+            setLoading(false);
 
             // Enrichment phase - fetch missing posters
             const enrichedData = [...data];
-            const enrichmentPromises = data.map(async (item, idx) => {
+            await mapWithConcurrency(data, 6, async (item, idx) => {
                 if (item.meta_json?.tmdb_poster_path) return;
 
                 const tmdb = await getTMDBInfo(item.folder_name, { light: true });
@@ -71,7 +86,6 @@ const MyList = () => {
                 }
             });
 
-            await Promise.allSettled(enrichmentPromises);
             if (currentFetchId === fetchIdRef.current) {
                 setMylist(enrichedData);
             }
@@ -258,7 +272,7 @@ const ListCard = ({ item, onRemove, onStatusUpdate, historyProgress }) => {
         const p = path.startsWith('/') ? path : `/${path}`;
         return `https://image.tmdb.org/t/p/${size}${p}`;
     };
-    const posterPath = meta.tmdb_poster_path ? tmdbImageUrl(meta.tmdb_poster_path, 'w500') : null;
+    const posterPath = meta.tmdb_poster_path ? tmdbImageUrl(meta.tmdb_poster_path, 'w342') : null;
 
     return (
         <div className="flex flex-col gap-3 group">

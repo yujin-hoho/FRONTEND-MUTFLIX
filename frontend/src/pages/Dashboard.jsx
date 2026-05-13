@@ -70,7 +70,7 @@ const backdropOrPosterUrl = (item) => {
   if (raw.startsWith('http')) return raw;
   const p = raw.startsWith('/') ? raw : `/${raw}`;
   // Must match the rendition used by HeroBanner to get a cache hit.
-  return `https://image.tmdb.org/t/p/w500${p}`;
+  return `https://image.tmdb.org/t/p/w1280${p}`;
 };
 
 /** Preload gambar di background (jangan await — jangan blokir paint) */
@@ -136,6 +136,23 @@ const enrichFeaturedFast = async (items) => {
   return [...resolved, ...items.slice(6)];
 };
 
+const mapWithConcurrency = async (items, concurrency, mapper) => {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await mapper(items[index], index);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  );
+  return results;
+};
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const [featuredList, setFeaturedList] = useState([]);
@@ -153,7 +170,7 @@ const Dashboard = () => {
     try {
       const saved = localStorage.getItem('mutflix_hidden_history');
       return saved ? JSON.parse(saved) : [];
-    } catch (e) { return []; }
+    } catch { return []; }
   });
   const [removingItemPath, setRemovingItemPath] = useState(null);
   const [posterEditItem, setPosterEditItem] = useState(null);
@@ -219,9 +236,9 @@ const Dashboard = () => {
   // Phase 2: TMDB enrichment
   const enrichWithTMDB = useCallback(async (items, currentFetchId) => {
     const resolvedItems = [...items]; // Copy so we can update in-place
-    const tmdbPromises = [];
-    let apiFetchCount = 0;
-    const MAX_API_CALLS = 120;
+    const TMDB_LIGHT_LIMIT = 72;
+    const TMDB_CAST_LIMIT = 16;
+    const TMDB_CONCURRENCY = 6;
 
     const enrichPriority = (it) => {
       if (it.tmdb_query) return -1;
@@ -244,31 +261,61 @@ const Dashboard = () => {
       .sort((a, b) => enrichPriority(a.item) - enrichPriority(b.item))
       .map(({ idx }) => idx);
 
-    for (const idx of candidateIndices) {
-      if (apiFetchCount >= MAX_API_CALLS) break;
+    const lightIndices = candidateIndices.slice(0, TMDB_LIGHT_LIMIT);
+    await mapWithConcurrency(lightIndices, TMDB_CONCURRENCY, async (idx) => {
+      if (fetchIdRef.current !== currentFetchId) return;
       const item = items[idx];
       const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
-
-      apiFetchCount++;
       const opts = tmdbOptsFromItem(item);
-      tmdbPromises.push(
-        getTMDBInfo(searchTitle, opts).then(apiData => {
-          if (apiData) {
-            const resolvedItem = { ...item };
-            resolvedItem.tmdb_title = apiData.tmdb_title || apiData.title || item.tmdb_title;
-            if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
-            resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
-            resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
-            resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
-            resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
-            resolvedItem.tmdb_cast = apiData.cast || [];
-            resolvedItems[idx] = resolvedItem;
-          }
-        })
-      );
-    }
 
-    await Promise.allSettled(tmdbPromises);
+      try {
+        const apiData = await getTMDBInfo(searchTitle, { ...opts, light: true });
+        if (!apiData || fetchIdRef.current !== currentFetchId) return;
+        const resolvedItem = { ...item };
+        resolvedItem.tmdb_title = apiData.tmdb_title || apiData.title || item.tmdb_title;
+        if (apiData.poster_path) resolvedItem.tmdb_poster_path = apiData.poster_path;
+        resolvedItem.tmdb_backdrop_path = apiData.backdrop_path || item.tmdb_backdrop_path;
+        resolvedItem.tmdb_genre_ids = apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [];
+        resolvedItem.tmdb_overview = apiData.overview || item.tmdb_overview;
+        resolvedItem.tmdb_rating = apiData.rating || item.tmdb_rating;
+        resolvedItems[idx] = resolvedItem;
+      } catch {
+        /* keep original item */
+      }
+    });
+
+    if (fetchIdRef.current !== currentFetchId) return null;
+
+    const castIndices = candidateIndices
+      .filter((idx) => {
+        const item = resolvedItems[idx] || items[idx];
+        return item?.tmdb_query || item?.tmdb_poster_path || item?.poster_path || item?.tmdb_rating;
+      })
+      .slice(0, TMDB_CAST_LIMIT);
+
+    await mapWithConcurrency(castIndices, 4, async (idx) => {
+      if (fetchIdRef.current !== currentFetchId) return;
+      const item = resolvedItems[idx] || items[idx];
+      const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
+      if (!searchTitle) return;
+
+      try {
+        const apiData = await getTMDBInfo(searchTitle, tmdbOptsFromItem(item));
+        if (!apiData || fetchIdRef.current !== currentFetchId) return;
+        resolvedItems[idx] = {
+          ...item,
+          tmdb_title: apiData.tmdb_title || apiData.title || item.tmdb_title,
+          tmdb_poster_path: apiData.poster_path || item.tmdb_poster_path,
+          tmdb_backdrop_path: apiData.backdrop_path || item.tmdb_backdrop_path,
+          tmdb_genre_ids: apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [],
+          tmdb_overview: apiData.overview || item.tmdb_overview,
+          tmdb_rating: apiData.rating || item.tmdb_rating,
+          tmdb_cast: apiData.cast || [],
+        };
+      } catch {
+        /* keep light metadata */
+      }
+    });
 
     if (fetchIdRef.current !== currentFetchId) return null;
 
@@ -294,7 +341,7 @@ const Dashboard = () => {
     const topActors = shuffleArray(sortedActors.slice(0, poolSize)).slice(0, 15);
 
     return { resolvedItems, topActors };
-  }, [buildSections]);
+  }, []);
   const loadData = useCallback(async () => {
     const currentFetchId = ++fetchIdRef.current;
 
@@ -391,7 +438,8 @@ const Dashboard = () => {
   }, [processData, buildSections, enrichWithTMDB, authUser, hiddenHistory]);
 
   useEffect(() => {
-    loadData();
+    const id = setTimeout(() => loadData(), 0);
+    return () => clearTimeout(id);
   }, [loadData]);
 
   const handleLoginSuccess = (data) => {
@@ -601,4 +649,3 @@ const CelebrityCarousel = ({ castList }) => {
     </div>
   );
 };
-

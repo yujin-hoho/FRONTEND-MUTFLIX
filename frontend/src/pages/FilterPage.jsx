@@ -95,8 +95,8 @@ const itemMatchesVarietyShow = (item) => {
 };
 
 /** Pool agar semua item bisa di-enrich tanpa membanjiri TMDB sekaligus (TMDB ~40 req/10s — 12 aman dengan light + dedupe) */
-const TMDB_FILTER_CONCURRENCY = 12;
-const MAX_TMDB_ENRICH_FILTER = 2000;
+const TMDB_FILTER_CONCURRENCY = 6;
+const MAX_TMDB_ENRICH_FILTER = 600;
 
 async function mapWithConcurrency(items, concurrency, mapper, onItemDone) {
   if (!items.length) return [];
@@ -216,7 +216,7 @@ const FilterPage = () => {
   const sortBy = searchParams.get('sort') || 'default';
 
   const [listLoading, setListLoading] = useState(true);
-  const [tmdbEnriching, setTmdbEnriching] = useState(false);
+  const [, setTmdbEnriching] = useState(false);
   const [allResolved, setAllResolved] = useState([]);
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const loadMoreSentinelRef = useRef(null);
@@ -234,7 +234,7 @@ const FilterPage = () => {
     [filteredSorted, visibleCount]
   );
 
-  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [, setShowLoginModal] = useState(false);
   const [authUser, setAuthUser] = useState(() => {
     const username = localStorage.getItem('username');
     const role = localStorage.getItem('role');
@@ -612,4 +612,3 @@ const FilterPage = () => {
 };
 
 export default FilterPage;
-
