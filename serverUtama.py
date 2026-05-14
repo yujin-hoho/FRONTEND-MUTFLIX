@@ -6,6 +6,7 @@ import pickle
 import base64
 import time
 import hashlib
+import hmac
 import threading
 import requests
 import datetime
@@ -109,6 +110,7 @@ GDRIVE_SUBTITLE_TOKEN_B64 = os.environ.get('GDRIVE_SUBTITLE_TOKEN_B64')
 GDRIVE_SUBTITLE_FOLDER_ID = os.environ.get('GDRIVE_SUBTITLE_FOLDER_ID')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+TMDB_API_KEY = os.environ.get('TMDB_API_KEY')
 
 # Discord Config
 DISCORD_PUBLIC_KEY = os.environ.get('DISCORD_PUBLIC_KEY') 
@@ -198,6 +200,7 @@ CACHE_REFRESH_INTERVAL = 300    # 5 min - BG worker refreshes every content cycl
 CACHE_DURATION_FOLDERS = 300    # 5 min - folder response cache
 CACHE_DURATION_VIDEOS  = 300    # 5 min - video response cache
 CACHE_DURATION_EMPTY   = 300      # 5 min — empty results retry lebih cepat
+TMDB_CACHE_TTL_SECONDS = int(os.environ.get('TMDB_CACHE_TTL_SECONDS', '86400'))  # 24 jam default
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
@@ -277,6 +280,12 @@ _tmdb_overrides_cache = None      # {folder_name: override_dict}
 _tmdb_overrides_ts = 0
 _tmdb_overrides_lock = threading.Lock()
 
+# === TMDB PROXY CACHE ===
+# Cache response TMDB server-side so repeated app requests avoid TMDB.
+_tmdb_proxy_cache = {}       # {cache_key: {status, content_type, body, ts}}
+_tmdb_proxy_cache_ts = {}    # {cache_key: timestamp}
+_tmdb_proxy_lock = threading.Lock()
+
 # === GDRIVE BEARER TOKEN CACHE ===
 # Token valid ~1 jam, cache 45 menit — eliminates credential check per request
 # ~50-100ms saved per /api/gdrive-stream-details/ call
@@ -284,16 +293,15 @@ _gdrive_token = None       # bearer token string
 _gdrive_token_ts = 0       # last refresh timestamp
 _gdrive_token_ttl = 2700   # 45 minutes
 _gdrive_token_lock = threading.Lock()
+_stream_token_ttl = 24 * 60 * 60  # 24 hours; keeps binge sessions stable across GDrive token refreshes
 
-# === USER DATA RAM CACHE (profiles, history, mylist) ===
+# === USER DATA RAM CACHE (profiles, mylist) ===
 # Per-user caching — eliminates DB roundtrip (~100-200ms saved per request)
 # Invalidated on mutations (save/add/edit/delete)
 # [FIX] Tambah timestamp per-entry untuk cross-worker invalidation via diskcache
 _user_profiles_cache = {}      # {user_id: [profile_dicts]}
-_user_history_cache = {}       # {user_id_profile_id: [history_dicts]}
 _user_mylist_cache = {}        # {user_id_profile_id: [mylist_dicts]}
 _user_profiles_cache_ts = {}   # {user_id: timestamp}
-_user_history_cache_ts = {}    # {user_id_profile_id: timestamp}
 _user_mylist_cache_ts = {}     # {user_id_profile_id: timestamp}
 _user_data_lock = threading.Lock()
 
@@ -315,9 +323,6 @@ def _invalidate_user_cache(cache_type, cache_key):
         if cache_type == 'profiles':
             _user_profiles_cache.pop(cache_key, None)
             _user_profiles_cache_ts.pop(cache_key, None)
-        elif cache_type == 'history':
-            _user_history_cache.pop(cache_key, None)
-            _user_history_cache_ts.pop(cache_key, None)
         elif cache_type == 'mylist':
             _user_mylist_cache.pop(cache_key, None)
             _user_mylist_cache_ts.pop(cache_key, None)
@@ -327,8 +332,6 @@ def _is_user_cache_valid(cache_type, cache_key):
     Return True jika cache valid, False jika perlu reload dari DB."""
     if cache_type == 'profiles':
         ram_ts = _user_profiles_cache_ts.get(cache_key)
-    elif cache_type == 'history':
-        ram_ts = _user_history_cache_ts.get(cache_key)
     elif cache_type == 'mylist':
         ram_ts = _user_mylist_cache_ts.get(cache_key)
     else:
@@ -336,8 +339,6 @@ def _is_user_cache_valid(cache_type, cache_key):
     if ram_ts is None:
         return False
     inv_keys = [f"_inv_{cache_type}_{cache_key}"]
-    if cache_type == 'history' and '_limit' in str(cache_key):
-        inv_keys.append(f"_inv_{cache_type}_{str(cache_key).split('_limit', 1)[0]}")
     try:
         for inv_key in inv_keys:
             inv_ts = disk_cache.get(inv_key)
@@ -498,6 +499,7 @@ def init_db():
                 episode INTEGER,
                 position_ms INTEGER NOT NULL,
                 duration_ms INTEGER NOT NULL,
+                is_hidden INTEGER DEFAULT 0,
                 last_watched TIMESTAMP DEFAULT {now_func},
                 UNIQUE (user_id, profile_id, media_path)
             );
@@ -506,6 +508,7 @@ def init_db():
         for column_sql in (
             "ALTER TABLE watch_history ADD COLUMN season INTEGER",
             "ALTER TABLE watch_history ADD COLUMN episode INTEGER",
+            "ALTER TABLE watch_history ADD COLUMN is_hidden INTEGER DEFAULT 0",
         ):
             try:
                 cur.execute(column_sql)
@@ -846,6 +849,9 @@ def discord_interactions():
 def register():
     data = request.get_json()
     if not data or 'token' not in data: return jsonify({"message": "Token required"}), 400
+    password = data.get('password') or ''
+    if len(password) < 8:
+        return jsonify({"message": "Password must be at least 8 characters"}), 400
     
     conn, db_type = get_db_connection()
     try:
@@ -982,6 +988,117 @@ def auth_status(current_user):
 # ==========================================
 # TMDB OVERRIDES API (Admin only)
 # ==========================================
+
+def _tmdb_proxy_cache_key(tmdb_path, params):
+    normalized = {
+        'path': tmdb_path,
+        'params': sorted((params or {}).items()),
+    }
+    raw = json.dumps(normalized, sort_keys=True, separators=(',', ':'))
+    return 'tmdb_proxy_' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def _tmdb_proxy_response_from_cache(entry, cache_status):
+    remaining = max(0, int(TMDB_CACHE_TTL_SECONDS - (time.time() - entry.get('ts', time.time()))))
+    resp = Response(
+        entry['body'],
+        status=entry['status'],
+        content_type=entry.get('content_type') or 'application/json',
+    )
+    resp.headers['Cache-Control'] = f'public, max-age={remaining}'
+    resp.headers['X-TMDB-Cache'] = cache_status
+    return resp
+
+def _get_tmdb_proxy_cache(cache_key):
+    now = time.time()
+    with _tmdb_proxy_lock:
+        entry = _tmdb_proxy_cache.get(cache_key)
+        if entry and now - entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+            return entry, 'HIT-RAM'
+        if entry:
+            _tmdb_proxy_cache.pop(cache_key, None)
+            _tmdb_proxy_cache_ts.pop(cache_key, None)
+
+    try:
+        entry = disk_cache.get(cache_key)
+    except Exception:
+        entry = None
+
+    if entry and now - entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+        with _tmdb_proxy_lock:
+            _tmdb_proxy_cache[cache_key] = entry
+            _tmdb_proxy_cache_ts[cache_key] = entry.get('ts', now)
+        return entry, 'HIT-DISK'
+    return None, None
+
+def _set_tmdb_proxy_cache(cache_key, response):
+    if response.status_code not in (200, 404):
+        return
+
+    entry = {
+        'status': response.status_code,
+        'content_type': response.headers.get('Content-Type', 'application/json'),
+        'body': response.content,
+        'ts': time.time(),
+    }
+    with _tmdb_proxy_lock:
+        _tmdb_proxy_cache[cache_key] = entry
+        _tmdb_proxy_cache_ts[cache_key] = entry['ts']
+        if len(_tmdb_proxy_cache) > 2000:
+            oldest = sorted(_tmdb_proxy_cache_ts.items(), key=lambda x: x[1])[:500]
+            for key, _ in oldest:
+                _tmdb_proxy_cache.pop(key, None)
+                _tmdb_proxy_cache_ts.pop(key, None)
+
+    try:
+        disk_cache.set(cache_key, entry, expire=TMDB_CACHE_TTL_SECONDS)
+    except Exception as e:
+        print(f"[TMDB-PROXY] disk cache set failed: {e}", flush=True)
+
+@app.route('/api/tmdb/<path:tmdb_path>', methods=['GET'])
+@token_required(check_expiry=False)
+@rate_limited(limit=120)
+def proxy_tmdb(current_user, tmdb_path):
+    """Proxy TMDB requests so the API key stays server-side."""
+    if not TMDB_API_KEY:
+        return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
+
+    if '..' in tmdb_path or tmdb_path.startswith('/'):
+        return orjson_jsonify({'error': 'Invalid TMDB path'}, 400)
+
+    params = request.args.to_dict(flat=True)
+    params.pop('api_key', None)
+    cache_key = _tmdb_proxy_cache_key(tmdb_path, params)
+    cached_entry, cache_status = _get_tmdb_proxy_cache(cache_key)
+    if cached_entry:
+        return _tmdb_proxy_response_from_cache(cached_entry, cache_status)
+
+    params['api_key'] = TMDB_API_KEY
+
+    try:
+        response = requests.get(
+            f'https://api.themoviedb.org/3/{tmdb_path}',
+            params=params,
+            timeout=10,
+        )
+        excluded_headers = {
+            'content-encoding',
+            'content-length',
+            'transfer-encoding',
+            'connection',
+        }
+        headers = [
+            (name, value)
+            for name, value in response.headers.items()
+            if name.lower() not in excluded_headers
+        ]
+        _set_tmdb_proxy_cache(cache_key, response)
+        proxied = Response(response.content, response.status_code, headers)
+        proxied.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if response.status_code in (200, 404) else 'no-store'
+        proxied.headers['X-TMDB-Cache'] = 'MISS'
+        return proxied
+    except requests.RequestException as e:
+        print(f"[TMDB-PROXY] request failed for {tmdb_path}: {e}", flush=True)
+        return orjson_jsonify({'error': 'TMDB request failed'}, 502)
 
 @app.route('/api/tmdb-overrides', methods=['GET'])
 @token_required(check_expiry=False)
@@ -1148,6 +1265,42 @@ def _merge_tmdb_overrides_into_folders(all_c):
                 item['include_adult'] = bool(ia) if ia is not None else False
     except Exception as e:
         print(f"[TMDB-OVERRIDE] merge into folders failed: {e}", flush=True)
+    return all_c
+
+def _merge_content_release_tmdb_into_folders(all_c):
+    """Attach lightweight TMDB metadata cached in content_releases to /api/folders."""
+    if not all_c:
+        return all_c
+    try:
+        releases = mem_get('content_releases')
+        if releases is None:
+            releases = _load_releases()
+            mem_set('content_releases', releases)
+        by_name = {
+            (r.get('folder_name') or '').lower(): r
+            for r in releases
+            if r.get('folder_name')
+        }
+        if not by_name:
+            return all_c
+        for cat in ('series', 'movies'):
+            for item in all_c.get(cat) or []:
+                name = item.get('name')
+                if not name:
+                    continue
+                rel = by_name.get(name.lower())
+                if not rel:
+                    continue
+                if rel.get('tmdb_title'):
+                    item['tmdb_title'] = rel['tmdb_title']
+                if rel.get('tmdb_poster_path'):
+                    item['tmdb_poster_path'] = rel['tmdb_poster_path']
+                if rel.get('tmdb_overview'):
+                    item['tmdb_overview'] = rel['tmdb_overview']
+                if rel.get('tmdb_rating') is not None:
+                    item['tmdb_rating'] = rel['tmdb_rating']
+    except Exception as e:
+        print(f"[CONTENT-RELEASES] merge TMDB metadata into folders failed: {e}", flush=True)
     return all_c
 
 # ==========================================
@@ -1543,25 +1696,22 @@ def delete_profile(current_user):
 @token_required(check_expiry=True)
 def get_history(current_user, profile_id):
     active_only = request.args.get('active_only', 'false').lower() == 'true'
+    include_hidden = request.args.get('include_hidden', 'false').lower() == 'true'
     try:
         limit = int(request.args.get('limit', '0') or 0)
     except (TypeError, ValueError):
         limit = 0
     limit = max(0, min(limit, 100))
-    cache_key = f"{current_user['id']}_{profile_id}{'_active' if active_only else ''}{f'_limit{limit}' if limit else ''}"
-    # [FIX] Cross-worker validation sebelum serve dari RAM cache
-    cached = _user_history_cache.get(cache_key)
-    if cached is not None and _is_user_cache_valid('history', cache_key):
-        return orjson_jsonify(cached)
-    
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
     where = f'user_id = {ph} AND profile_id = {ph}'
     params = [current_user['id'], profile_id]
+    if not include_hidden:
+        where += ' AND (is_hidden = 0 OR is_hidden IS NULL)'
     if active_only:
         where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
         params.append(0.95)
-    sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, last_watched
+    sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched
               FROM watch_history WHERE {where} ORDER BY last_watched DESC'''
     if limit:
         sql += f' LIMIT {ph}'
@@ -1573,10 +1723,6 @@ def get_history(current_user, profile_id):
             res = [dict(r) for r in cur.fetchall()]
         else: res = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
         
-        now = time.time()
-        with _user_data_lock:
-            _user_history_cache[cache_key] = res
-            _user_history_cache_ts[cache_key] = now
         return add_no_cache_headers(orjson_jsonify(res))
     finally: release_db_connection(conn, db_type)
 
@@ -1588,19 +1734,34 @@ def save_history(current_user):
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
-        cur.execute(f"DELETE FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}", 
-                   (current_user['id'], data['profile_id'], data['media_path']))
-        sql_insert = f'''
-            INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, last_watched)
-            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, CURRENT_TIMESTAMP)
-        '''
-        params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'])
-        cur.execute(sql_insert, params)
+        lookup_params = (current_user['id'], data['profile_id'], data['media_path'])
+        cur.execute(
+            f"SELECT is_hidden FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}",
+            lookup_params,
+        )
+        existing = cur.fetchone()
+        if existing is not None:
+            sql_update = f'''
+                UPDATE watch_history
+                SET media_title={ph}, series_title={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
+                    season={ph}, episode={ph}, position_ms={ph}, duration_ms={ph}, is_hidden=0, last_watched=CURRENT_TIMESTAMP
+                WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
+            '''
+            params = (
+                data.get('media_title'), data.get('series_title'), data.get('source'),
+                data.get('still_path'), data.get('subtitle_path'), data.get('season'),
+                data.get('episode'), data['position_ms'], data['duration_ms'],
+                current_user['id'], data['profile_id'], data['media_path'],
+            )
+            cur.execute(sql_update, params)
+        else:
+            sql_insert = f'''
+                INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 0, CURRENT_TIMESTAMP)
+            '''
+            params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'])
+            cur.execute(sql_insert, params)
         conn.commit()
-        # Cross-worker invalidate history cache
-        cache_key = f"{current_user['id']}_{data['profile_id']}"
-        _invalidate_user_cache('history', cache_key)
-        _invalidate_user_cache('history', f"{cache_key}_active")
         return orjson_jsonify({"message": "Saved"})
     except: return orjson_jsonify({"message": "Error saving"}, 500)
     finally: release_db_connection(conn, db_type)
@@ -1613,13 +1774,17 @@ def delete_history(current_user):
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
-        query = f"DELETE FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}"
-        cur.execute(query, (current_user['id'], data['profile_id'], data['media_path']))
+        query = f"""
+            DELETE FROM watch_history
+            WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
+        """
+        cur.execute(
+            query,
+            (
+                current_user['id'], data['profile_id'], data['media_path'],
+            ),
+        )
         conn.commit()
-        # Cross-worker invalidate history cache
-        cache_key = f"{current_user['id']}_{data['profile_id']}"
-        _invalidate_user_cache('history', cache_key)
-        _invalidate_user_cache('history', f"{cache_key}_active")
         return orjson_jsonify({"message": "Deleted"})
     except Exception as e:
         return orjson_jsonify({"message": "Error deleting", "error": str(e)}, 500)
@@ -2563,6 +2728,7 @@ def get_folders(current_user):
         cached = mem_get(key)
         if cached:
             payload = copy.deepcopy(cached)
+            _merge_content_release_tmdb_into_folders(payload)
             _merge_tmdb_overrides_into_folders(payload)
             return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
     res = fetch_gdrive_categorized_content(get_gdrive_service())
@@ -2611,11 +2777,13 @@ def get_folders(current_user):
         _invalidate_response_cache('resp_folders', 'resp_folders_merged')
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         payload = copy.deepcopy(all_c)
+        _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
         return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
     stale = mem_get(key)
     if stale:
         payload = copy.deepcopy(stale)
+        _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
         return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
@@ -2717,7 +2885,7 @@ def get_videos_in_folder(current_user, folder_name):
     res = fetch_gdrive_videos(svc, resolved_name)
     if res is not None:
         vids, has_s = res["videos"], res["has_season_folders"]
-        if not vids and folder_name.startswith("gdrive/"):
+        if not vids and folder_name.startswith(("gdrive/", "gdrive_folder/")):
              try:
                 fid = folder_name.split('/', 1)[1]
                 # Handle gdrive_folder/ — list files inside the folder
@@ -2866,6 +3034,8 @@ def get_gdrive_stream_details(current_user,file_path):
         
         res = {
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
+            "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "headers": {
                 "Authorization": f"Bearer {token}",
                 "User-Agent": "Mutflix/1.0" 
@@ -2914,13 +3084,110 @@ def _get_fresh_gdrive_token():
         _gdrive_token_ts = time.time()
         return token
 
+
+def _make_stream_token(fid, ttl=None):
+    """Create a file-scoped token usable by <video>, where custom auth headers are not possible."""
+    exp = int(time.time() + (ttl or _stream_token_ttl))
+    payload = f"{fid}:{exp}"
+    secret = app.config['SECRET_KEY'].encode('utf-8')
+    sig = hmac.new(secret, payload.encode('utf-8'), hashlib.sha256).hexdigest()
+    raw = f"{payload}:{sig}".encode('utf-8')
+    return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
+
+
+def _verify_stream_token(fid, token):
+    if not token:
+        return False
+    try:
+        padded = token + ('=' * (-len(token) % 4))
+        raw = base64.urlsafe_b64decode(padded.encode('ascii')).decode('utf-8')
+        token_fid, exp_raw, sig = raw.rsplit(':', 2)
+        if token_fid != fid:
+            return False
+        exp = int(exp_raw)
+        if time.time() > exp:
+            return False
+        payload = f"{token_fid}:{exp}"
+        secret = app.config['SECRET_KEY'].encode('utf-8')
+        expected = hmac.new(secret, payload.encode('utf-8'), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+def _proxy_gdrive_media(fid):
+    """Proxy media with a fresh server-side GDrive token on every Range request."""
+    global _gdrive_token, _gdrive_token_ts
+
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return jsonify({"error": "GDrive token unavailable"}), 503
+
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "Mutflix/1.0",
+    }
+    range_header = request.headers.get('Range')
+    if range_header:
+        headers["Range"] = range_header
+
+    upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 60))
+    if upstream.status_code in (401, 403):
+        svc = get_gdrive_service()
+        if not svc:
+            upstream.close()
+            return jsonify({"error": "GDrive unavailable"}), 503
+        upstream.close()
+        with _gdrive_token_lock:
+            svc._http.credentials.refresh(Request())
+            token = svc._http.credentials.token
+            _gdrive_token = token
+            _gdrive_token_ts = time.time()
+        headers["Authorization"] = f"Bearer {token}"
+        upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 60))
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=1024 * 256):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": upstream.headers.get("Accept-Ranges", "bytes"),
+        "Cache-Control": "no-store",
+    }
+    for header in ("Content-Type", "Content-Length", "Content-Range"):
+        value = upstream.headers.get(header)
+        if value:
+            response_headers[header] = value
+
+    return Response(
+        stream_with_context(generate()),
+        status=upstream.status_code,
+        headers=response_headers,
+        direct_passthrough=True,
+    )
+
+
+@app.route("/api/gdrive-stream/<fid>")
+def gdrive_stream(fid):
+    if not _verify_stream_token(fid, request.args.get('stream_token')):
+        return jsonify({"error": "Unauthorized stream"}), 401
+    return _proxy_gdrive_media(fid)
+
 @app.route("/api/hls-manifest/<fid>")
 def get_hls_manifest(fid):
-    import requests as py_requests
     # Accept access_token from query for backward compat, but always use server-side token
     # so playback doesn't break when client token expires during long sessions.
     access_token = request.args.get('access_token')
-    if not access_token:
+    stream_token = request.args.get('stream_token')
+    if stream_token and not _verify_stream_token(fid, stream_token):
+        return _hls_cors_response("Unauthorized", 401)
+    if not access_token and not stream_token:
         return _hls_cors_response("Unauthorized", 401)
     
     svc = get_gdrive_service()
@@ -2931,12 +3198,11 @@ def get_hls_manifest(fid):
     server_token = _get_fresh_gdrive_token()
     if not server_token:
         return _hls_cors_response("GDrive token unavailable", 503)
-    rewrite_token = quote(server_token, safe='')
     manifest_nonce = str(int(time.time() * 1000))
     
     headers = {"Authorization": f"Bearer {server_token}"}
     m3u8_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
-    resp = py_requests.get(m3u8_url, headers=headers, timeout=15)
+    resp = requests.get(m3u8_url, headers=headers, timeout=15)
     if resp.status_code != 200:
         return _hls_cors_response(f"Failed to fetch m3u8 (status={resp.status_code})", resp.status_code)
         
@@ -2959,9 +3225,8 @@ def get_hls_manifest(fid):
             page_token = res.get('nextPageToken')
             if not page_token: break
             
-        # Rewrite manifest: replace filenames with proxy URLs
-        # Prefer CF Worker if configured, else fallback to /gdrive-proxy/
-        cf_worker_url = os.environ.get('CF_WORKER_URL', '').rstrip('/')
+        # Rewrite manifest to backend proxy URLs. The proxy refreshes GDrive tokens server-side,
+        # so HLS segments keep loading without forcing the player to reset.
         lines = m3u8_content.splitlines()
         new_lines = []
         for line in lines:
@@ -2969,14 +3234,11 @@ def get_hls_manifest(fid):
             if stripped and not stripped.startswith('#'):
                 if stripped in file_map:
                     mapped_id = file_map[stripped]
+                    mapped_stream_token = quote(_make_stream_token(mapped_id), safe='')
                     if stripped.lower().endswith('.m3u8'):
-                        new_lines.append(f"/api/hls-manifest/{mapped_id}?access_token={rewrite_token}&_={manifest_nonce}")
-                    elif cf_worker_url:
-                        # Cloudflare Worker untuk segment streaming
-                        new_lines.append(f"{cf_worker_url}/{mapped_id}?token={rewrite_token}&_={manifest_nonce}")
+                        new_lines.append(f"/api/hls-manifest/{mapped_id}?stream_token={mapped_stream_token}&_={manifest_nonce}")
                     else:
-                        # Fallback ke proxy lama
-                        new_lines.append(f"/gdrive-proxy/{mapped_id}?alt=media&access_token={rewrite_token}&_={manifest_nonce}")
+                        new_lines.append(f"/api/gdrive-stream/{mapped_id}?stream_token={mapped_stream_token}&_={manifest_nonce}")
                 else:
                     new_lines.append(line)
             else:
@@ -3185,6 +3447,7 @@ def set_content_release(current_user):
     _mem_cache.pop('content_releases', None)
     _mem_cache_ts.pop('content_releases', None)
     _response_cache.pop('resp_releases', None)
+    _invalidate_response_cache('resp_folders_merged')
     return orjson_jsonify({"success": True, "status": data.get('status', 'published')})
 
 @app.route("/api/content-releases/<path:folder_name>", methods=["DELETE"])
@@ -3196,6 +3459,7 @@ def delete_content_release(current_user, folder_name):
     _mem_cache.pop('content_releases', None)
     _mem_cache_ts.pop('content_releases', None)
     _response_cache.pop('resp_releases', None)
+    _invalidate_response_cache('resp_folders_merged')
     return orjson_jsonify({"success": True})
 
 

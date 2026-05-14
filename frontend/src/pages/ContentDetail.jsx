@@ -281,7 +281,10 @@ const ContentDetail = () => {
     normalizeImageUrl(tmdbData?.poster_path, 'w780') ||
     'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
 
-  const posterPath = normalizeImageUrl(tmdbData?.poster_path, 'w342') || backdropPath;
+  const episodeFallbackBackdropPath =
+    normalizeImageUrl(tmdbData?.backdrop_path, 'w500') ||
+    normalizeImageUrl(tmdbData?.tmdb_backdrop_path, 'w500') ||
+    'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1200&auto=format&fit=crop';
 
   const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];
 
@@ -491,7 +494,7 @@ const ContentDetail = () => {
                       key={video.path || `${video.season}_${video.episode}_${idx}`}
                       video={video}
                       index={idx}
-                      posterFallback={posterPath}
+                      backdropFallback={episodeFallbackBackdropPath}
                       tmdbData={epData}
                       progress={historyMap[video.path]?.progress}
                       onPlay={() => {
@@ -541,11 +544,11 @@ const ContentDetail = () => {
 };
 
 /* ====== Episode Card ====== */
-const EpisodeCard = ({ video, index, posterFallback, tmdbData, onPlay, progress }) => {
+const EpisodeCard = ({ video, index, backdropFallback, tmdbData, onPlay, progress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const episodeNum = video.episode || index + 1;
   const name = tmdbData?.name || video.name || `Episode ${episodeNum}`;
-  const imageToUse = tmdbData?.still_path || posterFallback;
+  const imageToUse = tmdbData?.still_path || backdropFallback;
 
   return (
     <div

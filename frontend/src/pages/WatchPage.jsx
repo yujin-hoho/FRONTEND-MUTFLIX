@@ -28,6 +28,7 @@ const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 const LOCAL_RESUME_KEY = 'mutflix_resume_positions';
+const PLAYER_PREFS_KEY = 'mutflix_player_prefs';
 const MIN_RESUME_POSITION_MS = 5000;
 const RECENT_LOCAL_RESUME_MS = 10 * 60 * 1000;
 const STREAM_READY_TIMEOUT_MS = 12000;
@@ -60,6 +61,31 @@ const setLocalResumeForPath = (mediaPath, positionMs, durationMs) => {
         localStorage.setItem(LOCAL_RESUME_KEY, JSON.stringify(map));
     } catch {
         // ignore local cache write failures
+    }
+};
+
+const getPlayerPrefs = () => {
+    const defaults = { playbackRate: 1, volume: 1, muted: false };
+    try {
+        const raw = localStorage.getItem(PLAYER_PREFS_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        const playbackRate = Number(parsed.playbackRate);
+        const volume = Number(parsed.volume);
+        return {
+            playbackRate: Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : defaults.playbackRate,
+            volume: Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : defaults.volume,
+            muted: typeof parsed.muted === 'boolean' ? parsed.muted : defaults.muted,
+        };
+    } catch {
+        return defaults;
+    }
+};
+
+const setPlayerPrefs = (patch) => {
+    try {
+        localStorage.setItem(PLAYER_PREFS_KEY, JSON.stringify({ ...getPlayerPrefs(), ...patch }));
+    } catch {
+        // ignore preference write failures
     }
 };
 
@@ -97,15 +123,15 @@ const WatchPage = () => {
     const [currentVideo, setCurrentVideo] = useState(null);
     const [subtitleUrl, setSubtitleUrl] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [isMuted, setIsMuted] = useState(false);
-    const [volume, setVolume] = useState(1);
+    const [isMuted, setIsMuted] = useState(() => getPlayerPrefs().muted);
+    const [volume, setVolume] = useState(() => getPlayerPrefs().volume);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [buffered, setBuffered] = useState(0);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
     const [showSubtitles, setShowSubtitles] = useState(true);
-    const [playbackRate, setPlaybackRate] = useState(1);
+    const [playbackRate, setPlaybackRate] = useState(() => getPlayerPrefs().playbackRate);
     const [showSpeedMenu, setShowSpeedMenu] = useState(false);
     /** Trek audio native dari file (multi-audio MP4/MOV); dukungan browser bervariasi (Chrome/Edge/Safari umumnya OK). */
     const [audioTrackList, setAudioTrackList] = useState([]);
@@ -184,6 +210,7 @@ const WatchPage = () => {
 
     // Refs
     const videoRef = useRef(null);
+    const playerPrefsRef = useRef({ playbackRate, volume, isMuted });
     const hlsInstanceRef = useRef(null);
     const playerContainerRef = useRef(null);
     const controlsTimeoutRef = useRef(null);
@@ -203,6 +230,10 @@ const WatchPage = () => {
     const [, setShowResumeToast] = useState(null);
     const [isScrubbing, setIsScrubbing] = useState(false);
     const [scrubTime, setScrubTime] = useState(0);
+
+    useEffect(() => {
+        playerPrefsRef.current = { playbackRate, volume, isMuted };
+    }, [isMuted, playbackRate, volume]);
 
     // Derived
     // Important: if TMDB API key missing (tmdbData=null) and `type` query param is wrong,
@@ -227,8 +258,6 @@ const WatchPage = () => {
         const raw =
             tmdbData?.backdrop_path ||
             tmdbData?.tmdb_backdrop_path ||
-            tmdbData?.poster_path ||
-            tmdbData?.tmdb_poster_path ||
             null;
         if (!raw) return null;
         if (raw.startsWith('http')) return raw;
@@ -246,8 +275,6 @@ const WatchPage = () => {
                 video.still_path ||
                 video.thumbnail ||
                 video.thumbnail_path ||
-                video.poster_path ||
-                video.poster ||
                 video.backdrop_path ||
                 null;
             dataMap[key] = {
@@ -416,14 +443,14 @@ const WatchPage = () => {
             currentVideo.name || decodedName,
             isSeriesContent ? decodedName : null,
             currentVideo.source,
-            currentEpData?.still_path || tmdbData?.tmdb_poster_path,
+            currentEpData?.still_path || episodeFallbackThumb,
             currentVideo.subtitle_path,
             positionMs,
             durationMs,
             isSeriesContent ? (currentVideo.season ?? null) : null,
             isSeriesContent ? (currentVideo.episode ?? null) : null
         );
-    }, [profileId, currentVideo, decodedName, isSeriesContent, currentEpData, tmdbData, cacheCurrentResume]);
+    }, [profileId, currentVideo, decodedName, isSeriesContent, currentEpData, episodeFallbackThumb, cacheCurrentResume]);
 
     // ─── Fetch Resume Position ─────────────────────
     useEffect(() => {
@@ -567,6 +594,12 @@ const WatchPage = () => {
         return `${url}${separator}_=${Date.now()}_${streamReloadNonce}`;
     }, [streamReloadNonce]);
 
+    const resolveBackendUrl = useCallback((url) => {
+        if (!url) return url;
+        if (/^https?:\/\//i.test(url)) return url;
+        return `${BASE_URL}${url.startsWith('/') ? url : `/${url}`}`;
+    }, []);
+
     const requestStreamRecovery = useCallback((reason = 'playback-error') => {
         const video = videoRef.current;
         if (!currentVideo || !video) return false;
@@ -594,6 +627,20 @@ const WatchPage = () => {
         setStreamReloadNonce((value) => value + 1);
         return true;
     }, [clearStreamWatchdog, currentVideo, resetVideoElement]);
+
+    const applyPlayerPrefsToVideo = useCallback(() => {
+        const video = videoRef.current;
+        if (!video) return;
+        const prefs = playerPrefsRef.current;
+        video.defaultPlaybackRate = prefs.playbackRate;
+        video.playbackRate = prefs.playbackRate;
+        video.volume = prefs.volume;
+        video.muted = prefs.isMuted || prefs.volume === 0;
+    }, []);
+
+    useEffect(() => {
+        applyPlayerPrefsToVideo();
+    }, [applyPlayerPrefsToVideo, currentVideo?.path]);
 
     const armStreamReadyWatchdog = useCallback((loadSeq, reason) => {
         clearStreamWatchdog();
@@ -656,7 +703,7 @@ const WatchPage = () => {
                     const fileId = urlMatch ? urlMatch[1] : null;
                     const token = (details.headers?.Authorization || '').replace('Bearer ', '');
 
-                    if (fileId && token) {
+                    if (fileId && (details.stream_url || token)) {
                         if (hlsInstanceRef.current) {
                             hlsInstanceRef.current.destroy();
                             hlsInstanceRef.current = null;
@@ -664,44 +711,48 @@ const WatchPage = () => {
 
                         const isHls = (currentVideo.original_name || currentVideo.name || '').toLowerCase().endsWith('.m3u8');
 
-                        // ── Cloudflare Worker URL (primary) vs old proxy (fallback) ──
-                        const cfWorkerUrl = import.meta.env.VITE_CF_WORKER_URL;
-                        const fallbackProxyPath = `/gdrive-proxy/${fileId}?alt=media&access_token=${encodeURIComponent(token)}`;
-                        const fallbackProxyUrl = import.meta.env.DEV ? fallbackProxyPath : `${BASE_URL}${fallbackProxyPath}`;
+                        // Primary stream goes through backend so GDrive token refreshes stay invisible to the player.
+                        const fallbackProxyPath = token
+                            ? `/gdrive-proxy/${fileId}?alt=media&access_token=${encodeURIComponent(token)}`
+                            : null;
+                        const fallbackProxyUrl = fallbackProxyPath
+                            ? (import.meta.env.DEV ? fallbackProxyPath : `${BASE_URL}${fallbackProxyPath}`)
+                            : null;
 
                         let streamUrl;
                         if (isHls) {
-                            // HLS: selalu lewat backend (butuh file mapping untuk rewrite manifest)
-                            const hlsPath = `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
-                            streamUrl = addStreamCacheBuster(import.meta.env.DEV ? hlsPath : `${BASE_URL}${hlsPath}`);
-                        } else if (cfWorkerUrl) {
-                            // Cloudflare Worker sebagai proxy utama
-                            streamUrl = addStreamCacheBuster(`${cfWorkerUrl.replace(/\/$/, '')}/${fileId}?token=${encodeURIComponent(token)}`);
+                            // HLS manifest is rewritten by backend to stable segment proxy URLs.
+                            const hlsUrl = details.hls_manifest_url || `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
+                            streamUrl = addStreamCacheBuster(resolveBackendUrl(hlsUrl));
+                        } else if (details.stream_url) {
+                            streamUrl = addStreamCacheBuster(resolveBackendUrl(details.stream_url));
                         } else {
-                            // Tidak ada CF Worker — gunakan proxy lama
+                            // Legacy backend response fallback.
                             streamUrl = addStreamCacheBuster(fallbackProxyUrl);
                         }
 
-                        console.log('[Player] Loading via', cfWorkerUrl && !isHls ? 'CF Worker' : 'proxy', ':', streamUrl.replace(token, '...'));
+                        console.log('[Player] Loading via backend proxy:', token ? streamUrl.replace(token, '...') : streamUrl);
 
                         /**
-                         * Helper: coba play video, kalau gagal fallback ke proxy lama.
-                         * Hanya aktif jika awalnya pakai CF Worker (bukan proxy lama).
+                         * Helper: coba play video, dengan fallback lama untuk backend lama
+                         * yang belum mengirim stream_url.
                          */
-                        const usingCfWorker = !!(cfWorkerUrl && !isHls);
+                        const usingStableBackendProxy = !!(!isHls && details.stream_url && fallbackProxyUrl);
 
                         const tryPlayWithFallback = (videoSrc) => {
                             if (!videoRef.current) return;
                             videoRef.current.src = videoSrc;
+                            applyPlayerPrefsToVideo();
                             videoRef.current.load();
-                            armStreamReadyWatchdog(loadSeq, usingCfWorker ? 'cf-worker' : 'proxy');
+                            armStreamReadyWatchdog(loadSeq, 'backend-proxy');
 
                             const onErrorFallback = () => {
-                                if (!usingCfWorker || cancelled) return;
-                                // CF Worker gagal → fallback ke proxy lama
-                                console.warn('[Player] CF Worker failed, falling back to server proxy');
+                                if (!usingStableBackendProxy || cancelled) return;
+                                // Stable proxy gagal -> fallback lama untuk kompatibilitas.
+                                console.warn('[Player] Stable backend stream failed, falling back to legacy proxy');
                                 videoRef.current.removeEventListener('error', onErrorFallback);
                                 videoRef.current.src = addStreamCacheBuster(fallbackProxyUrl);
+                                applyPlayerPrefsToVideo();
                                 videoRef.current.load();
                                 armStreamReadyWatchdog(loadSeq, 'proxy-fallback');
                                 const retryPlay = videoRef.current.play();
@@ -719,7 +770,7 @@ const WatchPage = () => {
                                 }
                             };
 
-                            if (usingCfWorker) {
+                            if (usingStableBackendProxy) {
                                 videoRef.current.addEventListener('error', onErrorFallback, { once: true });
                             }
 
@@ -752,6 +803,7 @@ const WatchPage = () => {
                             hlsInstanceRef.current = hls;
                             hls.loadSource(streamUrl);
                             hls.attachMedia(videoRef.current);
+                            applyPlayerPrefsToVideo();
                             armStreamReadyWatchdog(loadSeq, 'hls');
                             hls.on(Hls.Events.MANIFEST_PARSED, () => {
                                 const playPromise = videoRef.current.play();
@@ -819,7 +871,7 @@ const WatchPage = () => {
             }
             resetVideoElement();
         };
-    }, [addStreamCacheBuster, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, requestStreamRecovery, resetVideoElement, streamReloadNonce]);
+    }, [addStreamCacheBuster, applyPlayerPrefsToVideo, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, requestStreamRecovery, resetVideoElement, resolveBackendUrl, streamReloadNonce]);
 
     // ─── Handle Subtitle Delay/Text Changes ─────────
     useEffect(() => {
@@ -1014,11 +1066,27 @@ const WatchPage = () => {
                     break;
                 case 'ArrowUp':
                     e.preventDefault();
-                    setVolume(v => { const nv = Math.min(1, v + 0.1); video.volume = nv; return nv; });
+                    setVolume(v => {
+                        const nv = Math.min(1, v + 0.1);
+                        video.volume = nv;
+                        if (nv > 0) {
+                            video.muted = false;
+                            setIsMuted(false);
+                        }
+                        setPlayerPrefs({ volume: nv, muted: nv === 0 ? true : false });
+                        return nv;
+                    });
                     break;
                 case 'ArrowDown':
                     e.preventDefault();
-                    setVolume(v => { const nv = Math.max(0, v - 0.1); video.volume = nv; return nv; });
+                    setVolume(v => {
+                        const nv = Math.max(0, v - 0.1);
+                        video.volume = nv;
+                        video.muted = nv === 0;
+                        setIsMuted(nv === 0);
+                        setPlayerPrefs({ volume: nv, muted: nv === 0 });
+                        return nv;
+                    });
                     break;
                 case 'f':
                     toggleFullscreen();
@@ -1061,6 +1129,7 @@ const WatchPage = () => {
         if (!video) return;
         video.muted = !video.muted;
         setIsMuted(video.muted);
+        setPlayerPrefs({ muted: video.muted });
     };
 
     const toggleFullscreen = () => {
@@ -1098,8 +1167,12 @@ const WatchPage = () => {
 
     const changePlaybackRate = (rate) => {
         const video = videoRef.current;
-        if (video) video.playbackRate = rate;
+        if (video) {
+            video.defaultPlaybackRate = rate;
+            video.playbackRate = rate;
+        }
         setPlaybackRate(rate);
+        setPlayerPrefs({ playbackRate: rate });
         setShowSpeedMenu(false);
     };
 
@@ -1197,6 +1270,7 @@ const WatchPage = () => {
     const handleLoadedMetadata = () => {
         const video = videoRef.current;
         if (video) {
+            applyPlayerPrefsToVideo();
             setDuration(video.duration);
             if (pendingStreamSeekRef.current > 0 && Number.isFinite(video.duration) && video.duration > 0) {
                 const recoveryTime = Math.min(pendingStreamSeekRef.current, Math.max(0, video.duration - 1));
@@ -1240,6 +1314,7 @@ const WatchPage = () => {
     const handleCanPlay = () => {
         clearStreamWatchdog();
         setVideoLoading(false);
+        applyPlayerPrefsToVideo();
         // If the browser natively paused it despite autoPlay (e.g. low power mode), we can try one more time securely.
         const video = videoRef.current;
         if (video && video.paused && !isPlaying) {
@@ -1344,6 +1419,7 @@ const WatchPage = () => {
                             onLoadedData={() => {
                                 clearStreamWatchdog();
                                 setVideoLoading(false);
+                                applyPlayerPrefsToVideo();
                                 syncAudioTracksFromVideo();
                             }}
                             onError={handleVideoError}
@@ -1352,6 +1428,7 @@ const WatchPage = () => {
                             onCanPlayThrough={() => {
                                 clearStreamWatchdog();
                                 setVideoLoading(false);
+                                applyPlayerPrefsToVideo();
                             }}
                             onEnded={playNextEpisode}
                             onClick={handleVideoClick}
@@ -1770,6 +1847,7 @@ const WatchPage = () => {
                                                     setVolume(v);
                                                     if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0; }
                                                     setIsMuted(v === 0);
+                                                    setPlayerPrefs({ volume: v, muted: v === 0 });
                                                 }}
                                                 className="w-0 group-hover/vol:w-20 transition-all duration-300 accent-[#00dc41] h-1.5 rounded-full cursor-pointer opacity-0 group-hover/vol:opacity-100"
                                             />

@@ -83,7 +83,7 @@ export const mergeDetailMetadata = (catalogItem, tmdbData, decodedName, urlType)
     tmdb_title: item.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || item.name || item.folder_name || decodedName,
     title: item.tmdb_title || tmdbData?.title || tmdbData?.tmdb_title || item.name || item.folder_name || decodedName,
     poster_path: item.tmdb_poster_path || item.poster_path || item.poster || tmdbData?.poster_path,
-    backdrop_path: item.tmdb_backdrop_path || item.backdrop_path || tmdbData?.backdrop_path || item.tmdb_poster_path || item.poster_path || item.poster,
+    backdrop_path: item.tmdb_backdrop_path || item.backdrop_path || tmdbData?.backdrop_path,
     rating: item.tmdb_rating ?? tmdbData?.rating,
     overview: item.tmdb_overview || tmdbData?.overview,
     genre_ids: genreIds,

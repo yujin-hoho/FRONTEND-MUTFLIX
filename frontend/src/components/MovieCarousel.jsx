@@ -138,7 +138,8 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       }
       const episodeKey = `${s || 1}_${ep || 1}`;
       const fallbackTitle = firstText(item.series_title, item.folder_name, item.name, item.media_title);
-      const fallbackImage = firstText(item.still_path, item.tmdb_backdrop_path, item.backdrop_path, item.tmdb_poster_path, item.poster_path, item.poster);
+      const fallbackBackdrop = firstText(item.tmdb_backdrop_path, item.backdrop_path, tmdbData?.backdrop_path);
+      const fallbackPoster = firstText(item.tmdb_poster_path, item.poster_path, item.poster, tmdbData?.poster_path);
       navigate(targetUrl, {
         state: {
           watchMeta: {
@@ -146,13 +147,13 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
               media_type: type === 'movie' ? 'movie' : 'tv',
               tmdb_title: fallbackTitle,
               title: fallbackTitle,
-              backdrop_path: fallbackImage,
-              poster_path: fallbackImage,
+              backdrop_path: fallbackBackdrop,
+              poster_path: fallbackPoster,
             },
             episodeData: {
               [episodeKey]: {
                 name: firstText(item.media_title, item.name),
-                still_path: firstText(item.still_path, fallbackImage),
+                still_path: firstText(item.still_path, fallbackBackdrop),
               },
             },
           },
