@@ -276,11 +276,12 @@ const Dashboard = () => {
   }, []);
 
   // Phase 2: TMDB enrichment
-  const enrichWithTMDB = useCallback(async (items, currentFetchId) => {
+  const enrichWithTMDB = useCallback(async (items, currentFetchId, onLightProgress) => {
     const resolvedItems = [...items]; // Copy so we can update in-place
     const TMDB_LIGHT_LIMIT = 72;
     const TMDB_CAST_LIMIT = 16;
     const TMDB_CONCURRENCY = 6;
+    let lightResolvedCount = 0;
 
     const enrichPriority = (it) => {
       if (it.tmdb_query) return -1;
@@ -325,10 +326,20 @@ const Dashboard = () => {
         resolvedItems[idx] = resolvedItem;
       } catch {
         /* keep original item */
+      } finally {
+        lightResolvedCount += 1;
+        if (
+          fetchIdRef.current === currentFetchId &&
+          typeof onLightProgress === 'function' &&
+          (lightResolvedCount % 12 === 0 || lightResolvedCount === lightIndices.length)
+        ) {
+          onLightProgress([...resolvedItems]);
+        }
       }
     });
 
     if (fetchIdRef.current !== currentFetchId) return null;
+    if (typeof onLightProgress === 'function') onLightProgress([...resolvedItems]);
 
     const castIndices = candidateIndices
       .filter((idx) => {
@@ -440,18 +451,21 @@ const Dashboard = () => {
 
       if (fetchIdRef.current !== currentFetchId) return;
 
-      // Paint cepat: data folder + history — tanpa tunggu ratusan panggilan TMDB
-      const cwList = await historyPromise;
-      if (fetchIdRef.current !== currentFetchId) return;
-
+      // Paint cepat: data folder dulu, tanpa tunggu history atau ratusan panggilan TMDB.
       setFeaturedList(shuffledData.slice(0, 6));
       setGenreSections(buildSections(shuffledData));
-      setContinueWatching(cwList);
+      setContinueWatching([]);
       setCelebrities([]);
       // Preload banner/posters immediately on phase 1.
       // This prevents HeroBanner background from staying blank until phase 2 enrichment completes.
-      preloadDashboardImages(shuffledData, cwList, []);
+      preloadDashboardImages(shuffledData, [], []);
       setLoading(false);
+
+      historyPromise.then((cwList) => {
+        if (fetchIdRef.current !== currentFetchId) return;
+        setContinueWatching(cwList);
+        preloadDashboardImages(shuffledData, cwList, []);
+      }).catch(() => { /* keep dashboard visible */ });
 
       if (authUser) {
         void (async () => {
@@ -473,14 +487,19 @@ const Dashboard = () => {
         setFeaturedList(featuredQuick.slice(0, 6));
       });
 
-      const enrichResult = await enrichWithTMDB(shuffledData, currentFetchId);
+      const enrichResult = await enrichWithTMDB(shuffledData, currentFetchId, (partialItems) => {
+        if (fetchIdRef.current !== currentFetchId) return;
+        setGenreSections(buildSections(partialItems));
+      });
       if (fetchIdRef.current !== currentFetchId) return;
       if (!enrichResult) return;
 
       setCelebrities(enrichResult.topActors);
       setFeaturedList(enrichResult.resolvedItems.slice(0, 6));
       setGenreSections(buildSections(enrichResult.resolvedItems));
-      preloadDashboardImages(enrichResult.resolvedItems, cwList, enrichResult.topActors);
+      historyPromise
+        .then((cwList) => preloadDashboardImages(enrichResult.resolvedItems, cwList, enrichResult.topActors))
+        .catch(() => preloadDashboardImages(enrichResult.resolvedItems, [], enrichResult.topActors));
 
     } catch (error) {
       console.error("Error loading dashboard data:", error);

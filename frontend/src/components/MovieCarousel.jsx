@@ -239,7 +239,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
     : (item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path);
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
   const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : EPISODE_PLACEHOLDER_IMAGE;
-  const shouldLoadMedia = !!rawPoster || (isNearViewport && !posterFadeIn);
+  const shouldLoadMedia = !!rawPoster || !posterFadeIn || !posterPath || isNearViewport;
   const posterLoaded = !posterFadeIn || !rawPoster || loadedPosterSrc === poster;
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
