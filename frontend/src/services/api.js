@@ -886,6 +886,7 @@ export const fetchHistory = async (profileId, options = {}) => {
     try {
         const params = new URLSearchParams();
         if (options.activeOnly) params.set('active_only', 'true');
+        if (options.includeHidden) params.set('include_hidden', 'true');
         if (options.limit) params.set('limit', String(options.limit));
         const qs = params.toString();
         const res = await fetch(`${BASE_URL}/api/history/get/${profileId}${qs ? `?${qs}` : ''}`, {
@@ -925,6 +926,24 @@ export const saveHistory = async (profile_id, media_path, media_title, series_ti
         return true;
     } catch (error) {
         console.error("Error saving history:", error);
+        return false;
+    }
+};
+
+export const hideHistory = async (profile_id, media_path) => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/history/hide`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            },
+            body: JSON.stringify({ profile_id, media_path })
+        });
+        if (!res.ok) return false;
+        return true;
+    } catch (error) {
+        console.error("Error hiding history:", error);
         return false;
     }
 };

@@ -8,6 +8,7 @@ import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 import { findCatalogItemForDetail, mergeDetailMetadata, tmdbOptsFromCatalogItem } from '../utils/detailMetadata';
+import { EPISODE_PLACEHOLDER_IMAGE } from '../utils/placeholders';
 
 const ContentDetail = () => {
   const { folderName } = useParams();
@@ -151,15 +152,15 @@ const ContentDetail = () => {
             const pid = profileId || profiles[0].id;
             if (!profileId) setProfileId(pid);
 
-            const [allHistories, mylistData] = await Promise.all([
-              Promise.all(profiles.map(p => fetchHistory(p.id))),
+            const [profileHistory, mylistData] = await Promise.all([
+              fetchHistory(pid),
               fetchMyList(pid)
             ]);
 
             if (!isMounted) return;
 
             // Mapping History
-            const flatHistory = allHistories.flat();
+            const flatHistory = profileHistory;
             const newHistoryMap = {};
             // Newer history should overwrite older items
             flatHistory.sort((a, b) => new Date(a.last_watched) - new Date(b.last_watched));
@@ -193,6 +194,14 @@ const ContentDetail = () => {
     loadData();
     return () => { isMounted = false; };
   }, [decodedName, urlType, authUser, profileId, navigationDetailItem, initialDetailMetadata]);
+
+  useEffect(() => {
+    const onProfileChange = (event) => {
+      if (event.detail?.id) setProfileId(event.detail.id);
+    };
+    window.addEventListener('mutflix-profile-change', onProfileChange);
+    return () => window.removeEventListener('mutflix-profile-change', onProfileChange);
+  }, []);
 
   // Lazy-load episode stills + episode names per selected season.
   useEffect(() => {
@@ -280,11 +289,6 @@ const ContentDetail = () => {
     normalizeImageUrl(tmdbData?.backdrop_path, 'w1280') ||
     normalizeImageUrl(tmdbData?.poster_path, 'w780') ||
     'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
-
-  const episodeFallbackBackdropPath =
-    normalizeImageUrl(tmdbData?.backdrop_path, 'w500') ||
-    normalizeImageUrl(tmdbData?.tmdb_backdrop_path, 'w500') ||
-    'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1200&auto=format&fit=crop';
 
   const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];
 
@@ -494,7 +498,6 @@ const ContentDetail = () => {
                       key={video.path || `${video.season}_${video.episode}_${idx}`}
                       video={video}
                       index={idx}
-                      backdropFallback={episodeFallbackBackdropPath}
                       tmdbData={epData}
                       progress={historyMap[video.path]?.progress}
                       onPlay={() => {
@@ -544,11 +547,11 @@ const ContentDetail = () => {
 };
 
 /* ====== Episode Card ====== */
-const EpisodeCard = ({ video, index, backdropFallback, tmdbData, onPlay, progress }) => {
+const EpisodeCard = ({ video, index, tmdbData, onPlay, progress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const episodeNum = video.episode || index + 1;
   const name = tmdbData?.name || video.name || `Episode ${episodeNum}`;
-  const imageToUse = tmdbData?.still_path || backdropFallback;
+  const imageToUse = tmdbData?.still_path || EPISODE_PLACEHOLDER_IMAGE;
 
   return (
     <div

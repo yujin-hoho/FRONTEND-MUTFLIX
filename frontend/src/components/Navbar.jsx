@@ -1,7 +1,7 @@
-import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle, ChevronDown } from 'lucide-react';
+import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle, ChevronDown, Plus, Check } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { searchContent, getTMDBInfo } from '../services/api';
+import { searchContent, getTMDBInfo, fetchProfiles, createProfile } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 import { createDetailNavigationState } from '../utils/detailMetadata';
@@ -16,14 +16,28 @@ const MORE_GENRE_LINKS = [
   { label: 'Variety Show', value: 'Variety Show' },
 ];
 
-const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
+const profileInitial = (profile) => (profile?.name || 'P').trim().slice(0, 1).toUpperCase();
+const profileColor = (seed = '') => {
+  const colors = ['#00dc41', '#38bdf8', '#f59e0b', '#ec4899', '#a78bfa', '#f97316'];
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash + seed.charCodeAt(i) * (i + 1)) % colors.length;
+  return colors[hash];
+};
+
+const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) => {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profiles, setProfiles] = useState([]);
+  const [activeProfileId, setActiveProfileId] = useState(() => localStorage.getItem('mutflix_last_profile_id') || '');
+  const [newProfileName, setNewProfileName] = useState('');
+  const [isCreatingProfile, setIsCreatingProfile] = useState(false);
   const moreWrapRef = useRef(null);
+  const profileWrapRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -103,10 +117,71 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
   useEffect(() => {
     const onDoc = (e) => {
       if (moreWrapRef.current && !moreWrapRef.current.contains(e.target)) setMoreOpen(false);
+      if (profileWrapRef.current && !profileWrapRef.current.contains(e.target)) setProfileOpen(false);
     };
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, []);
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setProfiles([]);
+      setActiveProfileId('');
+      setProfileOpen(false);
+      return;
+    }
+
+    let cancelled = false;
+    const loadProfiles = async () => {
+      const data = await fetchProfiles();
+      if (cancelled) return;
+
+      setProfiles(data);
+      const savedId = localStorage.getItem('mutflix_last_profile_id');
+      const active = data.find((p) => p.id === savedId) || data[0];
+      if (active) {
+        if (active.id !== savedId) {
+          localStorage.setItem('mutflix_last_profile_id', active.id);
+          onProfileChange?.(active);
+          window.dispatchEvent(new CustomEvent('mutflix-profile-change', { detail: active }));
+        }
+        setActiveProfileId(active.id);
+      }
+    };
+
+    loadProfiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn, onProfileChange]);
+
+  const selectProfile = (profile) => {
+    localStorage.setItem('mutflix_last_profile_id', profile.id);
+    setActiveProfileId(profile.id);
+    setProfileOpen(false);
+    onProfileChange?.(profile);
+    window.dispatchEvent(new CustomEvent('mutflix-profile-change', { detail: profile }));
+  };
+
+  const handleCreateProfile = async (e) => {
+    e.preventDefault();
+    const name = newProfileName.trim();
+    if (!name || isCreatingProfile) return;
+
+    setIsCreatingProfile(true);
+    const id = `web_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const avatarSeed = name.toLowerCase().replace(/\s+/g, '-') || 'web-user';
+    const success = await createProfile(id, name, avatarSeed);
+    setIsCreatingProfile(false);
+    if (!success) return;
+
+    const profile = { id, name, avatar_seed: avatarSeed };
+    setProfiles((prev) => [...prev, profile]);
+    setNewProfileName('');
+    selectProfile(profile);
+  };
+
+  const activeProfile = profiles.find((p) => p.id === activeProfileId);
 
   const forYouActive = location.pathname === '/dashboard';
 
@@ -307,9 +382,78 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout }) => {
 
         {isLoggedIn ? (
           <div className="flex items-center gap-3">
-            <div className="flex flex-col items-center cursor-pointer hover:text-brand transition group" onClick={onMeClick}>
-              <User className="w-5 h-5 mb-0.5 text-brand" />
-              <span className="hidden lg:block text-brand">{username}</span>
+            <div className="relative" ref={profileWrapRef}>
+              <button
+                type="button"
+                className="flex flex-col items-center cursor-pointer hover:text-brand transition group"
+                onClick={() => setProfileOpen((open) => !open)}
+              >
+                <div
+                  className="w-5 h-5 mb-0.5 rounded-full text-[11px] font-black text-black flex items-center justify-center ring-1 ring-white/20"
+                  style={{ backgroundColor: profileColor(activeProfile?.avatar_seed || activeProfile?.id || username || '') }}
+                >
+                  {activeProfile ? profileInitial(activeProfile) : <User className="w-3.5 h-3.5" />}
+                </div>
+                <span className="hidden lg:block text-brand max-w-24 truncate">{activeProfile?.name || username}</span>
+              </button>
+
+              {profileOpen && (
+                <div className="absolute right-0 top-[calc(100%+12px)] w-[260px] bg-[#17191f] border border-white/10 shadow-2xl rounded-lg p-2 z-[120] animate-slide-up">
+                  <div className="px-2 py-2 text-[12px] text-gray-500 font-bold uppercase tracking-wide">Profiles</div>
+
+                  <div className="flex flex-col gap-1 max-h-[260px] overflow-y-auto no-scrollbar">
+                    {profiles.map((profile) => {
+                      const selected = profile.id === activeProfileId;
+                      return (
+                        <button
+                          key={profile.id}
+                          type="button"
+                          onClick={() => selectProfile(profile)}
+                          className="w-full flex items-center gap-3 px-2 py-2 rounded-md text-left hover:bg-white/5 transition"
+                        >
+                          <span
+                            className="w-8 h-8 rounded-full text-[13px] font-black text-black flex items-center justify-center shrink-0"
+                            style={{ backgroundColor: profileColor(profile.avatar_seed || profile.id) }}
+                          >
+                            {profileInitial(profile)}
+                          </span>
+                          <span className="flex-1 min-w-0 text-[14px] font-semibold text-white truncate">{profile.name}</span>
+                          {selected && <Check size={16} className="text-[#00dc41] shrink-0" strokeWidth={3} />}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <form onSubmit={handleCreateProfile} className="mt-2 pt-2 border-t border-white/10 flex items-center gap-2">
+                    <input
+                      value={newProfileName}
+                      onChange={(e) => setNewProfileName(e.target.value)}
+                      placeholder="New profile"
+                      maxLength={24}
+                      className="flex-1 min-w-0 bg-black/30 border border-white/10 rounded-md px-3 py-2 text-[13px] text-white placeholder:text-gray-500 outline-none focus:border-[#00dc41]/60"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!newProfileName.trim() || isCreatingProfile}
+                      className="w-9 h-9 rounded-md bg-[#00dc41] text-black flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition"
+                      title="Add profile"
+                    >
+                      <Plus size={18} strokeWidth={3} />
+                    </button>
+                  </form>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProfileOpen(false);
+                      onMeClick?.();
+                    }}
+                    className="mt-2 w-full text-left px-2 py-2 rounded-md text-[13px] text-gray-400 hover:text-white hover:bg-white/5 transition"
+                  >
+                    Account
+                  </button>
+                </div>
+              )}
             </div>
             <div className="flex flex-col items-center cursor-pointer hover:text-red-400 transition group" onClick={onLogout}>
               <LogOut className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-red-400" />

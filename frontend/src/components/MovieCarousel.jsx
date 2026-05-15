@@ -6,6 +6,7 @@ import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute, preloadWatchPageRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 import { createDetailNavigationState } from '../utils/detailMetadata';
+import { EPISODE_PLACEHOLDER_IMAGE } from '../utils/placeholders';
 
 const tmdbOptsFromItem = (item) => {
   if (!item?.tmdb_query) return {};
@@ -109,6 +110,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
   const tmdbImageUrl = (path, size = 'w500') => {
     if (!path || typeof path !== 'string') return '';
     if (path.startsWith('http')) return path;
+    if (path === EPISODE_PLACEHOLDER_IMAGE) return path;
     const p = path.startsWith('/') ? path : `/${path}`;
     return `https://image.tmdb.org/t/p/${size}${p}`;
   };
@@ -138,7 +140,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       }
       const episodeKey = `${s || 1}_${ep || 1}`;
       const fallbackTitle = firstText(item.series_title, item.folder_name, item.name, item.media_title);
-      const fallbackBackdrop = firstText(item.tmdb_backdrop_path, item.backdrop_path, tmdbData?.backdrop_path);
+      const fallbackBackdrop = firstText(item.still_path, item.tmdb_backdrop_path, item.backdrop_path, tmdbData?.backdrop_path);
       const fallbackPoster = firstText(item.tmdb_poster_path, item.poster_path, item.poster, tmdbData?.poster_path);
       navigate(targetUrl, {
         state: {
@@ -153,7 +155,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
             episodeData: {
               [episodeKey]: {
                 name: firstText(item.media_title, item.name),
-                still_path: firstText(item.still_path, fallbackBackdrop),
+                still_path: firstText(item.still_path, EPISODE_PLACEHOLDER_IMAGE),
               },
             },
           },
@@ -220,9 +222,9 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
     };
   }, [isNearViewport, tmdbFetchSignature, item, isContinueWatching, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
 
-  const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path;
+  const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || (isContinueWatching ? EPISODE_PLACEHOLDER_IMAGE : null) || tmdbData?.poster_path || tmdbData?.backdrop_path;
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
-  const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : 'https://images.unsplash.com/photo-1485846234645-a62644f84728?q=80&w=1200&auto=format&fit=crop';
+  const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : EPISODE_PLACEHOLDER_IMAGE;
   const shouldLoadMedia = !!rawPoster || (isNearViewport && !posterFadeIn);
   const posterLoaded = !posterFadeIn || !rawPoster || loadedPosterSrc === poster;
 

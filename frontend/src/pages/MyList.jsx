@@ -121,6 +121,14 @@ const MyList = () => {
         loadData();
     }, [loadData]);
 
+    useEffect(() => {
+        const onProfileChange = (event) => {
+            if (event.detail?.id) setProfileId(event.detail.id);
+        };
+        window.addEventListener('mutflix-profile-change', onProfileChange);
+        return () => window.removeEventListener('mutflix-profile-change', onProfileChange);
+    }, []);
+
     const handleRemove = async (folderName) => {
         if (!profileId) return;
         const success = await removeFromMyList(profileId, folderName);

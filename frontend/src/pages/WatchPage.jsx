@@ -22,12 +22,14 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
+import { EPISODE_PLACEHOLDER_IMAGE } from '../utils/placeholders';
 
 /** Stored delay: negative = tunda (subtitle lebih lambat), positive = percepat (lebih cepat). */
 const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 const LOCAL_RESUME_KEY = 'mutflix_resume_positions';
+const WATCH_SESSION_KEY = 'mutflix_watch_sessions';
 const PLAYER_PREFS_KEY = 'mutflix_player_prefs';
 const MIN_RESUME_POSITION_MS = 5000;
 const RECENT_LOCAL_RESUME_MS = 10 * 60 * 1000;
@@ -36,7 +38,25 @@ const STREAM_READY_TIMEOUT_MS = 12000;
 const normalizeTmdbImageUrl = (path, size = 'w300') => {
     if (!path || typeof path !== 'string') return null;
     if (path.startsWith('http')) return path;
+    if (path === EPISODE_PLACEHOLDER_IMAGE) return path;
     return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
+};
+
+const pruneVolatileLocalStorage = () => {
+    try {
+        const removablePrefixes = [
+            'mutflix_tmdb_info_',
+            'mutflix_tmdb_credits_',
+            'mutflix_tmdb_season_',
+        ];
+        Object.keys(localStorage).forEach((key) => {
+            if (removablePrefixes.some((prefix) => key.startsWith(prefix))) {
+                localStorage.removeItem(key);
+            }
+        });
+    } catch {
+        // ignore storage cleanup failures
+    }
 };
 
 const getLocalResumeMap = () => {
@@ -45,6 +65,7 @@ const getLocalResumeMap = () => {
         const parsed = raw ? JSON.parse(raw) : {};
         return parsed && typeof parsed === 'object' ? parsed : {};
     } catch {
+        try { localStorage.removeItem(LOCAL_RESUME_KEY); } catch { /* ignore storage cleanup failures */ }
         return {};
     }
 };
@@ -58,9 +79,49 @@ const setLocalResumeForPath = (mediaPath, positionMs, durationMs) => {
             duration_ms: Number(durationMs) || 0,
             ts: Date.now(),
         };
-        localStorage.setItem(LOCAL_RESUME_KEY, JSON.stringify(map));
+        const entries = Object.entries(map)
+            .sort(([, a], [, b]) => (Number(b?.ts) || 0) - (Number(a?.ts) || 0))
+            .slice(0, 100);
+        localStorage.setItem(LOCAL_RESUME_KEY, JSON.stringify(Object.fromEntries(entries)));
     } catch {
-        // ignore local cache write failures
+        pruneVolatileLocalStorage();
+    }
+};
+
+const getWatchSessionMap = () => {
+    try {
+        const raw = localStorage.getItem(WATCH_SESSION_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        try { localStorage.removeItem(WATCH_SESSION_KEY); } catch { /* ignore storage cleanup failures */ }
+        return {};
+    }
+};
+
+const getWatchSessionForFolder = (folderKey) => {
+    if (!folderKey) return null;
+    return getWatchSessionMap()[folderKey] || null;
+};
+
+const setWatchSessionForFolder = (folderKey, video, positionMs = 0, durationMs = 0) => {
+    if (!folderKey || !video?.path) return;
+    try {
+        const map = getWatchSessionMap();
+        map[folderKey] = {
+            media_path: video.path,
+            season: Number(video.season) || 1,
+            episode: Number(video.episode) || 1,
+            position_ms: Number(positionMs) || 0,
+            duration_ms: Number(durationMs) || 0,
+            ts: Date.now(),
+        };
+        const entries = Object.entries(map)
+            .sort(([, a], [, b]) => (Number(b?.ts) || 0) - (Number(a?.ts) || 0))
+            .slice(0, 50);
+        localStorage.setItem(WATCH_SESSION_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch {
+        pruneVolatileLocalStorage();
     }
 };
 
@@ -77,6 +138,7 @@ const getPlayerPrefs = () => {
             muted: typeof parsed.muted === 'boolean' ? parsed.muted : defaults.muted,
         };
     } catch {
+        try { localStorage.removeItem(PLAYER_PREFS_KEY); } catch { /* ignore storage cleanup failures */ }
         return defaults;
     }
 };
@@ -85,7 +147,7 @@ const setPlayerPrefs = (patch) => {
     try {
         localStorage.setItem(PLAYER_PREFS_KEY, JSON.stringify({ ...getPlayerPrefs(), ...patch }));
     } catch {
-        // ignore preference write failures
+        pruneVolatileLocalStorage();
     }
 };
 
@@ -95,6 +157,7 @@ const WatchPage = () => {
     const location = useLocation();
     const decodedName = decodeURIComponent(folderName);
     const urlType = searchParams.get('type');
+    const hasEpisodeQuery = searchParams.has('ep') || searchParams.has('s');
     const urlEp = parseInt(searchParams.get('ep')) || 1;
     const urlSeason = parseInt(searchParams.get('s')) || 1;
     const urlTime = parseInt(searchParams.get('t'));
@@ -188,15 +251,21 @@ const WatchPage = () => {
                 delayConvention: SUB_DELAY_UI_CONVENTION
             };
         } catch {
+            try { localStorage.removeItem('mutflix_sub_settings'); } catch { /* ignore storage cleanup failures */ }
             return { ...defaults, delayConvention: SUB_DELAY_UI_CONVENTION };
         }
     });
 
     useEffect(() => {
-        localStorage.setItem(
-            'mutflix_sub_settings',
-            JSON.stringify({ ...subSettings, delayConvention: SUB_DELAY_UI_CONVENTION })
-        );
+        try {
+            localStorage.setItem(
+                'mutflix_sub_settings',
+                JSON.stringify({ ...subSettings, delayConvention: SUB_DELAY_UI_CONVENTION })
+            );
+        } catch {
+            pruneVolatileLocalStorage();
+            // Storage can be full/corrupt; subtitle UI should not crash playback.
+        }
     }, [subSettings]);
 
     const handleLoginSuccess = (data) => {
@@ -225,6 +294,7 @@ const WatchPage = () => {
     const streamRecoveryRef = useRef({ videoPath: null, attempts: 0, lastAt: 0 });
     const streamLoadSeqRef = useRef(0);
     const streamReadyWatchdogRef = useRef(null);
+    const autoplayMutedRef = useRef(false);
     const [resumeTime, setResumeTime] = useState(0);
     const hasSeekedRef = useRef(false);
     const [, setShowResumeToast] = useState(null);
@@ -255,14 +325,8 @@ const WatchPage = () => {
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
     const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
     const episodeFallbackThumb = useMemo(() => {
-        const raw =
-            tmdbData?.backdrop_path ||
-            tmdbData?.tmdb_backdrop_path ||
-            null;
-        if (!raw) return null;
-        if (raw.startsWith('http')) return raw;
-        return `https://image.tmdb.org/t/p/w500${raw.startsWith('/') ? raw : `/${raw}`}`;
-    }, [tmdbData]);
+        return isSeriesContent ? EPISODE_PLACEHOLDER_IMAGE : null;
+    }, [isSeriesContent]);
 
     const createImmediateEpisodeData = useCallback((videosList, seededEpisodeData = {}) => {
         const dataMap = { ...seededEpisodeData };
@@ -314,13 +378,30 @@ const WatchPage = () => {
                 setVideos(videosList);
                 setEpisodeData((prev) => createImmediateEpisodeData(videosList, { ...navigationEpisodeData, ...prev }));
 
-                const targetVideo = videosList.find(v =>
+                const session = getWatchSessionForFolder(decodedName);
+                const sessionVideo = session
+                    ? (session.media_path
+                        ? videosList.find(v => v.path === session.media_path)
+                        : videosList.find(v =>
+                        (v.season || 1) === (Number(session?.season) || 1) &&
+                        (v.episode || 1) === (Number(session?.episode) || 1)
+                    ))
+                    : null;
+                const queryVideo = videosList.find(v =>
                     (v.season || 1) === urlSeason && (v.episode || 1) === urlEp
-                ) || videosList[0];
+                );
+                const targetVideo = (hasEpisodeQuery ? queryVideo : sessionVideo) || queryVideo || sessionVideo || videosList[0];
 
                 if (targetVideo) {
                     setCurrentVideo(targetVideo);
                     setActiveSeason(targetVideo.season || 1);
+                    const isSameSessionVideo = session?.media_path && session.media_path === targetVideo.path;
+                    setWatchSessionForFolder(
+                        decodedName,
+                        targetVideo,
+                        isSameSessionVideo ? Number(session?.position_ms) || 0 : 0,
+                        isSameSessionVideo ? Number(session?.duration_ms) || 0 : 0
+                    );
                 }
 
                 // Biarkan pemutar & stream mulai lebih dulu — kredit & still episode di background
@@ -354,7 +435,7 @@ const WatchPage = () => {
         };
         loadData();
         return () => { cancelled = true; };
-    }, [decodedName, urlType, urlSeason, urlEp, navigationWatchMeta, createImmediateEpisodeData]);
+    }, [decodedName, urlType, urlSeason, urlEp, hasEpisodeQuery, navigationWatchMeta, createImmediateEpisodeData]);
 
     // Lazy-load TMDB episode stills + episode names per season tab.
     useEffect(() => {
@@ -408,6 +489,14 @@ const WatchPage = () => {
         setupProfile();
     }, [authUser, profileId]);
 
+    useEffect(() => {
+        const onProfileChange = (event) => {
+            if (event.detail?.id) setProfileId(event.detail.id);
+        };
+        window.addEventListener('mutflix-profile-change', onProfileChange);
+        return () => window.removeEventListener('mutflix-profile-change', onProfileChange);
+    }, []);
+
     // ─── Save History logic ─────────────────────────
     const cacheCurrentResume = useCallback((timeSeconds = null) => {
         if (!currentVideo || !videoRef.current) return;
@@ -425,7 +514,8 @@ const WatchPage = () => {
         const durationMs = Math.floor(durationSeconds * 1000);
         if (resumeTime > 0 && !hasSeekedRef.current && positionMs < MIN_RESUME_POSITION_MS) return;
         setLocalResumeForPath(currentVideo.path, positionMs, durationMs);
-    }, [currentVideo, duration, resumeTime]);
+        setWatchSessionForFolder(decodedName, currentVideo, positionMs, durationMs);
+    }, [currentVideo, decodedName, duration, resumeTime]);
 
     const triggerSaveHistory = useCallback(async () => {
         if (!profileId || !currentVideo || !videoRef.current) return;
@@ -454,13 +544,15 @@ const WatchPage = () => {
 
     // ─── Fetch Resume Position ─────────────────────
     useEffect(() => {
-        if (!profileId || !currentVideo) return;
+        if (!currentVideo) return;
 
         let hasLocalResume = false;
         let localResumeTs = 0;
+        let cancelled = false;
+        const numericUrlTime = Number(urlTime);
 
-        if (urlTime && !hasSeekedRef.current) {
-            setResumeTime(urlTime);
+        if (Number.isFinite(numericUrlTime) && numericUrlTime > 0 && !hasSeekedRef.current) {
+            setResumeTime(numericUrlTime);
             // Instant local seek hint override
         } else {
             const localMap = getLocalResumeMap();
@@ -481,8 +573,13 @@ const WatchPage = () => {
             }
         }
 
+        if (!profileId) {
+            return () => { cancelled = true; };
+        }
+
         const fetchResumePosition = async () => {
             const history = await fetchHistory(profileId);
+            if (cancelled) return;
             const entry = history.find(h => h.media_path === currentVideo.path);
             if (entry && entry.position_ms >= MIN_RESUME_POSITION_MS) {
                 const progress = (entry.position_ms / entry.duration_ms) * 100;
@@ -490,24 +587,26 @@ const WatchPage = () => {
                     const serverResumeTs = Date.parse(entry.last_watched || '') || 0;
                     const hasRecentLocalResume = localResumeTs > 0 && Date.now() - localResumeTs < RECENT_LOCAL_RESUME_MS;
                     const localResumeIsNewer = localResumeTs > 0 && (!serverResumeTs || localResumeTs >= serverResumeTs);
-                    if (!urlTime && hasLocalResume && (hasRecentLocalResume || localResumeIsNewer)) return;
+                    if (!numericUrlTime && hasLocalResume && (hasRecentLocalResume || localResumeIsNewer)) return;
 
-                    if (!urlTime) setResumeTime(entry.position_ms / 1000);
+                    if (!numericUrlTime) setResumeTime(entry.position_ms / 1000);
                     setLocalResumeForPath(entry.media_path, entry.position_ms, entry.duration_ms);
+                    setWatchSessionForFolder(decodedName, currentVideo, entry.position_ms, entry.duration_ms);
                 } else {
                     const serverResumeTs = Date.parse(entry.last_watched || '') || 0;
                     const hasRecentLocalResume = localResumeTs > 0 && Date.now() - localResumeTs < RECENT_LOCAL_RESUME_MS;
                     const localResumeIsNewer = localResumeTs > 0 && (!serverResumeTs || localResumeTs >= serverResumeTs);
-                    if (!urlTime && hasLocalResume && (hasRecentLocalResume || localResumeIsNewer)) return;
+                    if (!numericUrlTime && hasLocalResume && (hasRecentLocalResume || localResumeIsNewer)) return;
 
-                    if (!urlTime) setResumeTime(0);
+                    if (!numericUrlTime) setResumeTime(0);
                 }
             } else {
-                if (!urlTime && !hasLocalResume) setResumeTime(0);
+                if (!numericUrlTime && !hasLocalResume) setResumeTime(0);
             }
         };
         fetchResumePosition();
-    }, [profileId, currentVideo, urlTime]);
+        return () => { cancelled = true; };
+    }, [profileId, currentVideo, decodedName, urlTime]);
 
     // ─── Auto-Seek Logic ────────────────────────────
     useEffect(() => {
@@ -590,6 +689,7 @@ const WatchPage = () => {
 
     const addStreamCacheBuster = useCallback((url) => {
         if (!url) return url;
+        if (streamReloadNonce <= 0) return url;
         const separator = url.includes('?') ? '&' : '?';
         return `${url}${separator}_=${Date.now()}_${streamReloadNonce}`;
     }, [streamReloadNonce]);
@@ -635,7 +735,46 @@ const WatchPage = () => {
         video.defaultPlaybackRate = prefs.playbackRate;
         video.playbackRate = prefs.playbackRate;
         video.volume = prefs.volume;
-        video.muted = prefs.isMuted || prefs.volume === 0;
+        video.muted = autoplayMutedRef.current || prefs.isMuted || prefs.volume === 0;
+    }, []);
+
+    const restoreSoundAfterUserGesture = useCallback(() => {
+        const video = videoRef.current;
+        const prefs = playerPrefsRef.current;
+        if (!video || !autoplayMutedRef.current || prefs.isMuted || prefs.volume === 0) return false;
+
+        autoplayMutedRef.current = false;
+        video.volume = prefs.volume;
+        video.muted = false;
+        setIsMuted(false);
+        return true;
+    }, []);
+
+    const playWithAutoplayFallback = useCallback((reason = 'play') => {
+        const video = videoRef.current;
+        if (!video) return;
+        const playPromise = video.play();
+        if (playPromise === undefined) return;
+
+        playPromise.catch((error) => {
+            console.warn(`${reason} prevented by browser:`, error);
+            const current = videoRef.current;
+            if (!current) {
+                setVideoLoading(false);
+                return;
+            }
+
+            const prefs = playerPrefsRef.current;
+            if (prefs.volume > 0 && !prefs.isMuted) {
+                autoplayMutedRef.current = true;
+                current.muted = true;
+                setIsMuted(true);
+                current.play().catch(() => setVideoLoading(false));
+                return;
+            }
+
+            setVideoLoading(false);
+        });
     }, []);
 
     useEffect(() => {
@@ -755,38 +894,14 @@ const WatchPage = () => {
                                 applyPlayerPrefsToVideo();
                                 videoRef.current.load();
                                 armStreamReadyWatchdog(loadSeq, 'proxy-fallback');
-                                const retryPlay = videoRef.current.play();
-                                if (retryPlay !== undefined) {
-                                    retryPlay.catch(e2 => {
-                                        console.warn('Fallback autoplay prevented:', e2);
-                                        try {
-                                            if (videoRef.current) {
-                                                videoRef.current.muted = true;
-                                                setIsMuted(true);
-                                                videoRef.current.play().catch(() => setVideoLoading(false));
-                                            }
-                                        } catch { setVideoLoading(false); }
-                                    });
-                                }
+                                playWithAutoplayFallback('Fallback autoplay');
                             };
 
                             if (usingStableBackendProxy) {
                                 videoRef.current.addEventListener('error', onErrorFallback, { once: true });
                             }
 
-                            const playPromise = videoRef.current.play();
-                            if (playPromise !== undefined) {
-                                playPromise.catch(e => {
-                                    console.warn('Autoplay prevented by browser:', e);
-                                    try {
-                                        if (videoRef.current) {
-                                            videoRef.current.muted = true;
-                                            setIsMuted(true);
-                                            videoRef.current.play().catch(() => setVideoLoading(false));
-                                        }
-                                    } catch { setVideoLoading(false); }
-                                });
-                            }
+                            playWithAutoplayFallback('Autoplay');
                         };
 
                         if (isHls) {
@@ -797,7 +912,18 @@ const WatchPage = () => {
                                 return;
                             }
                             const hls = new Hls({
-                                maxBufferLength: 30,
+                                maxBufferLength: 90,
+                                maxMaxBufferLength: 180,
+                                backBufferLength: 30,
+                                maxBufferHole: 0.5,
+                                highBufferWatchdogPeriod: 3,
+                                fragLoadingTimeOut: 30000,
+                                fragLoadingMaxRetry: 8,
+                                fragLoadingRetryDelay: 800,
+                                fragLoadingMaxRetryTimeout: 12000,
+                                manifestLoadingTimeOut: 20000,
+                                manifestLoadingMaxRetry: 4,
+                                lowLatencyMode: false,
                                 enableWorker: true,
                             });
                             hlsInstanceRef.current = hls;
@@ -806,19 +932,7 @@ const WatchPage = () => {
                             applyPlayerPrefsToVideo();
                             armStreamReadyWatchdog(loadSeq, 'hls');
                             hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                                const playPromise = videoRef.current.play();
-                                if (playPromise !== undefined) {
-                                    playPromise.catch(e => {
-                                        console.warn('Autoplay prevented:', e);
-                                        try {
-                                            if (videoRef.current) {
-                                                videoRef.current.muted = true;
-                                                setIsMuted(true);
-                                                videoRef.current.play().catch(() => setVideoLoading(false));
-                                            }
-                                        } catch { setVideoLoading(false); }
-                                    });
-                                }
+                                playWithAutoplayFallback('HLS autoplay');
                             });
                             hls.on(Hls.Events.ERROR, function (event, data) {
                                 if (data.fatal) {
@@ -871,7 +985,7 @@ const WatchPage = () => {
             }
             resetVideoElement();
         };
-    }, [addStreamCacheBuster, applyPlayerPrefsToVideo, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, requestStreamRecovery, resetVideoElement, resolveBackendUrl, streamReloadNonce]);
+    }, [addStreamCacheBuster, applyPlayerPrefsToVideo, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, playWithAutoplayFallback, requestStreamRecovery, resetVideoElement, resolveBackendUrl, streamReloadNonce]);
 
     // ─── Handle Subtitle Delay/Text Changes ─────────
     useEffect(() => {
@@ -1066,9 +1180,11 @@ const WatchPage = () => {
                     break;
                 case 'ArrowUp':
                     e.preventDefault();
+                    restoreSoundAfterUserGesture();
                     setVolume(v => {
                         const nv = Math.min(1, v + 0.1);
                         video.volume = nv;
+                        autoplayMutedRef.current = false;
                         if (nv > 0) {
                             video.muted = false;
                             setIsMuted(false);
@@ -1082,6 +1198,7 @@ const WatchPage = () => {
                     setVolume(v => {
                         const nv = Math.max(0, v - 0.1);
                         video.volume = nv;
+                        autoplayMutedRef.current = false;
                         video.muted = nv === 0;
                         setIsMuted(nv === 0);
                         setPlayerPrefs({ volume: nv, muted: nv === 0 });
@@ -1108,6 +1225,7 @@ const WatchPage = () => {
 
     // ─── Player controls ───────────────────────────
     const handleVideoClick = () => {
+        restoreSoundAfterUserGesture();
         if (showSubSettings) setShowSubSettings(false);
         if (showSpeedMenu) setShowSpeedMenu(false);
         setShowControls(false); // hide UI instead of pausing
@@ -1116,8 +1234,9 @@ const WatchPage = () => {
     const togglePlay = () => {
         const video = videoRef.current;
         if (!video) return;
+        restoreSoundAfterUserGesture();
         if (video.paused) {
-            video.play().catch(() => { });
+            playWithAutoplayFallback('User play');
         } else {
             video.pause();
             triggerSaveHistory();
@@ -1127,6 +1246,12 @@ const WatchPage = () => {
     const toggleMute = () => {
         const video = videoRef.current;
         if (!video) return;
+        if (autoplayMutedRef.current && playerPrefsRef.current.volume > 0 && !playerPrefsRef.current.isMuted) {
+            autoplayMutedRef.current = false;
+            video.muted = false;
+            setIsMuted(false);
+            return;
+        }
         video.muted = !video.muted;
         setIsMuted(video.muted);
         setPlayerPrefs({ muted: video.muted });
@@ -1318,7 +1443,7 @@ const WatchPage = () => {
         // If the browser natively paused it despite autoPlay (e.g. low power mode), we can try one more time securely.
         const video = videoRef.current;
         if (video && video.paused && !isPlaying) {
-            video.play().catch(() => { });
+            playWithAutoplayFallback('CanPlay autoplay');
         }
         syncAudioTracksFromVideo();
         requestAnimationFrame(() => syncAudioTracksFromVideo());
@@ -1337,8 +1462,9 @@ const WatchPage = () => {
         setCurrentTime(0);
         setDuration(0);
         setBuffered(0);
+        setWatchSessionForFolder(decodedName, video);
         // Update URL without full navigation
-        const newParams = new URLSearchParams(searchParams);
+        const newParams = new URLSearchParams(window.location.search);
         newParams.set('ep', video.episode || 1);
         newParams.set('s', video.season || 1);
         window.history.replaceState({}, '', `/watch/${folderName}?${newParams.toString()}`);
@@ -1844,6 +1970,7 @@ const WatchPage = () => {
                                                 value={isMuted ? 0 : volume}
                                                 onChange={(e) => {
                                                     const v = parseFloat(e.target.value);
+                                                    autoplayMutedRef.current = false;
                                                     setVolume(v);
                                                     if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0; }
                                                     setIsMuted(v === 0);

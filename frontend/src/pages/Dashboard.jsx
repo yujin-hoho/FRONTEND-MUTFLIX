@@ -8,7 +8,7 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
-import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, cacheClear } from '../services/api';
+import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, hideHistory, cacheClear } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -167,13 +167,8 @@ const Dashboard = () => {
     const role = localStorage.getItem('role');
     return username ? { username, role } : null;
   });
+  const [activeProfileId, setActiveProfileId] = useState(() => localStorage.getItem('mutflix_last_profile_id') || '');
   const [celebrities, setCelebrities] = useState([]);
-  const [hiddenHistory, setHiddenHistory] = useState(() => {
-    try {
-      const saved = localStorage.getItem('mutflix_hidden_history');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
   const [removingItemPath, setRemovingItemPath] = useState(null);
   const [posterEditItem, setPosterEditItem] = useState(null);
 
@@ -256,22 +251,29 @@ const Dashboard = () => {
     });
 
     return Array.from(uniqueHistoryMap.values())
-      .filter(h => !hiddenHistory.includes(h.media_path))
       .filter((item, index, self) =>
         index === self.findIndex((t) => (t.folder_name === item.folder_name))
       )
       .slice(0, 15);
-  }, [hiddenHistory]);
+  }, []);
 
   const fetchAllProfileContinueWatching = useCallback(async (profiles) => {
     if (!profiles?.length) return [];
 
     const allHistories = await Promise.all(
-      profiles.map(p => fetchHistory(p.id, { activeOnly: true, limit: 30 }))
+      profiles.map(async (p) => {
+        const history = await fetchHistory(p.id, { activeOnly: true, limit: 30 });
+        return history.map((h) => ({ ...h, profile_id: p.id }));
+      })
     );
 
     return buildContinueWatchingItems(allHistories);
   }, [buildContinueWatchingItems]);
+
+  const handleProfileChange = useCallback((profile) => {
+    if (!profile?.id) return;
+    setActiveProfileId(profile.id);
+  }, []);
 
   // Phase 2: TMDB enrichment
   const enrichWithTMDB = useCallback(async (items, currentFetchId) => {
@@ -392,9 +394,9 @@ const Dashboard = () => {
     try {
       setLoading(true);
 
-      const lastProfileId = authUser ? localStorage.getItem('mutflix_last_profile_id') : null;
-      const primaryHistoryPromise = lastProfileId
-        ? fetchHistory(lastProfileId, { activeOnly: true, limit: 30 })
+      const selectedProfileId = authUser ? (activeProfileId || localStorage.getItem('mutflix_last_profile_id')) : null;
+      const primaryHistoryPromise = selectedProfileId
+        ? fetchHistory(selectedProfileId, { activeOnly: true, limit: 30 })
         : Promise.resolve([]);
       const profilesPromise = authUser ? fetchProfiles() : Promise.resolve([]);
 
@@ -413,23 +415,21 @@ const Dashboard = () => {
 
       const historyPromise = authUser ? (async () => {
         try {
-          if (lastProfileId) {
-            const primaryHistory = await primaryHistoryPromise;
+          if (selectedProfileId) {
+            const primaryHistory = (await primaryHistoryPromise)
+              .map((h) => ({ ...h, profile_id: selectedProfileId }));
             if (fetchIdRef.current !== currentFetchId) return [];
-
-            const primaryContinueWatching = buildContinueWatchingItems(primaryHistory);
-            if (primaryContinueWatching.length > 0) {
-              return primaryContinueWatching;
-            }
+            return buildContinueWatchingItems(primaryHistory);
           }
 
           const profiles = await profilesPromise;
           if (profiles.length === 0 || fetchIdRef.current !== currentFetchId) return [];
-          if (!lastProfileId && profiles[0]?.id) {
+          if (profiles[0]?.id) {
             localStorage.setItem('mutflix_last_profile_id', profiles[0].id);
+            setActiveProfileId(profiles[0].id);
           }
 
-          const allContinueWatching = await fetchAllProfileContinueWatching(profiles);
+          const allContinueWatching = await fetchAllProfileContinueWatching(profiles.slice(0, 1));
           if (fetchIdRef.current !== currentFetchId) return [];
           return allContinueWatching;
         } catch (e) {
@@ -454,13 +454,17 @@ const Dashboard = () => {
       setLoading(false);
 
       if (authUser) {
-        void profilesPromise.then(async (profiles) => {
-          if (fetchIdRef.current !== currentFetchId || !profiles?.length) return;
-          const fullContinueWatching = await fetchAllProfileContinueWatching(profiles);
+        void (async () => {
+          const latestProfileId = selectedProfileId || localStorage.getItem('mutflix_last_profile_id');
+          if (fetchIdRef.current !== currentFetchId || !latestProfileId) return;
+          const history = await fetchHistory(latestProfileId, { activeOnly: true, limit: 30 });
+          const fullContinueWatching = buildContinueWatchingItems(
+            history.map((h) => ({ ...h, profile_id: latestProfileId }))
+          );
           if (fetchIdRef.current !== currentFetchId) return;
           setContinueWatching(fullContinueWatching);
           preloadDashboardImages(shuffledData, fullContinueWatching, []);
-        }).catch(() => { /* keep initial Continue Watching */ });
+        })().catch(() => { /* keep initial Continue Watching */ });
       }
 
       // Make hero metadata arrive early (poster/backdrop/synopsis/rating) before full enrichment.
@@ -482,12 +486,20 @@ const Dashboard = () => {
       console.error("Error loading dashboard data:", error);
       if (fetchIdRef.current === currentFetchId) setLoading(false);
     }
-  }, [processData, buildSections, buildContinueWatchingItems, fetchAllProfileContinueWatching, enrichWithTMDB, authUser, hiddenHistory]);
+  }, [processData, buildSections, buildContinueWatchingItems, fetchAllProfileContinueWatching, enrichWithTMDB, authUser, activeProfileId]);
 
   useEffect(() => {
     const id = setTimeout(() => loadData(), 0);
     return () => clearTimeout(id);
   }, [loadData]);
+
+  useEffect(() => {
+    const onProfileChange = (event) => {
+      if (event.detail?.id) setActiveProfileId(event.detail.id);
+    };
+    window.addEventListener('mutflix-profile-change', onProfileChange);
+    return () => window.removeEventListener('mutflix-profile-change', onProfileChange);
+  }, []);
 
   const handleLoginSuccess = (data) => {
     cacheClear(); // Clear any "Token missing" cached errors
@@ -501,20 +513,20 @@ const Dashboard = () => {
   };
 
   const handleDeleteHistory = async (item) => {
-    if (!item.media_path) return;
+    if (!item.media_path || !item.profile_id) return;
 
-    // Satisfying deletion effect:
     setRemovingItemPath(item.media_path);
 
-    // Delay actual removal to allow animation to play
-    setTimeout(() => {
-      const newHidden = [...hiddenHistory, item.media_path];
-      setHiddenHistory(newHidden);
-      localStorage.setItem('mutflix_hidden_history', JSON.stringify(newHidden));
+    const success = await hideHistory(item.profile_id, item.media_path);
+    if (!success) {
+      setRemovingItemPath(null);
+      return;
+    }
 
+    setTimeout(() => {
       setContinueWatching(prev => prev.filter(h => h.media_path !== item.media_path));
       setRemovingItemPath(null);
-    }, 400); // match animation duration
+    }, 400);
   };
 
 
@@ -529,6 +541,7 @@ const Dashboard = () => {
         isLoggedIn={!!authUser}
         username={authUser?.username}
         onLogout={handleLogout}
+        onProfileChange={handleProfileChange}
       />
 
       <main className="w-full pt-0">

@@ -1765,6 +1765,31 @@ def save_history(current_user):
         return orjson_jsonify({"message": "Saved"})
     except: return orjson_jsonify({"message": "Error saving"}, 500)
     finally: release_db_connection(conn, db_type)
+
+@app.route('/api/history/hide', methods=['POST'])
+@token_required(check_expiry=True)
+def hide_history(current_user):
+    data = request.get_json()
+    conn, db_type = get_db_connection()
+    ph = '%s' if db_type == 'postgres' else '?'
+    try:
+        cur = conn.cursor()
+        query = f"""
+            UPDATE watch_history
+            SET is_hidden = 1
+            WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
+        """
+        cur.execute(
+            query,
+            (
+                current_user['id'], data['profile_id'], data['media_path'],
+            ),
+        )
+        conn.commit()
+        return orjson_jsonify({"message": "Hidden"})
+    except Exception as e:
+        return orjson_jsonify({"message": "Error hiding", "error": str(e)}, 500)
+    finally: release_db_connection(conn, db_type)
     
 @app.route('/api/history/delete', methods=['POST'])
 @token_required(check_expiry=True)
@@ -3132,7 +3157,7 @@ def _proxy_gdrive_media(fid):
     if range_header:
         headers["Range"] = range_header
 
-    upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 60))
+    upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 120))
     if upstream.status_code in (401, 403):
         svc = get_gdrive_service()
         if not svc:
@@ -3145,11 +3170,11 @@ def _proxy_gdrive_media(fid):
             _gdrive_token = token
             _gdrive_token_ts = time.time()
         headers["Authorization"] = f"Bearer {token}"
-        upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 60))
+        upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 120))
 
     def generate():
         try:
-            for chunk in upstream.iter_content(chunk_size=1024 * 256):
+            for chunk in upstream.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     yield chunk
         finally:
@@ -3158,7 +3183,8 @@ def _proxy_gdrive_media(fid):
     response_headers = {
         "Access-Control-Allow-Origin": "*",
         "Accept-Ranges": upstream.headers.get("Accept-Ranges", "bytes"),
-        "Cache-Control": "no-store",
+        "Cache-Control": "private, max-age=3600",
+        "X-Accel-Buffering": "no",
     }
     for header in ("Content-Type", "Content-Length", "Content-Range"):
         value = upstream.headers.get(header)
