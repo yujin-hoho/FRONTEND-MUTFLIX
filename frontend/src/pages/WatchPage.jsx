@@ -33,7 +33,8 @@ const WATCH_SESSION_KEY = 'mutflix_watch_sessions';
 const PLAYER_PREFS_KEY = 'mutflix_player_prefs';
 const MIN_RESUME_POSITION_MS = 5000;
 const RECENT_LOCAL_RESUME_MS = 10 * 60 * 1000;
-const STREAM_READY_TIMEOUT_MS = 12000;
+const STREAM_READY_TIMEOUT_MS = import.meta.env.DEV ? 15000 : 45000;
+const STREAM_WATCHDOG_EXTEND_MS = 15000;
 
 const normalizeTmdbImageUrl = (path, size = 'w300') => {
     if (!path || typeof path !== 'string') return null;
@@ -792,14 +793,19 @@ const WatchPage = () => {
 
     const armStreamReadyWatchdog = useCallback((loadSeq, reason) => {
         clearStreamWatchdog();
-        streamReadyWatchdogRef.current = setTimeout(() => {
+        const checkStream = (timeoutMs) => {
             const video = videoRef.current;
             if (streamLoadSeqRef.current !== loadSeq || !currentVideo || !video) return;
             if (videoError) return;
             if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return;
-            console.warn(`[Player] Stream did not produce video data after ${STREAM_READY_TIMEOUT_MS}ms (${reason})`);
+            if (video.networkState === HTMLMediaElement.NETWORK_LOADING) {
+                streamReadyWatchdogRef.current = setTimeout(() => checkStream(STREAM_WATCHDOG_EXTEND_MS), STREAM_WATCHDOG_EXTEND_MS);
+                return;
+            }
+            console.warn(`[Player] Stream did not produce video data after ${timeoutMs}ms (${reason})`);
             requestStreamRecovery(`stalled-${reason}`);
-        }, STREAM_READY_TIMEOUT_MS);
+        };
+        streamReadyWatchdogRef.current = setTimeout(() => checkStream(STREAM_READY_TIMEOUT_MS), STREAM_READY_TIMEOUT_MS);
     }, [clearStreamWatchdog, currentVideo, requestStreamRecovery, videoError]);
 
     useEffect(() => {

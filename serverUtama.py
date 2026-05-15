@@ -3155,8 +3155,7 @@ def _proxy_gdrive_media(fid):
         "User-Agent": "Mutflix/1.0",
     }
     range_header = request.headers.get('Range')
-    if range_header:
-        headers["Range"] = range_header
+    headers["Range"] = range_header or "bytes=0-"
 
     upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 120))
     if upstream.status_code in (401, 403):
@@ -3175,7 +3174,7 @@ def _proxy_gdrive_media(fid):
 
     def generate():
         try:
-            for chunk in upstream.iter_content(chunk_size=1024 * 1024):
+            for chunk in upstream.iter_content(chunk_size=256 * 1024):
                 if chunk:
                     yield chunk
         finally:
@@ -3183,6 +3182,8 @@ def _proxy_gdrive_media(fid):
 
     response_headers = {
         "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Range",
+        "Access-Control-Expose-Headers": "Accept-Ranges, Content-Length, Content-Range, Content-Type",
         "Accept-Ranges": upstream.headers.get("Accept-Ranges", "bytes"),
         "Cache-Control": "private, max-age=3600",
         "X-Accel-Buffering": "no",
