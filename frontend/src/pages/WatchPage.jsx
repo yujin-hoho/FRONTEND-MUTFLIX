@@ -42,6 +42,10 @@ const normalizeTmdbImageUrl = (path, size = 'w300') => {
     return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
 };
 
+const usableEpisodeImage = (path) => {
+    return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : null;
+};
+
 const pruneVolatileLocalStorage = () => {
     try {
         const removablePrefixes = [
@@ -325,8 +329,13 @@ const WatchPage = () => {
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
     const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
     const episodeFallbackThumb = useMemo(() => {
-        return isSeriesContent ? EPISODE_PLACEHOLDER_IMAGE : null;
-    }, [isSeriesContent]);
+        if (!isSeriesContent) return null;
+        return (
+            normalizeTmdbImageUrl(tmdbData?.backdrop_path || tmdbData?.tmdb_backdrop_path, 'w500') ||
+            normalizeTmdbImageUrl(tmdbData?.poster_path || tmdbData?.tmdb_poster_path, 'w500') ||
+            EPISODE_PLACEHOLDER_IMAGE
+        );
+    }, [isSeriesContent, tmdbData?.backdrop_path, tmdbData?.tmdb_backdrop_path, tmdbData?.poster_path, tmdbData?.tmdb_poster_path]);
 
     const createImmediateEpisodeData = useCallback((videosList, seededEpisodeData = {}) => {
         const dataMap = { ...seededEpisodeData };
@@ -343,7 +352,7 @@ const WatchPage = () => {
                 null;
             dataMap[key] = {
                 ...existing,
-                still_path: existing.still_path || normalizeTmdbImageUrl(still),
+                still_path: usableEpisodeImage(existing.still_path) || normalizeTmdbImageUrl(still),
                 name: existing.name || video.name || `Episode ${episode}`,
             };
         });
@@ -533,7 +542,7 @@ const WatchPage = () => {
             currentVideo.name || decodedName,
             isSeriesContent ? decodedName : null,
             currentVideo.source,
-            currentEpData?.still_path || episodeFallbackThumb,
+            usableEpisodeImage(currentEpData?.still_path) || episodeFallbackThumb,
             currentVideo.subtitle_path,
             positionMs,
             durationMs,
@@ -2144,7 +2153,7 @@ const WatchPage = () => {
                                 {episodesToShow.map((video, idx) => {
                                     const epNum = video.episode || idx + 1;
                                     const epData = episodeData[`${video.season || 1}_${epNum}`];
-                                    const thumb = epData?.still_path || episodeFallbackThumb;
+                                    const thumb = usableEpisodeImage(epData?.still_path) || episodeFallbackThumb;
                                     const isActive = video === currentVideo;
                                     return (
                                         <div

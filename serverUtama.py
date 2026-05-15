@@ -201,6 +201,7 @@ CACHE_DURATION_FOLDERS = 300    # 5 min - folder response cache
 CACHE_DURATION_VIDEOS  = 300    # 5 min - video response cache
 CACHE_DURATION_EMPTY   = 300      # 5 min — empty results retry lebih cepat
 TMDB_CACHE_TTL_SECONDS = int(os.environ.get('TMDB_CACHE_TTL_SECONDS', '86400'))  # 24 jam default
+WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
@@ -1710,7 +1711,7 @@ def get_history(current_user, profile_id):
         where += ' AND (is_hidden = 0 OR is_hidden IS NULL)'
     if active_only:
         where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
-        params.append(0.95)
+        params.append(WATCH_HISTORY_ACTIVE_CUTOFF)
     sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched
               FROM watch_history WHERE {where} ORDER BY last_watched DESC'''
     if limit:

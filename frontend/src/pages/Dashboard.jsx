@@ -239,7 +239,7 @@ const Dashboard = () => {
       const dur = Number(h.duration_ms) || 0;
       const progress = dur > 0 ? (Number(h.position_ms) / dur) * 100 : 0;
       const okProgress = Number.isFinite(progress);
-      if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && okProgress && progress < 95) {
+      if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && okProgress) {
         uniqueHistoryMap.set(h.media_path, {
           ...h,
           name: h.series_title || h.media_title,

@@ -29,6 +29,10 @@ const firstText = (...values) => {
   return '';
 };
 
+const usableEpisodeImage = (path) => {
+  return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : '';
+};
+
 const toPositiveInt = (value) => {
   const n = value == null || value === '' ? NaN : Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
@@ -140,7 +144,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       }
       const episodeKey = `${s || 1}_${ep || 1}`;
       const fallbackTitle = firstText(item.series_title, item.folder_name, item.name, item.media_title);
-      const fallbackBackdrop = firstText(item.still_path, item.tmdb_backdrop_path, item.backdrop_path, tmdbData?.backdrop_path);
+      const fallbackBackdrop = firstText(item.tmdb_backdrop_path, item.backdrop_path, tmdbData?.backdrop_path, usableEpisodeImage(item.still_path));
       const fallbackPoster = firstText(item.tmdb_poster_path, item.poster_path, item.poster, tmdbData?.poster_path);
       navigate(targetUrl, {
         state: {
@@ -155,7 +159,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
             episodeData: {
               [episodeKey]: {
                 name: firstText(item.media_title, item.name),
-                still_path: firstText(item.still_path, EPISODE_PLACEHOLDER_IMAGE),
+                still_path: firstText(usableEpisodeImage(item.still_path), fallbackBackdrop),
               },
             },
           },
@@ -195,9 +199,17 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
     const hasPoster = item.tmdb_poster_path || item.poster_path || item.poster;
     const hasTmdbTitle = !!item?.tmdb_title;
     const hasSavedHistoryTitle = isContinueWatching && !!firstText(item?.series_title, item?.folder_name, item?.name, item?.media_title);
+    const hasUsableHistoryImage = isContinueWatching && !!firstText(
+      usableEpisodeImage(item?.still_path),
+      item?.tmdb_backdrop_path,
+      item?.backdrop_path,
+      item?.tmdb_poster_path,
+      item?.poster_path,
+      item?.poster
+    );
 
-    // Continue Watching already has reliable history metadata. Avoid extra TMDB calls on dashboard paint.
-    if (hasSavedHistoryTitle) return;
+    // Continue Watching already has reliable metadata; fetch TMDB only when it needs a real backdrop/poster fallback.
+    if (hasSavedHistoryTitle && hasUsableHistoryImage) return;
 
     const searchTitle = item.tmdb_query || item?.tmdb_title || item?.folder_name || item?.name;
     if (!isNearViewport && !(hasPoster && hasTmdbTitle)) return;
@@ -222,7 +234,9 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
     };
   }, [isNearViewport, tmdbFetchSignature, item, isContinueWatching, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
 
-  const rawPoster = item?.poster_path || item?.tmdb_poster_path || item?.poster || (isContinueWatching ? EPISODE_PLACEHOLDER_IMAGE : null) || tmdbData?.poster_path || tmdbData?.backdrop_path;
+  const rawPoster = isContinueWatching
+    ? firstText(usableEpisodeImage(item?.still_path), item?.tmdb_backdrop_path, item?.backdrop_path, tmdbData?.backdrop_path, item?.tmdb_poster_path, item?.poster_path, item?.poster, tmdbData?.poster_path)
+    : (item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path);
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
   const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : EPISODE_PLACEHOLDER_IMAGE;
   const shouldLoadMedia = !!rawPoster || (isNearViewport && !posterFadeIn);

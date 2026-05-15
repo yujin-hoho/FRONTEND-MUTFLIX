@@ -10,6 +10,10 @@ import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 import { findCatalogItemForDetail, mergeDetailMetadata, tmdbOptsFromCatalogItem } from '../utils/detailMetadata';
 import { EPISODE_PLACEHOLDER_IMAGE } from '../utils/placeholders';
 
+const usableEpisodeImage = (path) => {
+  return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : null;
+};
+
 const ContentDetail = () => {
   const { folderName } = useParams();
   const [searchParams] = useSearchParams();
@@ -499,6 +503,7 @@ const ContentDetail = () => {
                       video={video}
                       index={idx}
                       tmdbData={epData}
+                      fallbackImage={backdropPath}
                       progress={historyMap[video.path]?.progress}
                       onPlay={() => {
                         const epParam = video.episode || idx + 1;
@@ -547,11 +552,11 @@ const ContentDetail = () => {
 };
 
 /* ====== Episode Card ====== */
-const EpisodeCard = ({ video, index, tmdbData, onPlay, progress }) => {
+const EpisodeCard = ({ video, index, tmdbData, fallbackImage, onPlay, progress }) => {
   const [isHovered, setIsHovered] = useState(false);
   const episodeNum = video.episode || index + 1;
   const name = tmdbData?.name || video.name || `Episode ${episodeNum}`;
-  const imageToUse = tmdbData?.still_path || EPISODE_PLACEHOLDER_IMAGE;
+  const imageToUse = usableEpisodeImage(tmdbData?.still_path) || fallbackImage || EPISODE_PLACEHOLDER_IMAGE;
 
   return (
     <div
