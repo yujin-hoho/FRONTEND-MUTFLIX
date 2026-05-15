@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { useParams, useSearchParams, useLocation } from 'react-router-dom';
+import { useParams, useSearchParams, useLocation, useNavigate } from 'react-router-dom';
 import {
     ArrowLeft, Play, Pause, Volume2, VolumeX,
     Maximize, Minimize, Subtitles, Settings,
@@ -9,7 +9,7 @@ import {
 import {
     fetchVideos, getStreamDetails, fetchSubtitle,
     getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES,
-    fetchProfiles, createProfile, saveHistory, fetchHistory
+    fetchProfiles, createProfile, saveHistory, fetchHistory, getTMDBMoreLikeThis
 } from '../services/api';
 import {
     createSubtitleBlobUrl,
@@ -45,6 +45,12 @@ const normalizeTmdbImageUrl = (path, size = 'w300') => {
 
 const usableEpisodeImage = (path) => {
     return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : null;
+};
+
+const tmdbPosterUrl = (path, size = 'w342') => {
+    if (!path || typeof path !== 'string') return '';
+    if (path.startsWith('http')) return path;
+    return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
 };
 
 const pruneVolatileLocalStorage = () => {
@@ -160,6 +166,7 @@ const WatchPage = () => {
     const { folderName } = useParams();
     const [searchParams] = useSearchParams();
     const location = useLocation();
+    const navigate = useNavigate();
     const decodedName = decodeURIComponent(folderName);
     const urlType = searchParams.get('type');
     const hasEpisodeQuery = searchParams.has('ep') || searchParams.has('s');
@@ -184,6 +191,8 @@ const WatchPage = () => {
     const [tmdbData, setTmdbData] = useState(() => navigationTmdbData);
     const [credits, setCredits] = useState(null);
     const [episodeData, setEpisodeData] = useState(() => navigationEpisodeData);
+    const [recommendations, setRecommendations] = useState([]);
+    const [recommendationsLoading, setRecommendationsLoading] = useState(false);
     const [loading, setLoading] = useState(true);
     const [expandedDesc, setExpandedDesc] = useState(false);
 
@@ -325,8 +334,16 @@ const WatchPage = () => {
     const overview = tmdbData?.overview || '';
     const year = (tmdbData?.date || '').substring(0, 4) || '';
     const castList = credits?.cast || [];
-    const currentEpisodeNum = currentVideo?.episode || 1;
-    const currentEpData = episodeData[`${currentVideo?.season || 1}_${currentEpisodeNum}`];
+    const currentSeasonNum = toInt(currentVideo?.season, 1);
+    const currentEpisodeNum = toInt(currentVideo?.episode, 1);
+    const currentEpData = episodeData[`${currentSeasonNum}_${currentEpisodeNum}`];
+    const currentEpName = typeof currentEpData?.name === 'string' ? currentEpData.name.trim() : '';
+    const currentVideoName = typeof currentVideo?.name === 'string' ? currentVideo.name.trim() : '';
+    const hasTmdbEpisodeTitle = Boolean(currentEpData?.isTmdbName || (currentEpName && currentEpName !== currentVideoName));
+    const currentEpisodeTitle = hasTmdbEpisodeTitle ? currentEpName : `Episode ${currentEpisodeNum}`;
+    const playerHeaderTitle = isSeriesContent
+        ? `S${currentSeasonNum}E${currentEpisodeNum} | ${currentEpisodeTitle}`
+        : title;
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
     const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
     const episodeFallbackThumb = useMemo(() => {
@@ -355,6 +372,7 @@ const WatchPage = () => {
                 ...existing,
                 still_path: usableEpisodeImage(existing.still_path) || normalizeTmdbImageUrl(still),
                 name: existing.name || video.name || `Episode ${episode}`,
+                isTmdbName: Boolean(existing.isTmdbName),
             };
         });
         return dataMap;
@@ -466,7 +484,8 @@ const WatchPage = () => {
                             still_path: ep.still_path
                                 ? `https://image.tmdb.org/t/p/w300${ep.still_path.startsWith('/') ? ep.still_path : `/${ep.still_path}`}`
                                 : null,
-                            name: ep.name
+                            name: ep.name,
+                            isTmdbName: Boolean(ep.name),
                         };
                     });
                     setEpisodeData((prev) => ({ ...prev, ...dataMap }));
@@ -477,6 +496,29 @@ const WatchPage = () => {
                 fetchedSeasonStillsRef.current.add(seasonNum);
             });
     }, [tmdbData?.tmdb_id, activeSeason, isSeriesContent]);
+
+    useEffect(() => {
+        if (!tmdbData?.tmdb_id || !tmdbData?.media_type) {
+            setRecommendations([]);
+            setRecommendationsLoading(false);
+            return;
+        }
+
+        let cancelled = false;
+        setRecommendationsLoading(true);
+        getTMDBMoreLikeThis(tmdbData.tmdb_id, tmdbData.media_type, { limit: 12 })
+            .then((items) => {
+                if (!cancelled) setRecommendations(items);
+            })
+            .catch(() => {
+                if (!cancelled) setRecommendations([]);
+            })
+            .finally(() => {
+                if (!cancelled) setRecommendationsLoading(false);
+            });
+
+        return () => { cancelled = true; };
+    }, [tmdbData?.tmdb_id, tmdbData?.media_type]);
 
     // ─── Fetch/Create Profile ───────────────────────
     useEffect(() => {
@@ -1655,7 +1697,7 @@ const WatchPage = () => {
                         {/* ═══ TOP PLAYER OVERLAY (Title & Watermark) ═══ */}
                         <div className={`absolute top-0 left-0 right-0 pt-6 pb-12 px-6 bg-gradient-to-b from-black/80 to-transparent transition-opacity duration-300 pointer-events-none z-10 flex justify-between items-start ${showControls || !isPlaying ? 'opacity-100' : 'opacity-0'}`}>
                             <h2 className="text-white font-bold text-lg md:text-xl drop-shadow-md flex items-center gap-2">
-                                {title}
+                                {playerHeaderTitle}
                             </h2>
                         </div>
 
@@ -2100,20 +2142,63 @@ const WatchPage = () => {
                             </div>
                         )}
 
-                        {/* More Like This (Placeholder) */}
-                        <div className="mt-8 mb-8 border-t border-white/5 pt-8">
-                            <h3 className="text-white text-[18px] font-bold mb-4">More Like This</h3>
-                            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
-                                {[1, 2, 3, 4, 5, 6].map(i => (
-                                    <div key={i} className="aspect-[2/3] bg-[#1a1c22] rounded-md flex flex-col justify-end p-2 border border-white/5 cursor-pointer relative group overflow-hidden">
-                                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
-                                            <Play className="text-[#00dc41]" size={32} />
-                                        </div>
-                                        <div className="text-[12px] font-medium text-gray-500 group-hover:text-white transition relative z-20 truncate">Recommended {i}</div>
-                                    </div>
-                                ))}
+                        {(recommendationsLoading || recommendations.length > 0) && (
+                            <div className="mt-8 mb-8 border-t border-white/5 pt-8">
+                                <h3 className="text-white text-[18px] font-bold mb-4">More Like This</h3>
+                                <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                                    {recommendationsLoading && recommendations.length === 0 ? (
+                                        Array.from({ length: 6 }).map((_, i) => (
+                                            <div key={`recommend-skeleton-${i}`} className="aspect-[2/3] bg-[#1a1c22] rounded-md border border-white/5 animate-pulse" />
+                                        ))
+                                    ) : (
+                                        recommendations.slice(0, 12).map((item) => {
+                                            const recTitle = item.tmdb_title || item.title;
+                                            const poster = tmdbPosterUrl(item.poster_path || item.backdrop_path, 'w342');
+                                            return (
+                                                <button
+                                                    key={`${item.media_type}-${item.tmdb_id}`}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        navigate(`/detail/${encodeURIComponent(recTitle)}?type=${item.media_type === 'movie' ? 'movie' : 'series'}`, {
+                                                            state: {
+                                                                detailItem: {
+                                                                    folder_name: recTitle,
+                                                                    name: recTitle,
+                                                                    media_type: item.media_type === 'movie' ? 'movie' : 'tv',
+                                                                    tmdb_id: item.tmdb_id,
+                                                                    tmdb_title: recTitle,
+                                                                    tmdb_poster_path: item.poster_path,
+                                                                    tmdb_backdrop_path: item.backdrop_path,
+                                                                    tmdb_rating: item.rating,
+                                                                    tmdb_genre_ids: item.genre_ids,
+                                                                },
+                                                            },
+                                                        });
+                                                    }}
+                                                    className="aspect-[2/3] bg-[#1a1c22] rounded-md flex flex-col justify-end p-2 border border-white/5 cursor-pointer relative group overflow-hidden text-left"
+                                                    title={recTitle}
+                                                >
+                                                    {poster && (
+                                                        <img
+                                                            src={poster}
+                                                            alt={recTitle}
+                                                            loading="lazy"
+                                                            decoding="async"
+                                                            className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                                        />
+                                                    )}
+                                                    <div className="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent" />
+                                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
+                                                        <Play className="text-[#00dc41]" size={32} />
+                                                    </div>
+                                                    <div className="text-[12px] font-medium text-white group-hover:text-[#00dc41] transition relative z-20 line-clamp-2">{recTitle}</div>
+                                                </button>
+                                            );
+                                        })
+                                    )}
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
                 </div>
 

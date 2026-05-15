@@ -667,6 +667,62 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
     }
 };
 
+export const getTMDBMoreLikeThis = async (tmdbId, mediaType, options = {}) => {
+    const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
+    if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return [];
+
+    const type = mediaType === 'movie' ? 'movie' : 'tv';
+    const limit = Math.max(1, Math.min(Number(options.limit) || 12, 24));
+    const cacheKey = `mutflix_tmdb_more_like_this_${type}_${tmdbId}_v1`;
+
+    try {
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed)) return parsed.slice(0, limit);
+        }
+    } catch { /* ignore broken cache */ }
+
+    const mapResults = (results = []) =>
+        results
+            .filter((item) => item && (item.poster_path || item.backdrop_path))
+            .map((item) => ({
+                tmdb_id: item.id,
+                media_type: type,
+                tmdb_title: type === 'movie'
+                    ? item.title || item.original_title || item.name || ''
+                    : item.name || item.original_name || item.title || '',
+                title: type === 'movie'
+                    ? item.title || item.original_title || item.name || ''
+                    : item.name || item.original_name || item.title || '',
+                poster_path: item.poster_path || item.backdrop_path,
+                backdrop_path: item.backdrop_path,
+                rating: item.vote_average || 0,
+                overview: item.overview || '',
+                date: item.release_date || item.first_air_date || '',
+                genre_ids: item.genre_ids || [],
+            }))
+            .filter((item) => item.title);
+
+    const fetchList = async (kind) => {
+        const res = await fetch(`https://api.themoviedb.org/3/${type}/${tmdbId}/${kind}?api_key=${tmdbKey}&language=en-US&page=1`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return mapResults(data.results);
+    };
+
+    try {
+        let items = await fetchList('recommendations');
+        if (!items.length) items = await fetchList('similar');
+        const limited = items.slice(0, limit);
+        try { sessionStorage.setItem(cacheKey, JSON.stringify(limited)); } catch { /* ignore storage quota */ }
+        return limited;
+    } catch (error) {
+        console.error('TMDB recommendations fetch error:', error);
+        return [];
+    }
+};
+
 
 const _fetchFoldersRaw = async () => {
     try {
