@@ -1,5 +1,39 @@
 export const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
 
+export const tmdbImageUrl = (path, size = 'w500') => {
+    if (!path || typeof path !== 'string') return null;
+    let cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    let imageSize = size;
+    if (path.startsWith('http')) {
+        try {
+            const url = new URL(path);
+            if (url.hostname !== 'image.tmdb.org') return path;
+            const parts = url.pathname.split('/').filter(Boolean);
+            imageSize = size || parts[2] || 'w500';
+            cleanPath = parts.slice(3).join('/');
+        } catch {
+            return path;
+        }
+    }
+    if (!cleanPath) return null;
+    const encodedPath = cleanPath.split('/').map(encodeURIComponent).join('/');
+    return `${BASE_URL}/api/tmdb-image/${encodeURIComponent(imageSize)}/${encodedPath}`;
+};
+
+const tmdbProxyUrl = (tmdbPath, params = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+            query.set(key, String(value));
+        }
+    });
+    const qs = query.toString();
+    return `${BASE_URL}/api/tmdb/${tmdbPath}${qs ? `?${qs}` : ''}`;
+};
+
+const fetchTmdbProxy = (tmdbPath, params = {}) =>
+    fetch(tmdbProxyUrl(tmdbPath, params), { headers: getAuthHeaders() });
+
 export const TMDB_GENRES = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy", 80: "Crime", 99: "Documentary", 18: "Drama", 10751: "Family", 14: "Fantasy", 36: "History", 27: "Horror", 10402: "Music", 9648: "Mystery", 10749: "Romance", 878: "Science Fiction", 10770: "TV Movie", 53: "Thriller", 10752: "War", 37: "Western",
     10759: "Action & Adventure", 10762: "Kids", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy", 10766: "Soap", 10767: "Talk", 10768: "War & Politics"
@@ -146,13 +180,14 @@ export const clearAllTmdbInfoLocalCache = () => {
 
 /** Dedupe request paralel dengan judul + opsi yang sama */
 const _tmdbInflight = new Map();
+const _tmdbSeasonInflight = new Map();
 
 const mapCastFromCredits = (credits) =>
     credits?.cast
         ? credits.cast.slice(0, 15).map((c) => ({
               id: c.id,
               name: c.name,
-              profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null,
+              profile_path: c.profile_path ? tmdbImageUrl(c.profile_path, 'w185') : null,
           }))
         : [];
 
@@ -169,9 +204,6 @@ const mapCastFromCredits = (credits) =>
  * @param {boolean} [options.light] - mode grid/filter: tanpa credits, detail minimal, 1 request jika hasil search cukup
  */
 export const getTMDBInfo = async (title, options = {}) => {
-    const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-    if (!tmdbKey || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
-
     const mediaType = options.mediaType;
     const tmdbId = options.tmdbId != null && options.tmdbId !== '' ? String(options.tmdbId) : null;
     const queryText = (options.query || title || '').replace(/\(\d{4}\)/g, '').trim();
@@ -183,7 +215,7 @@ export const getTMDBInfo = async (title, options = {}) => {
     const light = !!options.light;
     const includeCredits = !light;
 
-    const TMDB_INFO_CACHE_VERSION = 'v4_title';
+    const TMDB_INFO_CACHE_VERSION = 'v5_server_proxy';
     const cacheKeySubject = tmdbId && mediaType ? `id_${mediaType}_${tmdbId}` : queryText.toLowerCase();
     const cacheKeyFull = `mutflix_tmdb_info_${TMDB_INFO_CACHE_VERSION}_${cacheKeySubject}_ov_${mediaType || 'multi'}_${year ?? 'x'}_${region || 'x'}_${includeAdult ? 'a' : ''}`;
     const cacheKeyLite = `${cacheKeyFull}_lite`;
@@ -228,7 +260,7 @@ export const getTMDBInfo = async (title, options = {}) => {
             if (!reg || !results?.length) return results[0];
             for (const r of results.slice(0, 8)) {
                 try {
-                    const dr = await fetch(`https://api.themoviedb.org/3/movie/${r.id}?api_key=${tmdbKey}&language=en-US`);
+                    const dr = await fetchTmdbProxy(`movie/${r.id}`, { language: 'en-US' });
                     const d = await dr.json();
                     const ok = (d.production_countries || []).some((c) => c.iso_3166_1 === reg);
                     if (ok) return r;
@@ -239,7 +271,7 @@ export const getTMDBInfo = async (title, options = {}) => {
             return results[0];
         };
 
-        const creditsParam = includeCredits ? '&append_to_response=credits' : '';
+        const detailParams = includeCredits ? { language: 'en-US', append_to_response: 'credits' } : { language: 'en-US' };
 
         const resultFromDetails = (details, type, fallback = {}) => ({
             tmdb_id: details.id || fallback.id || tmdbId,
@@ -280,9 +312,7 @@ export const getTMDBInfo = async (title, options = {}) => {
 
         try {
             if (tmdbId && (mediaType === 'movie' || mediaType === 'tv')) {
-                const detailRes = await fetch(
-                    `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${tmdbKey}&language=en-US${creditsParam}`
-                );
+                const detailRes = await fetchTmdbProxy(`${mediaType}/${tmdbId}`, detailParams);
                 const details = await detailRes.json();
                 if (details?.id) {
                     const result = resultFromDetails(details, mediaType);
@@ -297,9 +327,10 @@ export const getTMDBInfo = async (title, options = {}) => {
                 const liteOnly = readLite();
                 if (liteOnly?.tmdb_id && liteOnly?.media_type) {
                     const type = liteOnly.media_type === 'movie' ? 'movie' : 'tv';
-                    const detailRes = await fetch(
-                        `https://api.themoviedb.org/3/${type}/${liteOnly.tmdb_id}?api_key=${tmdbKey}&language=en-US&append_to_response=credits`
-                    );
+                    const detailRes = await fetchTmdbProxy(`${type}/${liteOnly.tmdb_id}`, {
+                        language: 'en-US',
+                        append_to_response: 'credits',
+                    });
                     const details = await detailRes.json();
                     if (details?.id) {
                         const merged =
@@ -353,13 +384,15 @@ export const getTMDBInfo = async (title, options = {}) => {
                 if (liteAgain) return liteAgain;
             }
 
-            const q = encodeURIComponent(queryText);
             const adult = includeAdult ? 'true' : 'false';
 
             if (mediaType === 'movie') {
-                let url = `https://api.themoviedb.org/3/search/movie?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
-                if (year != null && !Number.isNaN(year)) url += `&year=${year}`;
-                const res = await fetch(url);
+                const res = await fetchTmdbProxy('search/movie', {
+                    query: queryText,
+                    language: 'en-US',
+                    include_adult: adult,
+                    year: year != null && !Number.isNaN(year) ? year : undefined,
+                });
                 const data = await res.json();
                 if (!data.results?.length) return null;
                 let best = data.results.find((i) => i.poster_path || i.backdrop_path) || data.results[0];
@@ -394,9 +427,7 @@ export const getTMDBInfo = async (title, options = {}) => {
                     return result;
                 }
 
-                const detailRes = await fetch(
-                    `https://api.themoviedb.org/3/movie/${best.id}?api_key=${tmdbKey}&language=en-US${creditsParam}`
-                );
+                const detailRes = await fetchTmdbProxy(`movie/${best.id}`, detailParams);
                 const details = await detailRes.json();
                 const result = {
                     tmdb_id: best.id,
@@ -422,9 +453,12 @@ export const getTMDBInfo = async (title, options = {}) => {
             }
 
             if (mediaType === 'tv') {
-                let url = `https://api.themoviedb.org/3/search/tv?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`;
-                if (year != null && !Number.isNaN(year)) url += `&first_air_date_year=${year}`;
-                const res = await fetch(url);
+                const res = await fetchTmdbProxy('search/tv', {
+                    query: queryText,
+                    language: 'en-US',
+                    include_adult: adult,
+                    first_air_date_year: year != null && !Number.isNaN(year) ? year : undefined,
+                });
                 const data = await res.json();
                 if (!data.results?.length) return null;
                 const pool = data.results;
@@ -461,9 +495,7 @@ export const getTMDBInfo = async (title, options = {}) => {
                     return result;
                 }
 
-                const detailRes = await fetch(
-                    `https://api.themoviedb.org/3/tv/${best.id}?api_key=${tmdbKey}&language=en-US${creditsParam}`
-                );
+                const detailRes = await fetchTmdbProxy(`tv/${best.id}`, detailParams);
                 const details = await detailRes.json();
                 const result = {
                     tmdb_id: best.id,
@@ -488,9 +520,11 @@ export const getTMDBInfo = async (title, options = {}) => {
                 return result;
             }
 
-            const res = await fetch(
-                `https://api.themoviedb.org/3/search/multi?api_key=${tmdbKey}&query=${q}&language=en-US&include_adult=${adult}`
-            );
+            const res = await fetchTmdbProxy('search/multi', {
+                query: queryText,
+                language: 'en-US',
+                include_adult: adult,
+            });
             const data = await res.json();
             if (!data.results?.length) return null;
 
@@ -558,9 +592,7 @@ export const getTMDBInfo = async (title, options = {}) => {
                 return result;
             }
 
-            const detailRes = await fetch(
-                `https://api.themoviedb.org/3/${type}/${bestResult.id}?api_key=${tmdbKey}&language=en-US${creditsParam}`
-            );
+            const detailRes = await fetchTmdbProxy(`${type}/${bestResult.id}`, detailParams);
             const details = await detailRes.json();
 
             const result = {
@@ -616,25 +648,24 @@ export const saveTmdbOverride = async (payload) => {
 };
 
 export const getTMDBCredits = async (tmdbId, mediaType) => {
-    const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-    if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
+    if (!tmdbId) return null;
 
     try {
-        const cacheKey = `mutflix_tmdb_credits_${tmdbId}_${mediaType}`;
+        const cacheKey = `mutflix_tmdb_credits_v2_${tmdbId}_${mediaType}`;
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
             try { return JSON.parse(cached); } catch { /* ignore broken cache */ }
         }
 
         const type = mediaType === 'movie' ? 'movie' : 'tv';
-        const res = await fetch(`https://api.themoviedb.org/3/${type}/${tmdbId}/credits?api_key=${tmdbKey}&language=en-US`);
+        const res = await fetchTmdbProxy(`${type}/${tmdbId}/credits`, { language: 'en-US' });
         const data = await res.json();
         const result = {
             cast: (data.cast || []).slice(0, 20).map(c => ({
                 id: c.id,
                 name: c.name,
                 character: c.character,
-                profile_path: c.profile_path ? `https://image.tmdb.org/t/p/w185${c.profile_path}` : null
+                profile_path: c.profile_path ? tmdbImageUrl(c.profile_path, 'w185') : null
             })),
             director: (data.crew || []).find(c => c.job === 'Director')?.name || null
         };
@@ -647,20 +678,24 @@ export const getTMDBCredits = async (tmdbId, mediaType) => {
 };
 
 export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
-    const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-    if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return null;
+    if (!tmdbId) return null;
     try {
         const cacheKey = `mutflix_tmdb_season_${tmdbId}_${seasonNumber}`;
         const cached = localStorage.getItem(cacheKey);
         if (cached) {
             try { return JSON.parse(cached); } catch { /* ignore broken cache */ }
         }
+        if (_tmdbSeasonInflight.has(cacheKey)) return _tmdbSeasonInflight.get(cacheKey);
 
-        const response = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasonNumber}?api_key=${tmdbKey}&language=en-US`);
-        if (!response.ok) return null;
-        const result = await response.json();
-        try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch { /* ignore storage quota */ }
-        return result;
+        const request = (async () => {
+            const response = await fetchTmdbProxy(`tv/${tmdbId}/season/${seasonNumber}`, { language: 'en-US' });
+            if (!response.ok) return null;
+            const result = await response.json();
+            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch { /* ignore storage quota */ }
+            return result;
+        })().finally(() => _tmdbSeasonInflight.delete(cacheKey));
+        _tmdbSeasonInflight.set(cacheKey, request);
+        return await request;
     } catch (error) {
         console.error("Error fetching TMDB season details:", error);
         return null;
@@ -668,8 +703,7 @@ export const getTMDBSeasonDetails = async (tmdbId, seasonNumber) => {
 };
 
 export const getTMDBMoreLikeThis = async (tmdbId, mediaType, options = {}) => {
-    const tmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-    if (!tmdbKey || !tmdbId || tmdbKey === 'MASUKKAN_KEY_TMDB_ANDA_DISINI') return [];
+    if (!tmdbId) return [];
 
     const type = mediaType === 'movie' ? 'movie' : 'tv';
     const limit = Math.max(1, Math.min(Number(options.limit) || 12, 24));
@@ -705,7 +739,7 @@ export const getTMDBMoreLikeThis = async (tmdbId, mediaType, options = {}) => {
             .filter((item) => item.title);
 
     const fetchList = async (kind) => {
-        const res = await fetch(`https://api.themoviedb.org/3/${type}/${tmdbId}/${kind}?api_key=${tmdbKey}&language=en-US&page=1`);
+        const res = await fetchTmdbProxy(`${type}/${tmdbId}/${kind}`, { language: 'en-US', page: 1 });
         if (!res.ok) return [];
         const data = await res.json();
         return mapResults(data.results);
@@ -899,6 +933,54 @@ export const fetchSubtitle = async (subtitlePath) => {
         return await res.text();
     } catch (e) {
         console.error('Error fetching subtitle:', e);
+        return null;
+    }
+};
+
+/**
+ * List subtitle streams embedded in the media container.
+ * Works best for text-based streams (SRT/ASS/SSA/mov_text/WebVTT). Image subtitles
+ * such as PGS are reported but cannot be rendered by the web player.
+ */
+export const getEmbeddedSubtitles = async (filePath) => {
+    try {
+        const res = await fetch(`${BASE_URL}/api/embedded-subtitles/${encodeURIComponent(filePath)}`, {
+            cache: 'no-store',
+            headers: {
+                ...getAuthHeaders(),
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                Pragma: 'no-cache',
+                Expires: '0',
+            },
+        });
+        if (!res.ok) return { available: false, tracks: [] };
+        return await res.json();
+    } catch (e) {
+        console.error('Error fetching embedded subtitle tracks:', e);
+        return { available: false, tracks: [] };
+    }
+};
+
+/**
+ * Extract one embedded subtitle stream as VTT text.
+ */
+export const fetchEmbeddedSubtitle = async (filePath, streamIndex) => {
+    try {
+        const cacheBuster = Date.now();
+        const url = `${BASE_URL}/api/embedded-subtitle/${encodeURIComponent(filePath)}?stream_index=${encodeURIComponent(streamIndex)}&_=${cacheBuster}`;
+        const res = await fetch(url, {
+            cache: 'no-store',
+            headers: {
+                ...getAuthHeaders(),
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                Pragma: 'no-cache',
+                Expires: '0',
+            },
+        });
+        if (!res.ok) return null;
+        return await res.text();
+    } catch (e) {
+        console.error('Error fetching embedded subtitle:', e);
         return null;
     }
 };

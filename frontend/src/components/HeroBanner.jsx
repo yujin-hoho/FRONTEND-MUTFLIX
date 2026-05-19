@@ -1,7 +1,7 @@
 import { Play, BookmarkPlus, Pencil } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo } from '../services/api';
+import { getTMDBInfo, tmdbImageUrl } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -25,13 +25,6 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
     if (item.override_region) o.region = item.override_region;
     if (item.include_adult) o.includeAdult = true;
     return o;
-  };
-
-  const tmdbImageUrl = (path) => {
-    if (!path || typeof path !== 'string') return null;
-    if (path.startsWith('http')) return path;
-    const p = path.startsWith('/') ? path : `/${path}`;
-    return `https://image.tmdb.org/t/p/w1280${p}`;
   };
 
   // Auto rotate
@@ -134,7 +127,7 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
             item.poster_path ||
             item.poster ||
             tmdbData?.poster_path;
-          const bgImage = rawBackdropOrPoster ? tmdbImageUrl(rawBackdropOrPoster) : null;
+          const bgImage = rawBackdropOrPoster ? tmdbImageUrl(rawBackdropOrPoster, 'w1280') : null;
           const isBgReady = !!bgReadyByKey[key];
 
           const rawTitle = item.tmdb_title || item.folder_name || item.name || "Title";

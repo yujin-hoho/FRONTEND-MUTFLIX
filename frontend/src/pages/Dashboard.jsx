@@ -8,7 +8,7 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
-import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, hideHistory, cacheClear } from '../services/api';
+import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, hideHistory, cacheClear, tmdbImageUrl } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -67,10 +67,8 @@ const BrowseMoreStrip = ({ onNavigate }) => (
 const backdropOrPosterUrl = (item) => {
   const raw = item.tmdb_backdrop_path || item.tmdb_poster_path || item.poster_path || item.poster;
   if (!raw) return null;
-  if (raw.startsWith('http')) return raw;
-  const p = raw.startsWith('/') ? raw : `/${raw}`;
   // Must match the rendition used by HeroBanner to get a cache hit.
-  return `https://image.tmdb.org/t/p/w1280${p}`;
+  return tmdbImageUrl(raw, 'w1280');
 };
 
 /** Preload gambar di background (jangan await — jangan blokir paint) */

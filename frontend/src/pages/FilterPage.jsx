@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout } from '../services/api';
+import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout, tmdbImageUrl as serverTmdbImageUrl } from '../services/api';
 import Footer from '../components/Footer';
 import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
 
@@ -213,9 +213,7 @@ const getDisplayPosterPath = (item = {}) =>
 
 const tmdbImageUrl = (path, size = 'w342') => {
   if (!path || typeof path !== 'string') return '';
-  if (path.startsWith('http')) return path;
-  const p = path.startsWith('/') ? path : `/${path}`;
-  return `https://image.tmdb.org/t/p/${size}${p}`;
+  return serverTmdbImageUrl(path, size) || '';
 };
 
 const preloadImage = (src) =>
@@ -476,9 +474,6 @@ const FilterPage = () => {
             .filter(Boolean)
         );
 
-        const viteTmdbKey = import.meta.env.VITE_TMDB_API_KEY;
-        const canClientTmdbFetch = !!(viteTmdbKey && viteTmdbKey !== 'MASUKKAN_KEY_TMDB_ANDA_DISINI');
-
         const needFetchIndices = uniqueDataList
           .map((item, i) => ({ i, item }))
           .filter(({ item }) => !hasPosterAndGenres(item));
@@ -518,7 +513,7 @@ const FilterPage = () => {
             const override = tmdbOptsFromItem(item);
             const hasEnoughInfo = hasPosterAndGenres(item);
             let tmdbData = null;
-            if (!hasEnoughInfo && mayCallTmdb.has(index) && canClientTmdbFetch) {
+            if (!hasEnoughInfo && mayCallTmdb.has(index)) {
               tmdbData = await getTMDBInfo(title, {
                 ...override,
                 mediaType: override.mediaType || inferred || undefined,

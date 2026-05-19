@@ -14,6 +14,8 @@ import traceback
 import signal
 import uuid
 import copy
+import shutil
+import subprocess
 from functools import wraps, lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -239,6 +241,7 @@ _subtitle_lock = threading.Lock()
 _supa_sub_cache = {}       # {folder_name: subs_map}
 _supa_sub_cache_ts = {}    # {folder_name: timestamp}
 _supa_sub_ttl = 43200      # 12 hours — subtitles very rarely change, reduce Supabase API calls
+_subtitle_empty_map_ttl = 300  # empty subtitle scans must retry soon; new subs are added often
 _supa_sub_lock = threading.Lock()
 
 # === GDRIVE SUBTITLE MAP CACHE ===
@@ -286,6 +289,11 @@ _tmdb_overrides_lock = threading.Lock()
 _tmdb_proxy_cache = {}       # {cache_key: {status, content_type, body, ts}}
 _tmdb_proxy_cache_ts = {}    # {cache_key: timestamp}
 _tmdb_proxy_lock = threading.Lock()
+_tmdb_meta_cache = {}        # {cache_key: {status, payload, ts}}
+_tmdb_meta_cache_ts = {}     # {cache_key: timestamp}
+_tmdb_meta_cache_lock = threading.Lock()
+_tmdb_meta_key_locks = {}    # {cache_key: threading.Lock}
+_tmdb_meta_key_locks_lock = threading.Lock()
 
 # === GDRIVE BEARER TOKEN CACHE ===
 # Token valid ~1 jam, cache 45 menit — eliminates credential check per request
@@ -311,6 +319,48 @@ def _invalidate_response_cache(*keys):
         for key in keys:
             _response_cache.pop(key, None)
             _response_cache_ts.pop(key, None)
+
+def _response_keys_for_data_cache(key):
+    """Map shared data-cache keys to per-worker serialized response keys."""
+    if key == 'folders_list':
+        return ('resp_folders', 'resp_folders_merged')
+    if key == 'content_releases':
+        return ('resp_releases', 'resp_folders_merged')
+    if isinstance(key, str) and key.startswith('videos_'):
+        return (f'resp_{key}',)
+    return ()
+
+def _should_sync_data_cache(key):
+    return key in ('folders_list', 'content_releases') or (
+        isinstance(key, str) and key.startswith('videos_')
+    )
+
+def _invalidate_subtitle_maps(folder_name):
+    """Invalidate subtitle map caches in this worker and signal other workers."""
+    if not folder_name:
+        return
+    now = time.time()
+    try:
+        disk_cache.set(f"_inv_subtitles_{folder_name}", now, expire=3600)
+    except Exception:
+        pass
+    with _gdrive_sub_lock:
+        _gdrive_sub_cache.pop(f"gdrive_sub_{folder_name}", None)
+        _gdrive_sub_cache_ts.pop(f"gdrive_sub_{folder_name}", None)
+    with _supa_sub_lock:
+        _supa_sub_cache.pop(f"supa_sub_{folder_name}", None)
+        _supa_sub_cache_ts.pop(f"supa_sub_{folder_name}", None)
+
+def _subtitle_map_cache_valid(cache_ts, folder_name, cache_value):
+    inv_ts = None
+    try:
+        inv_ts = disk_cache.get(f"_inv_subtitles_{folder_name}")
+    except Exception:
+        inv_ts = None
+    if inv_ts and cache_ts < inv_ts:
+        return False
+    ttl = _subtitle_empty_map_ttl if not cache_value else _supa_sub_ttl
+    return (time.time() - cache_ts) < ttl
 
 def _invalidate_user_cache(cache_type, cache_key):
     """Cross-worker invalidation: write timestamp ke diskcache (shared),
@@ -1054,6 +1104,327 @@ def _set_tmdb_proxy_cache(cache_key, response):
         disk_cache.set(cache_key, entry, expire=TMDB_CACHE_TTL_SECONDS)
     except Exception as e:
         print(f"[TMDB-PROXY] disk cache set failed: {e}", flush=True)
+
+def _tmdb_meta_cache_key(media_type, folder_name, override):
+    override_snapshot = None
+    if override:
+        override_snapshot = {
+            'tmdb_query': override.get('tmdb_query'),
+            'override_year': override.get('override_year'),
+            'override_language': override.get('override_language'),
+            'include_adult': override.get('include_adult'),
+            'override_region': override.get('override_region'),
+        }
+    normalized = {
+        'v': 1,
+        'media_type': media_type,
+        'folder_name': folder_name,
+        'override': override_snapshot,
+    }
+    raw = json.dumps(normalized, sort_keys=True, separators=(',', ':'), default=str)
+    return 'tmdb_meta_' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def _get_tmdb_meta_cache(cache_key):
+    now = time.time()
+    with _tmdb_meta_cache_lock:
+        entry = _tmdb_meta_cache.get(cache_key)
+        if entry and now - entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+            return entry, 'HIT-RAM'
+        if entry:
+            _tmdb_meta_cache.pop(cache_key, None)
+            _tmdb_meta_cache_ts.pop(cache_key, None)
+
+    try:
+        entry = disk_cache.get(cache_key)
+    except Exception:
+        entry = None
+
+    if entry and now - entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+        with _tmdb_meta_cache_lock:
+            _tmdb_meta_cache[cache_key] = entry
+            _tmdb_meta_cache_ts[cache_key] = entry.get('ts', now)
+        return entry, 'HIT-DISK'
+    return None, None
+
+def _set_tmdb_meta_cache(cache_key, status, payload):
+    if status not in (200, 404):
+        return
+    entry = {
+        'status': status,
+        'payload': payload,
+        'ts': time.time(),
+    }
+    with _tmdb_meta_cache_lock:
+        _tmdb_meta_cache[cache_key] = entry
+        _tmdb_meta_cache_ts[cache_key] = entry['ts']
+        if len(_tmdb_meta_cache) > 2000:
+            oldest = sorted(_tmdb_meta_cache_ts.items(), key=lambda x: x[1])[:500]
+            for key, _ in oldest:
+                _tmdb_meta_cache.pop(key, None)
+                _tmdb_meta_cache_ts.pop(key, None)
+
+    try:
+        disk_cache.set(cache_key, entry, expire=TMDB_CACHE_TTL_SECONDS)
+    except Exception as e:
+        print(f"[TMDB-META] disk cache set failed: {e}", flush=True)
+
+def _tmdb_meta_response_from_cache(entry, cache_status):
+    remaining = max(0, int(TMDB_CACHE_TTL_SECONDS - (time.time() - entry.get('ts', time.time()))))
+    resp = orjson_jsonify(entry.get('payload') or {}, status=entry.get('status', 200))
+    resp.headers['Cache-Control'] = f'public, max-age={remaining}'
+    resp.headers['X-TMDB-Meta-Cache'] = cache_status
+    return resp
+
+def _tmdb_meta_lock_for(cache_key):
+    with _tmdb_meta_key_locks_lock:
+        lock = _tmdb_meta_key_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _tmdb_meta_key_locks[cache_key] = lock
+        return lock
+
+def _parse_year_from_folder_name(folder_name):
+    patterns = [
+        r'\((\d{4})\)',
+        r'[._\s](\d{4})(?:[._\s]|$)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, folder_name or '')
+        if not match:
+            continue
+        try:
+            year = int(match.group(1))
+            if 1900 <= year <= 2100:
+                return year
+        except Exception:
+            pass
+    return None
+
+def _clean_tmdb_query_from_folder_name(folder_name):
+    cleaned = re.sub(r'\s*\(\d{4}\)\s*', ' ', folder_name or '')
+    cleaned = re.sub(r'[._]+', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+def _tmdb_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return False
+
+def _fetch_tmdb_json_server(tmdb_path, params=None, timeout=10):
+    params = dict(params or {})
+    params.pop('api_key', None)
+    cache_key = _tmdb_proxy_cache_key(tmdb_path, params)
+    cached_entry, _ = _get_tmdb_proxy_cache(cache_key)
+    if cached_entry:
+        try:
+            return cached_entry.get('status', 200), orjson.loads(cached_entry.get('body') or b'{}')
+        except Exception as e:
+            print(f"[TMDB-META] cached JSON decode failed for {tmdb_path}: {e}", flush=True)
+
+    upstream_params = dict(params)
+    upstream_params['api_key'] = TMDB_API_KEY
+    try:
+        response = requests.get(
+            f'https://api.themoviedb.org/3/{tmdb_path}',
+            params=upstream_params,
+            timeout=timeout,
+        )
+        _set_tmdb_proxy_cache(cache_key, response)
+        try:
+            data = response.json()
+        except ValueError:
+            data = {'error': 'Invalid TMDB JSON response'}
+        return response.status_code, data
+    except requests.RequestException as e:
+        print(f"[TMDB-META] request failed for {tmdb_path}: {e}", flush=True)
+        return 502, {'error': 'TMDB request failed'}
+
+def _resolve_tmdb_meta(media_type, folder_name, override):
+    query = (override.get('tmdb_query') if override else None) or _clean_tmdb_query_from_folder_name(folder_name)
+    query = (query or folder_name or '').strip()
+    if not query:
+        return 400, {'error': 'folder_name cannot be empty'}
+
+    override_year = override.get('override_year') if override else None
+    year = override_year or _parse_year_from_folder_name(folder_name)
+
+    search_params = {'query': query}
+    if media_type == 'tv':
+        if year:
+            search_params['first_air_date_year'] = str(year)
+        search_path = 'search/tv'
+        detail_prefix = 'tv'
+        detail_params = {'append_to_response': 'content_ratings'}
+    else:
+        if year:
+            search_params['primary_release_year'] = str(year)
+        search_path = 'search/movie'
+        detail_prefix = 'movie'
+        detail_params = {}
+
+    if override:
+        language = (override.get('override_language') or '').strip()
+        if language:
+            search_params['language'] = language
+        if _tmdb_bool(override.get('include_adult')):
+            search_params['include_adult'] = 'true'
+        region = (override.get('override_region') or '').strip()
+        if media_type == 'movie' and region:
+            search_params['region'] = region
+
+    search_status, search_data = _fetch_tmdb_json_server(search_path, search_params)
+    if search_status != 200:
+        return search_status, {
+            'error': 'TMDB search failed',
+            'status': search_status,
+            'folder_name': folder_name,
+            'query': query,
+        }
+
+    results = search_data.get('results') if isinstance(search_data, dict) else None
+    if not results:
+        return 404, {
+            'error': 'TMDB metadata not found',
+            'folder_name': folder_name,
+            'query': query,
+            'media_type': media_type,
+        }
+
+    tmdb_id = results[0].get('id') if isinstance(results[0], dict) else None
+    if not tmdb_id:
+        return 404, {
+            'error': 'TMDB metadata id not found',
+            'folder_name': folder_name,
+            'query': query,
+            'media_type': media_type,
+        }
+
+    detail_status, detail_data = _fetch_tmdb_json_server(f'{detail_prefix}/{tmdb_id}', detail_params)
+    if detail_status != 200:
+        return detail_status, {
+            'error': 'TMDB detail failed',
+            'status': detail_status,
+            'folder_name': folder_name,
+            'query': query,
+            'tmdb_id': tmdb_id,
+        }
+    return 200, detail_data
+
+@app.route('/api/tmdb-meta/<media_type>', methods=['GET'])
+@token_required(check_expiry=False)
+@rate_limited(limit=300)
+def get_tmdb_meta(current_user, media_type):
+    """Resolve folder metadata on the server, including search, detail, overrides, and cache."""
+    if not TMDB_API_KEY:
+        return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
+
+    media_type = (media_type or '').strip().lower()
+    if media_type not in ('tv', 'movie'):
+        return orjson_jsonify({'error': 'media_type must be tv or movie'}, 400)
+
+    folder_name = (request.args.get('folder_name') or '').strip()
+    if not folder_name:
+        return orjson_jsonify({'error': 'folder_name is required'}, 400)
+
+    override = _get_tmdb_overrides_map().get(folder_name)
+    cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
+    cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
+    if cached_entry:
+        return _tmdb_meta_response_from_cache(cached_entry, cache_status)
+
+    key_lock = _tmdb_meta_lock_for(cache_key)
+    with key_lock:
+        cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
+        if cached_entry:
+            return _tmdb_meta_response_from_cache(cached_entry, cache_status)
+
+        status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
+        _set_tmdb_meta_cache(cache_key, status, payload)
+
+    resp = orjson_jsonify(payload, status=status)
+    resp.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if status in (200, 404) else 'no-store'
+    resp.headers['X-TMDB-Meta-Cache'] = 'MISS'
+    return resp
+
+def _tmdb_image_cache_key(size, image_path):
+    raw = json.dumps({'v': 1, 'size': size, 'path': image_path}, sort_keys=True, separators=(',', ':'))
+    return 'tmdb_image_' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+def _tmdb_image_response_from_cache(entry, cache_status):
+    remaining = max(0, int(TMDB_CACHE_TTL_SECONDS - (time.time() - entry.get('ts', time.time()))))
+    resp = Response(
+        entry['body'],
+        status=entry.get('status', 200),
+        content_type=entry.get('content_type') or 'image/jpeg',
+    )
+    resp.headers['Cache-Control'] = f'public, max-age={remaining}'
+    resp.headers['X-TMDB-Image-Cache'] = cache_status
+    return resp
+
+def _get_tmdb_image_cache(cache_key):
+    now = time.time()
+    try:
+        entry = disk_cache.get(cache_key)
+    except Exception:
+        entry = None
+    if entry and now - entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+        return entry, 'HIT-DISK'
+    return None, None
+
+def _set_tmdb_image_cache(cache_key, response):
+    if response.status_code not in (200, 404):
+        return
+    entry = {
+        'status': response.status_code,
+        'content_type': response.headers.get('Content-Type', 'image/jpeg'),
+        'body': response.content,
+        'ts': time.time(),
+    }
+    try:
+        disk_cache.set(cache_key, entry, expire=TMDB_CACHE_TTL_SECONDS)
+    except Exception as e:
+        print(f"[TMDB-IMAGE] disk cache set failed: {e}", flush=True)
+
+@app.route('/api/tmdb-image/<size>/<path:image_path>', methods=['GET'])
+@rate_limited(limit=600)
+def proxy_tmdb_image(size, image_path):
+    """Proxy TMDB image assets so Flutter can load posters/backdrops from this server."""
+    size = (size or '').strip()
+    image_path = (image_path or '').lstrip('/')
+
+    if not re.fullmatch(r'(original|[wh]\d+)', size):
+        return orjson_jsonify({'error': 'Invalid TMDB image size'}, 400)
+    if not image_path or '..' in image_path or image_path.startswith('/'):
+        return orjson_jsonify({'error': 'Invalid TMDB image path'}, 400)
+
+    cache_key = _tmdb_image_cache_key(size, image_path)
+    cached_entry, cache_status = _get_tmdb_image_cache(cache_key)
+    if cached_entry:
+        return _tmdb_image_response_from_cache(cached_entry, cache_status)
+
+    try:
+        quoted_path = quote(image_path, safe='/')
+        response = requests.get(
+            f'https://image.tmdb.org/t/p/{size}/{quoted_path}',
+            timeout=15,
+        )
+        _set_tmdb_image_cache(cache_key, response)
+        proxied = Response(
+            response.content,
+            status=response.status_code,
+            content_type=response.headers.get('Content-Type', 'image/jpeg'),
+        )
+        proxied.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if response.status_code in (200, 404) else 'no-store'
+        proxied.headers['X-TMDB-Image-Cache'] = 'MISS'
+        return proxied
+    except requests.RequestException as e:
+        print(f"[TMDB-IMAGE] request failed for {size}/{image_path}: {e}", flush=True)
+        return orjson_jsonify({'error': 'TMDB image request failed'}, 502)
 
 @app.route('/api/tmdb/<path:tmdb_path>', methods=['GET'])
 @token_required(check_expiry=False)
@@ -2000,6 +2371,20 @@ def mem_get(key):
     """Get dari RAM (~0.01ms). Fallback ke diskcache (~1-5ms) lalu load ke RAM."""
     val = _mem_cache.get(key)
     if val is not None:
+        if _should_sync_data_cache(key):
+            try:
+                disk_ts = disk_cache.get(f"{key}__ts")
+                mem_ts = _mem_cache_ts.get(key, 0)
+                if disk_ts and disk_ts > (mem_ts + 0.001):
+                    disk_val = disk_cache.get(key)
+                    if disk_val is not None:
+                        with _mem_lock:
+                            _mem_cache[key] = disk_val
+                            _mem_cache_ts[key] = disk_ts
+                        _invalidate_response_cache(*_response_keys_for_data_cache(key))
+                        return disk_val
+            except Exception:
+                pass
         return val
     # Fallback: load dari disk ke RAM
     val = disk_cache.get(key)
@@ -2286,7 +2671,7 @@ def fetch_supabase_subtitles_map(folder_name):
         cached = _supa_sub_cache.get(cache_key)
         if cached is not None:
             ts = _supa_sub_cache_ts.get(cache_key, 0)
-            if (time.time() - ts) < _supa_sub_ttl:
+            if _subtitle_map_cache_valid(ts, folder_name, cached):
                 return cached
     subs_map = {}
     try:
@@ -2329,7 +2714,7 @@ def fetch_gdrive_subtitle_map(folder_name):
         cached = _gdrive_sub_cache.get(cache_key)
         if cached is not None:
             ts = _gdrive_sub_cache_ts.get(cache_key, 0)
-            if (time.time() - ts) < _gdrive_sub_ttl:
+            if _subtitle_map_cache_valid(ts, folder_name, cached):
                 return cached
     subs_map = {}
     try:
@@ -2707,12 +3092,7 @@ def background_cache_worker():
                     cached_data = mem_get(cache_key_bg)
                     if cached_data and any(v.get('subtitle_path') is None for v in cached_data.get('videos', [])):
                         # Clear subtitle map caches for this folder so fetch is fresh
-                        with _gdrive_sub_lock:
-                            _gdrive_sub_cache.pop(f"gdrive_sub_{resolve_target_bg}", None)
-                            _gdrive_sub_cache_ts.pop(f"gdrive_sub_{resolve_target_bg}", None)
-                        with _supa_sub_lock:
-                            _supa_sub_cache.pop(f"supa_sub_{resolve_target_bg}", None)
-                            _supa_sub_cache_ts.pop(f"supa_sub_{resolve_target_bg}", None)
+                        _invalidate_subtitle_maps(resolve_target_bg)
                         missing_sub_items.append((resolve_target_bg, cache_key_bg, True))
                 
                 if missing_sub_items:
@@ -2877,8 +3257,7 @@ def get_videos_in_folder(current_user, folder_name):
         if cached:
             dur = CACHE_DURATION_EMPTY if not cached.get("videos") else CACHE_DURATION_VIDEOS
             if mem_is_fresh(key, dur): return add_cache_headers(orjson_jsonify(cached, cache_key=resp_key), max_age=dur)
-            # Stale tapi masih ada di RAM → tetap serve (BG worker akan refresh)
-            return add_cache_headers(orjson_jsonify(cached, cache_key=resp_key), max_age=60)
+            # Stale cache refreshes on this request; fallback below serves stale if GDrive fails.
 
     svc = get_gdrive_service()
 
@@ -2901,12 +3280,7 @@ def get_videos_in_folder(current_user, folder_name):
     # Tanpa ini, subtitle map yang cached kosong tetap return {} selama 12 jam
     if force:
         resolved_for_sub = resolved_name
-        with _gdrive_sub_lock:
-            _gdrive_sub_cache.pop(f"gdrive_sub_{resolved_for_sub}", None)
-            _gdrive_sub_cache_ts.pop(f"gdrive_sub_{resolved_for_sub}", None)
-        with _supa_sub_lock:
-            _supa_sub_cache.pop(f"supa_sub_{resolved_for_sub}", None)
-            _supa_sub_cache_ts.pop(f"supa_sub_{resolved_for_sub}", None)
+        _invalidate_subtitle_maps(resolved_for_sub)
 
     res = fetch_gdrive_videos(svc, resolved_name)
     if res is not None:
@@ -3111,6 +3485,160 @@ def _get_fresh_gdrive_token():
         return token
 
 
+TEXT_SUBTITLE_CODECS = {
+    "ass",
+    "ssa",
+    "subrip",
+    "srt",
+    "webvtt",
+    "mov_text",
+    "text",
+    "microdvd",
+    "subviewer",
+    "subviewer1",
+    "sami",
+    "realtext",
+    "mpl2",
+    "vplayer",
+}
+
+
+def _ffmpeg_tool(name):
+    return shutil.which(name)
+
+
+def _gdrive_media_input(fid):
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return None, None
+    return (
+        f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
+        f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n",
+    )
+
+
+def _embedded_track_cache_key(fid):
+    return f"embedded_subtitle_tracks_{fid}"
+
+
+def _embedded_vtt_cache_key(fid, stream_index):
+    return f"embedded_subtitle_vtt_{fid}_{stream_index}"
+
+
+def _subtitle_track_label(stream, ordinal):
+    tags = stream.get("tags") or {}
+    title = (tags.get("title") or tags.get("handler_name") or "").strip()
+    language = (tags.get("language") or stream.get("language") or "").strip()
+    codec = (stream.get("codec_name") or "subtitle").strip()
+    if title and language:
+        return f"{title} ({language.upper()})"
+    if title:
+        return title
+    if language:
+        return language.upper()
+    return f"Subtitle {ordinal}"
+
+
+def _probe_embedded_subtitles(fid):
+    cached = disk_cache.get(_embedded_track_cache_key(fid))
+    if cached is not None:
+        return cached
+
+    ffprobe = _ffmpeg_tool("ffprobe")
+    if not ffprobe:
+        return {"available": False, "error": "ffprobe unavailable", "tracks": []}
+
+    media_url, headers = _gdrive_media_input(fid)
+    if not media_url:
+        return {"available": False, "error": "GDrive token unavailable", "tracks": []}
+
+    cmd = [
+        ffprobe,
+        "-v", "error",
+        "-headers", headers,
+        "-select_streams", "s",
+        "-show_streams",
+        "-print_format", "json",
+        media_url,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=45, check=False)
+        if result.returncode != 0:
+            err = result.stderr.decode("utf-8", "ignore").strip()[:500]
+            payload = {"available": False, "error": err or "ffprobe failed", "tracks": []}
+            disk_cache.set(_embedded_track_cache_key(fid), payload, expire=300)
+            return payload
+
+        data = orjson.loads(result.stdout or b"{}")
+        tracks = []
+        for ordinal, stream in enumerate(data.get("streams") or [], start=1):
+            codec = (stream.get("codec_name") or "").lower()
+            disposition = stream.get("disposition") or {}
+            tracks.append({
+                "stream_index": stream.get("index"),
+                "label": _subtitle_track_label(stream, ordinal),
+                "language": (stream.get("tags") or {}).get("language") or "",
+                "codec": codec,
+                "default": bool(disposition.get("default")),
+                "forced": bool(disposition.get("forced")),
+                "supported": codec in TEXT_SUBTITLE_CODECS,
+            })
+
+        payload = {"available": bool(tracks), "tracks": tracks}
+        disk_cache.set(_embedded_track_cache_key(fid), payload, expire=12 * 60 * 60)
+        return payload
+    except subprocess.TimeoutExpired:
+        return {"available": False, "error": "ffprobe timeout", "tracks": []}
+    except Exception as e:
+        return {"available": False, "error": str(e), "tracks": []}
+
+
+def _extract_embedded_subtitle_vtt(fid, stream_index):
+    cache_key = _embedded_vtt_cache_key(fid, stream_index)
+    cached = disk_cache.get(cache_key)
+    if cached:
+        return cached
+
+    ffmpeg = _ffmpeg_tool("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    media_url, headers = _gdrive_media_input(fid)
+    if not media_url:
+        return None
+
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-headers", headers,
+        "-i", media_url,
+        "-map", f"0:{stream_index}",
+        "-vn",
+        "-an",
+        "-c:s", "webvtt",
+        "-f", "webvtt",
+        "pipe:1",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
+        if result.returncode != 0 or not result.stdout:
+            err = result.stderr.decode("utf-8", "ignore").strip()[:500]
+            print(f"[EMBEDDED-SUB] extract failed fid={fid} stream={stream_index}: {err}", flush=True)
+            return None
+        content = result.stdout
+        if len(content) > 0:
+            disk_cache.set(cache_key, content, expire=7 * 24 * 60 * 60)
+        return content
+    except subprocess.TimeoutExpired:
+        print(f"[EMBEDDED-SUB] extract timeout fid={fid} stream={stream_index}", flush=True)
+        return None
+    except Exception as e:
+        print(f"[EMBEDDED-SUB] extract error fid={fid} stream={stream_index}: {e}", flush=True)
+        return None
+
+
 def _make_stream_token(fid, ttl=None):
     """Create a file-scoped token usable by <video>, where custom auth headers are not possible."""
     exp = int(time.time() + (ttl or _stream_token_ttl))
@@ -3206,6 +3734,47 @@ def gdrive_stream(fid):
     if not _verify_stream_token(fid, request.args.get('stream_token')):
         return jsonify({"error": "Unauthorized stream"}), 401
     return _proxy_gdrive_media(fid)
+
+
+@app.route("/api/embedded-subtitles/<path:file_path>")
+@token_required(check_expiry=True)
+@rate_limited(limit=80)
+def get_embedded_subtitles(current_user, file_path):
+    """List subtitle streams embedded inside a GDrive video file."""
+    if not file_path.startswith("gdrive/"):
+        return orjson_jsonify({"available": False, "tracks": [], "error": "Unsupported source"})
+    fid = file_path.split("/", 1)[1]
+    return orjson_jsonify(_probe_embedded_subtitles(fid))
+
+
+@app.route("/api/embedded-subtitle/<path:file_path>")
+@token_required(check_expiry=True)
+@rate_limited(limit=60)
+def serve_embedded_subtitle(current_user, file_path):
+    """Extract one embedded text subtitle stream as WebVTT."""
+    if not file_path.startswith("gdrive/"):
+        return jsonify({"error": "Unsupported source"}), 400
+
+    try:
+        stream_index = int(request.args.get("stream_index", ""))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Missing stream_index"}), 400
+
+    fid = file_path.split("/", 1)[1]
+    probe = _probe_embedded_subtitles(fid)
+    track = next((t for t in probe.get("tracks", []) if t.get("stream_index") == stream_index), None)
+    if not track:
+        return jsonify({"error": "Subtitle stream not found"}), 404
+    if not track.get("supported"):
+        return jsonify({"error": f"Subtitle codec '{track.get('codec')}' is not text-based"}), 415
+
+    content = _extract_embedded_subtitle_vtt(fid, stream_index)
+    if not content:
+        return jsonify({"error": "Could not extract embedded subtitle"}), 500
+
+    resp = Response(content, mimetype="text/vtt; charset=utf-8")
+    resp.headers["Cache-Control"] = "private, max-age=86400"
+    return resp
 
 @app.route("/api/hls-manifest/<fid>")
 def get_hls_manifest(fid):

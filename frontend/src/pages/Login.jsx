@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Play, ChevronRight, Globe, Loader2 } from 'lucide-react';
 import Footer from '../components/Footer';
 import AuthOverlay from '../components/AuthOverlay';
-import { fetchFolders, getTMDBInfo } from '../services/api';
+import { fetchFolders, getTMDBInfo, tmdbImageUrl } from '../services/api';
 
 const Login = () => {
     const navigate = useNavigate();
@@ -142,9 +142,7 @@ const Login = () => {
                             <div key={idx} className="relative aspect-[2/3] rounded-lg overflow-hidden group cursor-pointer shadow-xl transition-all hover:scale-105 hover:z-20">
                                 <img
                                     src={
-                                        item.poster_path?.startsWith('http')
-                                            ? item.poster_path
-                                            : `https://image.tmdb.org/t/p/w342${item.poster_path?.startsWith('/') ? item.poster_path : '/' + item.poster_path}`
+                                        tmdbImageUrl(item.poster_path, 'w342')
                                     }
                                     alt={item.folder_name}
                                     loading="lazy"

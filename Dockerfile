@@ -5,6 +5,7 @@ WORKDIR /app
 # 1. Install dependencies sistem
 RUN apt-get update && apt-get install -y \
     build-essential \
+    ffmpeg \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 

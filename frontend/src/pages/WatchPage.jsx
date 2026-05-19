@@ -7,9 +7,10 @@ import {
     User, Loader2, Languages
 } from 'lucide-react';
 import {
-    fetchVideos, getStreamDetails, fetchSubtitle,
+    fetchVideos, getStreamDetails, fetchSubtitle, getEmbeddedSubtitles, fetchEmbeddedSubtitle,
     getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES,
-    fetchProfiles, createProfile, saveHistory, fetchHistory, getTMDBMoreLikeThis
+    fetchProfiles, createProfile, saveHistory, fetchHistory, getTMDBMoreLikeThis,
+    tmdbImageUrl
 } from '../services/api';
 import {
     createSubtitleBlobUrl,
@@ -40,7 +41,7 @@ const normalizeTmdbImageUrl = (path, size = 'w300') => {
     if (!path || typeof path !== 'string') return null;
     if (path.startsWith('http')) return path;
     if (path === EPISODE_PLACEHOLDER_IMAGE) return path;
-    return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
+    return tmdbImageUrl(path, size);
 };
 
 const usableEpisodeImage = (path) => {
@@ -49,8 +50,7 @@ const usableEpisodeImage = (path) => {
 
 const tmdbPosterUrl = (path, size = 'w342') => {
     if (!path || typeof path !== 'string') return '';
-    if (path.startsWith('http')) return path;
-    return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
+    return tmdbImageUrl(path, size) || '';
 };
 
 const pruneVolatileLocalStorage = () => {
@@ -219,6 +219,7 @@ const WatchPage = () => {
     const [streamReloadNonce, setStreamReloadNonce] = useState(0);
     const [activeSeason, setActiveSeason] = useState(urlSeason);
     const fetchedSeasonStillsRef = useRef(new Set());
+    const fetchingSeasonStillsRef = useRef(new Set());
     const [profileId, setProfileId] = useState(localStorage.getItem('mutflix_last_profile_id'));
 
     // Auth state for Navbar
@@ -231,6 +232,10 @@ const WatchPage = () => {
 
     // Subtitle Customizer
     const [rawSubtitleText, setRawSubtitleText] = useState(null);
+    const [embeddedSubtitleTracks, setEmbeddedSubtitleTracks] = useState([]);
+    const [selectedEmbeddedSubtitleIndex, setSelectedEmbeddedSubtitleIndex] = useState(null);
+    const [embeddedSubtitleLoading, setEmbeddedSubtitleLoading] = useState(false);
+    const [showSubtitleTrackMenu, setShowSubtitleTrackMenu] = useState(false);
     /** Subtitle mux di dalam file (textTracks), hanya jika tidak ada file .srt/.vtt terpisah */
     const [embeddedSubsAvailable, setEmbeddedSubsAvailable] = useState(false);
     const [activeCues, setActiveCues] = useState([]);
@@ -304,6 +309,7 @@ const WatchPage = () => {
     const lastBufferUiTickRef = useRef(0);
     const lastResumeCacheTickRef = useRef(0);
     const currentTimeRef = useRef(0);
+    const currentVideoPathRef = useRef(null);
     const pendingStreamSeekRef = useRef(0);
     const streamRecoveryRef = useRef({ videoPath: null, attempts: 0, lastAt: 0 });
     const streamLoadSeqRef = useRef(0);
@@ -318,6 +324,10 @@ const WatchPage = () => {
     useEffect(() => {
         playerPrefsRef.current = { playbackRate, volume, isMuted };
     }, [isMuted, playbackRate, volume]);
+
+    useEffect(() => {
+        currentVideoPathRef.current = currentVideo?.path || null;
+    }, [currentVideo?.path]);
 
     // Derived
     // Important: if TMDB API key missing (tmdbData=null) and `type` query param is wrong,
@@ -378,6 +388,38 @@ const WatchPage = () => {
         return dataMap;
     }, []);
 
+    const loadSeasonEpisodeData = useCallback((tmdbId, seasonNum) => {
+        const season = toInt(seasonNum, 1);
+        if (!tmdbId || !Number.isFinite(season)) return;
+        const key = `${tmdbId}_${season}`;
+        if (fetchedSeasonStillsRef.current.has(key) || fetchingSeasonStillsRef.current.has(key)) return;
+
+        fetchingSeasonStillsRef.current.add(key);
+        void getTMDBSeasonDetails(tmdbId, season)
+            .then((sd) => {
+                if (sd?.episodes) {
+                    const dataMap = {};
+                    sd.episodes.forEach((ep) => {
+                        dataMap[`${season}_${ep.episode_number}`] = {
+                            still_path: ep.still_path
+                                ? tmdbImageUrl(ep.still_path, 'w300')
+                                : null,
+                            name: ep.name,
+                            isTmdbName: Boolean(ep.name),
+                        };
+                    });
+                    setEpisodeData((prev) => ({ ...prev, ...dataMap }));
+                }
+                fetchedSeasonStillsRef.current.add(key);
+            })
+            .catch(() => {
+                fetchedSeasonStillsRef.current.add(key);
+            })
+            .finally(() => {
+                fetchingSeasonStillsRef.current.delete(key);
+            });
+    }, []);
+
     // ─── Load Data ──────────────────────────────────
     useEffect(() => {
         let cancelled = false;
@@ -387,6 +429,7 @@ const WatchPage = () => {
             setTmdbData(navigationTmdbData);
             setCredits(null);
             fetchedSeasonStillsRef.current = new Set();
+            fetchingSeasonStillsRef.current = new Set();
             try {
                 // Critical path: videos only. TMDB metadata loads in background.
                 const videosResp = await fetchVideos(decodedName);
@@ -433,6 +476,11 @@ const WatchPage = () => {
                 }
 
                 // Biarkan pemutar & stream mulai lebih dulu — kredit & still episode di background
+                const seasonToPrefetch = targetVideo?.season || urlSeason || 1;
+                if (navigationTmdbData?.tmdb_id && navigationTmdbData?.media_type === 'tv') {
+                    loadSeasonEpisodeData(navigationTmdbData.tmdb_id, seasonToPrefetch);
+                }
+
                 setLoading(false);
 
                 // Background: TMDB metadata + credits.
@@ -442,11 +490,20 @@ const WatchPage = () => {
                             urlType === 'series' ||
                             videosList.length > 1 ||
                             videosList.some((v) => toInt(v.season, 1) > 1);
-                        const tmdb = await getTMDBInfo(decodedName, {
+                        const tmdbOptions = {
                             mediaType: inferredIsSeries ? 'tv' : (urlType === 'movie' ? 'movie' : undefined),
-                        });
+                        };
+                        const lightTmdb = await getTMDBInfo(decodedName, { ...tmdbOptions, light: true });
                         if (cancelled) return;
-                        const resolvedTmdb = tmdb || navigationTmdbData;
+                        const lightResolvedTmdb = lightTmdb || navigationTmdbData;
+                        setTmdbData(lightResolvedTmdb);
+                        if (lightResolvedTmdb?.tmdb_id && lightResolvedTmdb?.media_type === 'tv') {
+                            loadSeasonEpisodeData(lightResolvedTmdb.tmdb_id, seasonToPrefetch);
+                        }
+
+                        const tmdb = await getTMDBInfo(decodedName, tmdbOptions);
+                        if (cancelled) return;
+                        const resolvedTmdb = tmdb || lightResolvedTmdb;
                         setTmdbData(resolvedTmdb);
                         if (resolvedTmdb?.tmdb_id) {
                             const creditsData = await getTMDBCredits(resolvedTmdb.tmdb_id, resolvedTmdb.media_type);
@@ -463,7 +520,7 @@ const WatchPage = () => {
         };
         loadData();
         return () => { cancelled = true; };
-    }, [decodedName, urlType, urlSeason, urlEp, hasEpisodeQuery, navigationWatchMeta, createImmediateEpisodeData]);
+    }, [decodedName, urlType, urlSeason, urlEp, hasEpisodeQuery, navigationWatchMeta, createImmediateEpisodeData, loadSeasonEpisodeData]);
 
     // Lazy-load TMDB episode stills + episode names per season tab.
     useEffect(() => {
@@ -473,29 +530,8 @@ const WatchPage = () => {
 
         const seasonNum = toInt(activeSeason, 1);
         if (!Number.isFinite(seasonNum)) return;
-        if (fetchedSeasonStillsRef.current.has(seasonNum)) return;
-
-        void getTMDBSeasonDetails(tmdbData.tmdb_id, seasonNum)
-            .then((sd) => {
-                if (sd?.episodes) {
-                    const dataMap = {};
-                    sd.episodes.forEach((ep) => {
-                        dataMap[`${seasonNum}_${ep.episode_number}`] = {
-                            still_path: ep.still_path
-                                ? `https://image.tmdb.org/t/p/w300${ep.still_path.startsWith('/') ? ep.still_path : `/${ep.still_path}`}`
-                                : null,
-                            name: ep.name,
-                            isTmdbName: Boolean(ep.name),
-                        };
-                    });
-                    setEpisodeData((prev) => ({ ...prev, ...dataMap }));
-                }
-                fetchedSeasonStillsRef.current.add(seasonNum);
-            })
-            .catch(() => {
-                fetchedSeasonStillsRef.current.add(seasonNum);
-            });
-    }, [tmdbData?.tmdb_id, activeSeason, isSeriesContent]);
+        loadSeasonEpisodeData(tmdbData.tmdb_id, seasonNum);
+    }, [tmdbData?.tmdb_id, activeSeason, isSeriesContent, loadSeasonEpisodeData]);
 
     useEffect(() => {
         if (!tmdbData?.tmdb_id || !tmdbData?.media_type) {
@@ -829,6 +865,28 @@ const WatchPage = () => {
         });
     }, []);
 
+    const loadEmbeddedSubtitleTrack = useCallback(async (track) => {
+        if (!currentVideo?.path || !track?.supported || track.stream_index == null) return false;
+        const expectedPath = currentVideo.path;
+        setEmbeddedSubtitleLoading(true);
+        try {
+            const text = await fetchEmbeddedSubtitle(expectedPath, track.stream_index);
+            if (currentVideoPathRef.current !== expectedPath) return false;
+            if (!text) return false;
+            setRawSubtitleText(text);
+            setSelectedEmbeddedSubtitleIndex(track.stream_index);
+            setShowSubtitles(true);
+            return true;
+        } catch (e) {
+            console.error('Embedded subtitle load error:', e);
+            return false;
+        } finally {
+            if (currentVideoPathRef.current === expectedPath) {
+                setEmbeddedSubtitleLoading(false);
+            }
+        }
+    }, [currentVideo?.path]);
+
     useEffect(() => {
         applyPlayerPrefsToVideo();
     }, [applyPlayerPrefsToVideo, currentVideo?.path]);
@@ -872,6 +930,10 @@ const WatchPage = () => {
             }
             setSubtitleUrl(null);
             setRawSubtitleText(null);
+            setEmbeddedSubtitleTracks([]);
+            setSelectedEmbeddedSubtitleIndex(null);
+            setEmbeddedSubtitleLoading(false);
+            setShowSubtitleTrackMenu(false);
             setEmbeddedSubsAvailable(false);
 
             if (hlsInstanceRef.current) {
@@ -891,6 +953,28 @@ const WatchPage = () => {
 
                 if (subText && !cancelled) {
                     setRawSubtitleText(subText);
+                }
+
+                if (currentVideo.path?.startsWith('gdrive/')) {
+                    void getEmbeddedSubtitles(currentVideo.path)
+                        .then((embeddedSubInfo) => {
+                            if (cancelled || currentVideoPathRef.current !== currentVideo.path) return;
+                            const embeddedTracks = Array.isArray(embeddedSubInfo?.tracks)
+                                ? embeddedSubInfo.tracks.filter((track) => track?.stream_index != null)
+                                : [];
+                            const supportedEmbeddedTracks = embeddedTracks.filter((track) => track?.supported);
+                            setEmbeddedSubtitleTracks(embeddedTracks);
+                            if (!subText && supportedEmbeddedTracks.length > 0) {
+                                const defaultTrack =
+                                    supportedEmbeddedTracks.find((track) => track.default) ||
+                                    supportedEmbeddedTracks.find((track) => /^(ind|id)$/i.test(track.language || '')) ||
+                                    supportedEmbeddedTracks[0];
+                                void loadEmbeddedSubtitleTrack(defaultTrack);
+                            }
+                        })
+                        .catch((e) => {
+                            if (!cancelled) console.error('Embedded subtitle probe error:', e);
+                        });
                 }
 
                 if (details?.url && videoRef.current) {
@@ -1042,7 +1126,7 @@ const WatchPage = () => {
             }
             resetVideoElement();
         };
-    }, [addStreamCacheBuster, applyPlayerPrefsToVideo, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, playWithAutoplayFallback, requestStreamRecovery, resetVideoElement, resolveBackendUrl, streamReloadNonce]);
+    }, [addStreamCacheBuster, applyPlayerPrefsToVideo, armStreamReadyWatchdog, clearStreamWatchdog, currentVideo, loadEmbeddedSubtitleTrack, playWithAutoplayFallback, requestStreamRecovery, resetVideoElement, resolveBackendUrl, streamReloadNonce]);
 
     // ─── Handle Subtitle Delay/Text Changes ─────────
     useEffect(() => {
@@ -1181,7 +1265,8 @@ const WatchPage = () => {
         };
     }, [subtitleUrl, showSubtitles, currentVideo?.path]);
 
-    const hasSubtitleSource = !!(subtitleUrl || embeddedSubsAvailable);
+    const embeddedSubtitleSourceAvailable = embeddedSubtitleTracks.some((track) => track?.supported);
+    const hasSubtitleSource = !!(subtitleUrl || embeddedSubsAvailable || embeddedSubtitleSourceAvailable);
     const syncDelayAppliesToExternalFile = !!subtitleUrl;
 
     /** Sembunyikan cursor seperti Netflix/YouTube saat UI sudah auto-hide (bukan saat menu terbuka / buffering). */
@@ -1192,6 +1277,7 @@ const WatchPage = () => {
         !videoError &&
         !isScrubbing &&
         !showSubSettings &&
+        !showSubtitleTrackMenu &&
         !showSpeedMenu &&
         !showAudioMenu;
 
@@ -1272,7 +1358,10 @@ const WatchPage = () => {
                     setShowSubtitles(s => !s);
                     break;
                 case 'Escape':
+                    setShowSubtitleTrackMenu(false);
                     setShowSpeedMenu(false);
+                    setShowAudioMenu(false);
+                    setShowSubSettings(false);
                     break;
             }
         };
@@ -1284,7 +1373,9 @@ const WatchPage = () => {
     const handleVideoClick = () => {
         restoreSoundAfterUserGesture();
         if (showSubSettings) setShowSubSettings(false);
+        if (showSubtitleTrackMenu) setShowSubtitleTrackMenu(false);
         if (showSpeedMenu) setShowSpeedMenu(false);
+        if (showAudioMenu) setShowAudioMenu(false);
         setShowControls(false); // hide UI instead of pausing
     };
 
@@ -1813,12 +1904,65 @@ const WatchPage = () => {
                                             >
                                                 Subtitle
                                             </button>
+                                            {embeddedSubtitleTracks.length > 0 && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setShowSubtitleTrackMenu(!showSubtitleTrackMenu);
+                                                        setShowSubSettings(false);
+                                                        setShowSpeedMenu(false);
+                                                        setShowAudioMenu(false);
+                                                    }}
+                                                    className={`max-w-[150px] truncate transition text-[12px] font-medium flex items-center gap-0.5 ${showSubtitleTrackMenu ? 'text-[#00dc41]' : 'text-white/60 hover:text-white'}`}
+                                                    title="Pilih subtitle embedded"
+                                                >
+                                                    <span className="truncate">
+                                                        {embeddedSubtitleLoading
+                                                            ? 'Loading...'
+                                                            : embeddedSubtitleTracks.find((track) => track.stream_index === selectedEmbeddedSubtitleIndex)?.label || 'Embedded'}
+                                                    </span>
+                                                    <ChevronDown size={13} className="shrink-0" />
+                                                </button>
+                                            )}
                                             <button
-                                                onClick={() => setShowSubSettings(!showSubSettings)}
+                                                onClick={() => {
+                                                    setShowSubSettings(!showSubSettings);
+                                                    setShowSubtitleTrackMenu(false);
+                                                    setShowSpeedMenu(false);
+                                                    setShowAudioMenu(false);
+                                                }}
                                                 className={`p-1 transition ${showSubSettings ? 'text-[#00dc41]' : 'text-white/50 hover:text-white'}`}
                                             >
                                                 <Settings size={14} />
                                             </button>
+
+                                            {showSubtitleTrackMenu && embeddedSubtitleTracks.length > 0 && (
+                                                <div className="absolute bottom-full right-0 mb-3 bg-[#1a1c22]/95 backdrop-blur-md rounded-lg border border-white/10 py-1 shadow-xl min-w-[190px] max-h-56 overflow-y-auto z-50">
+                                                    {embeddedSubtitleTracks.map((track) => (
+                                                        <button
+                                                            type="button"
+                                                            key={track.stream_index}
+                                                            disabled={embeddedSubtitleLoading || !track.supported}
+                                                            onClick={() => {
+                                                                if (!track.supported) return;
+                                                                setShowSubtitleTrackMenu(false);
+                                                                void loadEmbeddedSubtitleTrack(track);
+                                                            }}
+                                                            className={`block w-full text-left px-3 py-1.5 text-[12px] transition disabled:opacity-50 ${selectedEmbeddedSubtitleIndex === track.stream_index
+                                                                ? 'text-[#00dc41] bg-[#00dc41]/10 font-bold'
+                                                                : 'text-gray-300 hover:bg-white/5 hover:text-white'
+                                                                }`}
+                                                        >
+                                                            {track.label || `Subtitle ${track.stream_index}`}
+                                                            {track.codec ? (
+                                                                <span className="text-gray-500 font-normal ml-1">
+                                                                    {track.supported ? track.codec : `${track.codec} unsupported`}
+                                                                </span>
+                                                            ) : null}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
 
                                             {/* Subtitle Settings Menu */}
                                             <div className={`absolute bottom-full right-0 mb-4 bg-[#1a1c22]/95 backdrop-blur-md rounded-lg border border-white/10 p-4 shadow-xl w-[280px] text-white z-50 cursor-default transition-all duration-200 origin-bottom-right ${showSubSettings ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' : 'opacity-0 scale-95 translate-y-2 pointer-events-none'}`}>
@@ -1954,6 +2098,8 @@ const WatchPage = () => {
                                                     onClick={() => {
                                                         setShowAudioMenu(!showAudioMenu);
                                                         setShowSpeedMenu(false);
+                                                        setShowSubtitleTrackMenu(false);
+                                                        setShowSubSettings(false);
                                                     }}
                                                     className={`transition text-[13px] font-medium flex items-center gap-1 max-w-[160px] truncate ${showAudioMenu ? 'text-[#00dc41]' : 'text-white/70 hover:text-[#00dc41]'}`}
                                                     title="Pilih trek audio (embedded)"
@@ -1991,6 +2137,8 @@ const WatchPage = () => {
                                                 onClick={() => {
                                                     setShowSpeedMenu(!showSpeedMenu);
                                                     setShowAudioMenu(false);
+                                                    setShowSubtitleTrackMenu(false);
+                                                    setShowSubSettings(false);
                                                 }}
                                                 className={`transition text-[13px] font-medium ${playbackRate !== 1 ? 'text-[#00dc41]' : 'text-white/70 hover:text-[#00dc41]'}`}
                                             >

@@ -1,9 +1,9 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useParams, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList, fetchFolders } from '../services/api';
+import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList, fetchFolders, tmdbImageUrl } from '../services/api';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -54,6 +54,7 @@ const ContentDetail = () => {
 
   // Cache TMDB season episode info so when user switches seasons we don't refetch.
   const fetchedSeasonStillsRef = useRef(new Set());
+  const fetchingSeasonStillsRef = useRef(new Set());
 
   // Important: even if TMDB API key is missing (tmdbData=null) and `type` query param is wrong,
   // we still detect series using `videos.length > 1` so Episodes tab won't disappear.
@@ -81,6 +82,52 @@ const ContentDetail = () => {
     }
   }, [lastWatchedMedia]);
 
+  const createImmediateEpisodeData = useCallback((videosList, seededEpisodeData = {}) => {
+    const dataMap = { ...seededEpisodeData };
+    videosList.forEach((video, idx) => {
+      const season = toInt(video.season, 1);
+      const episode = toInt(video.episode, idx + 1);
+      const key = `${season}_${episode}`;
+      const existing = dataMap[key] || {};
+      const still = video.still_path || video.thumbnail || video.thumbnail_path || video.backdrop_path || null;
+      dataMap[key] = {
+        ...existing,
+        still_path: usableEpisodeImage(existing.still_path) || (still ? tmdbImageUrl(still, 'w500') : null),
+        name: existing.name || video.name || `Episode ${episode}`,
+        isTmdbName: Boolean(existing.isTmdbName),
+      };
+    });
+    return dataMap;
+  }, []);
+
+  const loadSeasonEpisodeData = useCallback((tmdbId, seasonNum) => {
+    const season = toInt(seasonNum, 1);
+    if (!tmdbId || !Number.isFinite(season)) return;
+    const key = `${tmdbId}_${season}`;
+    if (fetchedSeasonStillsRef.current.has(key) || fetchingSeasonStillsRef.current.has(key)) return;
+
+    fetchingSeasonStillsRef.current.add(key);
+    void getTMDBSeasonDetails(tmdbId, season)
+      .then((seasonData) => {
+        if (seasonData?.episodes) {
+          const dataMap = {};
+          seasonData.episodes.forEach((ep) => {
+            dataMap[`${season}_${ep.episode_number}`] = {
+              still_path: ep.still_path ? tmdbImageUrl(ep.still_path, 'w500') : null,
+              name: ep.name,
+              isTmdbName: Boolean(ep.name),
+            };
+          });
+          setEpisodeData((prev) => ({ ...prev, ...dataMap }));
+        }
+        fetchedSeasonStillsRef.current.add(key);
+      })
+      .catch(() => { /* ignore */ })
+      .finally(() => {
+        fetchingSeasonStillsRef.current.delete(key);
+      });
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
     const loadData = async () => {
@@ -90,26 +137,37 @@ const ContentDetail = () => {
       setTmdbData(initialDetailMetadata);
       setCredits(null);
       fetchedSeasonStillsRef.current = new Set();
+      fetchingSeasonStillsRef.current = new Set();
       try {
         const fallbackCatalogItem = navigationDetailItem || { folder_name: decodedName };
         const foldersPromise = navigationDetailItem ? Promise.resolve(null) : fetchFolders();
 
-        const loadVisualMetadata = (catalogItem) => {
+        const loadVisualMetadata = async (catalogItem, seasonToPrefetch) => {
           const tmdbSearchTitle = catalogItem.tmdb_query || catalogItem.tmdb_title || catalogItem.folder_name || catalogItem.name || decodedName;
+          const tmdbOptions = tmdbOptsFromCatalogItem(catalogItem, urlType);
           const immediateMetadata = mergeDetailMetadata(catalogItem, null, decodedName, urlType);
           setTmdbData(immediateMetadata);
 
-          getTMDBInfo(tmdbSearchTitle, tmdbOptsFromCatalogItem(catalogItem, urlType))
-            .then(async (tmdb) => {
-              if (!isMounted) return;
-              const detailMetadata = mergeDetailMetadata(catalogItem, tmdb, decodedName, urlType);
-              setTmdbData(detailMetadata);
-              if (detailMetadata?.tmdb_id) {
-                const creditsData = await getTMDBCredits(detailMetadata.tmdb_id, detailMetadata.media_type);
-                if (isMounted) setCredits(creditsData);
-              }
-            })
-            .catch(() => { /* ignore */ });
+          try {
+            const lightTmdb = await getTMDBInfo(tmdbSearchTitle, { ...tmdbOptions, light: true });
+            if (!isMounted) return;
+            const lightMetadata = mergeDetailMetadata(catalogItem, lightTmdb, decodedName, urlType);
+            setTmdbData(lightMetadata);
+            if (lightMetadata?.tmdb_id && lightMetadata?.media_type === 'tv') {
+              loadSeasonEpisodeData(lightMetadata.tmdb_id, seasonToPrefetch);
+            }
+
+            const tmdb = await getTMDBInfo(tmdbSearchTitle, tmdbOptions);
+            if (!isMounted) return;
+            const detailMetadata = mergeDetailMetadata(catalogItem, tmdb || lightTmdb, decodedName, urlType);
+            setTmdbData(detailMetadata);
+            if (detailMetadata?.tmdb_id) {
+              const creditsData = await getTMDBCredits(detailMetadata.tmdb_id, detailMetadata.media_type);
+              if (isMounted) setCredits(creditsData);
+            }
+          } catch {
+            /* ignore */
+          }
         };
 
         const videosResp = await fetchVideos(decodedName);
@@ -128,6 +186,7 @@ const ContentDetail = () => {
         });
 
         setVideos(videosList);
+        setEpisodeData(createImmediateEpisodeData(videosList));
         setTmdbData((prev) => prev || mergeDetailMetadata(fallbackCatalogItem, null, decodedName, urlType));
 
         // Compute active tab from the fastest available data (don't block UI).
@@ -135,16 +194,23 @@ const ContentDetail = () => {
         setActiveTab(isSeries ? 'episodes' : 'cast');
         setLoading(false);
 
+        const firstVisibleSeason = videosList[0]?.season || 1;
+        if (initialDetailMetadata?.tmdb_id && isSeries) {
+          loadSeasonEpisodeData(initialDetailMetadata.tmdb_id, firstVisibleSeason);
+        }
+
         // Step 2: Background fetches (non-blocking).
         // 2a. Visual Metadata. Episode stills are lazy-loaded per season after TMDB id is known.
         if (navigationDetailItem) {
-          loadVisualMetadata(navigationDetailItem);
+          void loadVisualMetadata(navigationDetailItem, firstVisibleSeason);
         } else {
+          void loadVisualMetadata(fallbackCatalogItem, firstVisibleSeason);
           foldersPromise.then((foldersResp) => {
             if (!isMounted) return;
-            loadVisualMetadata(findCatalogItemForDetail(foldersResp, decodedName) || fallbackCatalogItem);
+            const catalogItem = findCatalogItemForDetail(foldersResp, decodedName);
+            if (catalogItem) void loadVisualMetadata(catalogItem, firstVisibleSeason);
           }).catch(() => {
-            if (isMounted) loadVisualMetadata(fallbackCatalogItem);
+            /* fallback already started */
           });
         }
 
@@ -197,7 +263,7 @@ const ContentDetail = () => {
 
     loadData();
     return () => { isMounted = false; };
-  }, [decodedName, urlType, authUser, profileId, navigationDetailItem, initialDetailMetadata]);
+  }, [decodedName, urlType, authUser, profileId, navigationDetailItem, initialDetailMetadata, createImmediateEpisodeData, loadSeasonEpisodeData]);
 
   useEffect(() => {
     const onProfileChange = (event) => {
@@ -213,26 +279,8 @@ const ContentDetail = () => {
     if (!isSeriesContent) return;
     if (!detailSeason) return;
 
-    const seasonNum = toInt(detailSeason, 1);
-    if (fetchedSeasonStillsRef.current.has(seasonNum)) return;
-    void getTMDBSeasonDetails(tmdbData.tmdb_id, seasonNum)
-      .then((seasonData) => {
-        if (seasonData?.episodes) {
-          const dataMap = {};
-          seasonData.episodes.forEach((ep) => {
-            dataMap[`${seasonNum}_${ep.episode_number}`] = {
-              still_path: ep.still_path
-                ? `https://image.tmdb.org/t/p/w500${ep.still_path.startsWith('/') ? ep.still_path : `/${ep.still_path}`}`
-                : null,
-              name: ep.name
-            };
-          });
-          setEpisodeData((prev) => ({ ...prev, ...dataMap }));
-        }
-        fetchedSeasonStillsRef.current.add(seasonNum);
-      })
-      .catch(() => { /* ignore */ });
-  }, [tmdbData?.tmdb_id, detailSeason, isSeriesContent]);
+    loadSeasonEpisodeData(tmdbData.tmdb_id, detailSeason);
+  }, [tmdbData?.tmdb_id, detailSeason, isSeriesContent, loadSeasonEpisodeData]);
 
   const handleToggleMyList = async () => {
     if (!authUser) {
@@ -285,8 +333,7 @@ const ContentDetail = () => {
 
   const normalizeImageUrl = (path, size) => {
     if (!path || typeof path !== 'string') return '';
-    if (path.startsWith('http')) return path;
-    return `https://image.tmdb.org/t/p/${size}${path.startsWith('/') ? path : `/${path}`}`;
+    return tmdbImageUrl(path, size) || '';
   };
 
   const backdropPath =

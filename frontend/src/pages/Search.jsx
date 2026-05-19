@@ -87,10 +87,8 @@ const Search = () => {
           let matched = cleanTitle.includes(queryLower);
           
           if (!matched) {
-            // getTMDBInfo() cache key format:
-            // mutflix_tmdb_info_${queryTextLower}_ov_${mediaType||'multi'}_${year??'x'}_${region||'x'}_${includeAdult?'a':''}
-            // plus suffix "_lite" untuk light mode.
-            const baseKey = `mutflix_tmdb_info_${cleanTitle}_ov_multi_x_x_`;
+            // getTMDBInfo() cache key format, plus suffix "_lite" untuk light mode.
+            const baseKey = `mutflix_tmdb_info_v5_server_proxy_${cleanTitle}_ov_multi_x_x_`;
             const cacheRawFull = localStorage.getItem(baseKey);
             const cacheRawLite = localStorage.getItem(`${baseKey}_lite`);
             const cacheRaw = cacheRawFull || cacheRawLite;

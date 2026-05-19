@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, Trash2, CheckCircle2, Clock, PlayCircle, Film, Tv, Play, Info, MoreVertical } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchMyList, removeFromMyList, updateMyListStatus, fetchProfiles, logout, getTMDBInfo, fetchHistory } from '../services/api';
+import { fetchMyList, removeFromMyList, updateMyListStatus, fetchProfiles, logout, getTMDBInfo, fetchHistory, tmdbImageUrl } from '../services/api';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 
@@ -274,12 +274,6 @@ const MyList = () => {
 const ListCard = ({ item, onRemove, onStatusUpdate, historyProgress }) => {
     const navigate = useNavigate();
     const meta = item.meta_json || {};
-    const tmdbImageUrl = (path, size = 'w500') => {
-        if (!path || typeof path !== 'string') return null;
-        if (path.startsWith('http')) return path;
-        const p = path.startsWith('/') ? path : `/${path}`;
-        return `https://image.tmdb.org/t/p/${size}${p}`;
-    };
     const posterPath = meta.tmdb_poster_path ? tmdbImageUrl(meta.tmdb_poster_path, 'w342') : null;
 
     return (

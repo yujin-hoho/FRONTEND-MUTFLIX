@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo, fetchVideos } from '../services/api';
+import { getTMDBInfo, fetchVideos, tmdbImageUrl as serverTmdbImageUrl } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute, preloadWatchPageRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -113,10 +113,8 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
 
   const tmdbImageUrl = (path, size = 'w500') => {
     if (!path || typeof path !== 'string') return '';
-    if (path.startsWith('http')) return path;
     if (path === EPISODE_PLACEHOLDER_IMAGE) return path;
-    const p = path.startsWith('/') ? path : `/${path}`;
-    return `https://image.tmdb.org/t/p/${size}${p}`;
+    return serverTmdbImageUrl(path, size) || '';
   };
 
   const folderName = item?.folder_name || item?.name || '';

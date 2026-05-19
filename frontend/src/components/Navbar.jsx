@@ -1,7 +1,7 @@
 import { Search, RotateCcw, List, User, LogOut, Trash2, X, PlayCircle, ChevronDown, Plus, Check } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { searchContent, getTMDBInfo, fetchProfiles, createProfile } from '../services/api';
+import { searchContent, getTMDBInfo, fetchProfiles, createProfile, tmdbImageUrl } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 import { createDetailNavigationState } from '../utils/detailMetadata';
@@ -184,13 +184,6 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
   const activeProfile = profiles.find((p) => p.id === activeProfileId);
 
   const forYouActive = location.pathname === '/dashboard';
-
-  const tmdbImageUrl = (path, size = 'w92') => {
-    if (!path || typeof path !== 'string') return '';
-    if (path.startsWith('http')) return path;
-    const p = path.startsWith('/') ? path : `/${path}`;
-    return `https://image.tmdb.org/t/p/${size}${p}`;
-  };
 
   return (
     <nav
