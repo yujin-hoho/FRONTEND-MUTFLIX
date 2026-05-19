@@ -4,7 +4,6 @@ import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
 import { searchContent, getTMDBInfo, logout, fetchFoldersFresh } from '../services/api';
 import Footer from '../components/Footer';
-import LoadingScreen from '../components/LoadingScreen';
 
 const tmdbOptsFromItem = (item) => {
   if (!item?.tmdb_query) return {};
@@ -17,6 +16,21 @@ const tmdbOptsFromItem = (item) => {
   if (item.include_adult) o.includeAdult = true;
   return o;
 };
+
+const ResultSkeleton = () => (
+  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8 animate-fade-in">
+    {Array.from({ length: 12 }).map((_, i) => (
+      <div key={i} className="flex justify-center">
+        <div className="w-[clamp(136px,40vw,190px)]">
+          <div className="aspect-[2/3] rounded-md bg-[#1b1d22] border border-white/5 overflow-hidden">
+            <div className="w-full h-full bg-gradient-to-br from-white/10 via-white/[0.03] to-transparent animate-pulse" />
+          </div>
+          <div className="mt-2.5 h-4 w-4/5 bg-[#22252b]/70 rounded animate-pulse" />
+        </div>
+      </div>
+    ))}
+  </div>
+);
 
 const Search = () => {
   const [searchParams] = useSearchParams();
@@ -195,13 +209,17 @@ const Search = () => {
           {loading ? 'Searching...' : `${results.length} results found`}
         </p>
 
-        {loading ? (
-          <LoadingScreen />
+        {!query ? (
+          <div className="text-gray-400 mt-10 text-center py-20 bg-[#16181d] rounded-lg border border-white/5">
+            Mulai dari kolom pencarian untuk menemukan film atau series.
+          </div>
+        ) : loading ? (
+          <ResultSkeleton />
         ) : results.length > 0 ? (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8">
             {results.map((item, idx) => (
               <div key={item.folder_name || item.name || idx} className="flex justify-center">
-                <MovieCard item={item} />
+                <MovieCard item={item} isFirst={idx < 8} posterFadeIn />
               </div>
             ))}
           </div>

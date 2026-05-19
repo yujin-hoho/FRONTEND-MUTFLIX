@@ -32,6 +32,7 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
   const [isSearching, setIsSearching] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [showMobileSearch, setShowMobileSearch] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [activeProfileId, setActiveProfileId] = useState(() => localStorage.getItem('mutflix_last_profile_id') || '');
   const [newProfileName, setNewProfileName] = useState('');
@@ -103,6 +104,7 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
     if (searchTerm.trim()) {
       navigate(`/search?q=${encodeURIComponent(searchTerm)}`);
       setIsSearchFocused(false);
+      setShowMobileSearch(false);
     }
   };
 
@@ -186,6 +188,7 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
   const forYouActive = location.pathname === '/dashboard';
 
   return (
+    <>
     <nav
       className={`fixed top-0 left-0 right-0 w-full z-[9999] px-4 sm:px-6 py-3.5 flex items-center gap-4 sm:gap-6 transition-[background,box-shadow,border-color] duration-300 ${
         isScrolled
@@ -255,7 +258,13 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
             onFocus={() => setIsSearchFocused(true)}
             onBlur={() => setTimeout(() => setIsSearchFocused(false), 200)}
           />
-          <Search onClick={handleSearch} className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5 cursor-pointer hover:text-white" />
+          <button
+            type="submit"
+            aria-label="Search"
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white p-1 rounded-full transition"
+          >
+            <Search className="w-5 h-5" />
+          </button>
         </form>
 
         {/* iQIYI-style Search Dropdown */}
@@ -299,7 +308,7 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
                           </span>
                           <span className="text-[11px] text-gray-500 truncate flex items-center gap-1">
                             {isSeriesLike(item) ? 'Series' : 'Movie'}
-                            {item.tmdb_rating && <span>• ⭐ {Number(item.tmdb_rating).toFixed(1)}</span>}
+                            {item.tmdb_rating && <span> | Rating {Number(item.tmdb_rating).toFixed(1)}</span>}
                           </span>
                         </div>
                       </div>
@@ -364,14 +373,22 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
       </div>
 
       <div className="flex flex-1 justify-end gap-5 sm:gap-6 items-center text-xs text-gray-300 font-medium z-40 relative">
-        <div className="flex flex-col items-center cursor-pointer hover:text-brand transition group">
+        <button
+          type="button"
+          aria-label="Open search"
+          onClick={() => setShowMobileSearch((open) => !open)}
+          className="sm:hidden flex flex-col items-center cursor-pointer hover:text-brand transition group"
+        >
+          <Search className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
+        </button>
+        <button type="button" className="flex flex-col items-center cursor-pointer hover:text-brand transition group">
           <RotateCcw className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
           <span className="hidden lg:block">History</span>
-        </div>
-        <div className="flex flex-col items-center cursor-pointer hover:text-brand transition group" onClick={() => navigate('/mylist')}>
+        </button>
+        <button type="button" className="flex flex-col items-center cursor-pointer hover:text-brand transition group" onClick={() => navigate('/mylist')}>
           <List className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
           <span className="hidden lg:block">My List</span>
-        </div>
+        </button>
 
         {isLoggedIn ? (
           <div className="flex items-center gap-3">
@@ -448,33 +465,57 @@ const Navbar = ({ onMeClick, isLoggedIn, username, onLogout, onProfileChange }) 
                 </div>
               )}
             </div>
-            <div className="flex flex-col items-center cursor-pointer hover:text-red-400 transition group" onClick={onLogout}>
+            <button type="button" className="flex flex-col items-center cursor-pointer hover:text-red-400 transition group" onClick={onLogout}>
               <LogOut className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-red-400" />
               <span className="hidden lg:block">Logout</span>
-            </div>
+            </button>
           </div>
         ) : (
-          <div
+          <button
+            type="button"
             className="flex flex-col items-center cursor-pointer hover:text-brand transition group relative"
             onClick={onMeClick}
           >
             <div className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full border border-black"></div>
             <User className="w-5 h-5 mb-0.5 text-gray-400 group-hover:text-brand" />
             <span className="hidden lg:block">Me</span>
-          </div>
+          </button>
         )}
       </div>
 
       <div className="flex gap-2 sm:gap-3 ml-2 lg:ml-4 flex-shrink-0 z-40 relative">
-        <button className="hidden xl:flex items-center gap-2 border border-white/20 rounded hover:bg-white/10 transition px-3 py-1.5 h-9">
+        <button type="button" className="hidden xl:flex items-center gap-2 border border-white/20 rounded hover:bg-white/10 transition px-3 py-1.5 h-9">
           <span className="text-xs font-semibold">Enjoy on TV</span>
         </button>
-        <button className="bg-gradient-to-r from-[#e3c193] to-[#d4a06b] text-black font-extrabold px-3 sm:px-4 py-1.5 rounded h-9 flex items-center gap-1.5 hover:brightness-110 transition shadow-[0_0_15px_rgba(227,193,147,0.3)]">
+        <button type="button" className="bg-gradient-to-r from-[#e3c193] to-[#d4a06b] text-black font-extrabold px-3 sm:px-4 py-1.5 rounded h-9 flex items-center gap-1.5 hover:brightness-110 transition shadow-[0_0_15px_rgba(227,193,147,0.3)]">
           <div className="w-4 h-4 rounded-full border-[1.5px] border-black flex items-center justify-center text-[10px]">V</div>
           <span className="text-sm">VIP</span>
         </button>
       </div>
     </nav>
+    {showMobileSearch && (
+      <div className="fixed top-[64px] left-0 right-0 z-[9998] sm:hidden px-4 pb-4 pt-2 bg-[#0a0b0f]/98 border-b border-white/10 shadow-2xl animate-slide-up">
+        <form onSubmit={handleSearch} className="relative">
+          <input
+            autoFocus
+            type="text"
+            placeholder="Cari judul..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-white/10 text-white text-sm rounded-full py-3 pl-4 pr-12 outline-none focus:bg-white/15 transition-all border border-white/10"
+            onFocus={() => setIsSearchFocused(true)}
+          />
+          <button
+            type="submit"
+            aria-label="Search"
+            className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-[#00dc41] rounded-full"
+          >
+            <Search className="w-5 h-5" />
+          </button>
+        </form>
+      </div>
+    )}
+    </>
   );
 };
 

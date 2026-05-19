@@ -184,7 +184,7 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
 
               {/* Content Layer with Staggered Animations */}
               <div
-                className={`relative z-10 flex flex-col justify-center h-full px-8 md:px-16 pt-20 pb-12 md:pb-32 max-w-[850px] transition-all duration-700 ${isActive ? 'translate-x-0 opacity-100' : '-translate-x-12 opacity-0'}`}
+                className={`relative z-10 flex flex-col justify-end md:justify-center h-full px-6 sm:px-8 md:px-16 pt-24 pb-20 md:pb-32 max-w-[850px] transition-all duration-700 ${isActive ? 'translate-x-0 opacity-100' : '-translate-x-12 opacity-0'}`}
               >
                 {/* Badge */}
                 <div className={`mb-4 w-max animate-reveal-right delay-100 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
@@ -194,14 +194,14 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                 </div>
 
                 {/* Title */}
-                <h1 className={`text-4xl md:text-7xl font-black text-white mb-6 leading-[0.9] tracking-tighter drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] animate-reveal-right delay-200 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                <h1 className={`text-[34px] sm:text-5xl md:text-7xl font-black text-white mb-5 md:mb-6 leading-[0.95] drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] animate-reveal-right delay-200 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   {title}
                 </h1>
 
                 {/* Meta Info */}
-                <div className={`flex items-center gap-4 mb-8 animate-reveal-right delay-300 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                <div className={`flex items-center gap-3 md:gap-4 mb-6 md:mb-8 flex-wrap animate-reveal-right delay-300 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[#00dc41] font-black text-xl drop-shadow-[0_0_8px_rgba(0,220,65,0.4)]">★ {rating > 0 ? Number(rating).toFixed(1) : '8.5'}</span>
+                    <span className="text-[#00dc41] font-black text-lg md:text-xl drop-shadow-[0_0_8px_rgba(0,220,65,0.4)]">Rating {rating > 0 ? Number(rating).toFixed(1) : '8.5'}</span>
                   </div>
                   <div className="w-[1px] h-4 bg-white/20"></div>
                   <span className="text-white font-bold text-sm tracking-widest uppercase">{year}</span>
@@ -214,12 +214,12 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                 </div>
 
                 {/* Description */}
-                <p className={`text-white/80 text-[15px] md:text-[17px] mb-12 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-2xl font-medium pr-8 drop-shadow-md animate-reveal-right delay-400 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                <p className={`text-white/80 text-[14px] md:text-[17px] mb-8 md:mb-12 line-clamp-3 md:line-clamp-2 leading-relaxed max-w-2xl font-medium md:pr-8 drop-shadow-md animate-reveal-right delay-400 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   {overview}
                 </p>
 
                 {/* Actions */}
-                <div className={`flex items-center gap-4 animate-reveal-right delay-500 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
+                <div className={`flex items-center gap-3 md:gap-4 flex-wrap animate-reveal-right delay-500 ${isActive ? 'opacity-100' : 'opacity-0'}`}>
                   <button
                     onMouseEnter={() => void preloadContentDetailRoute()}
                     onClick={() => {
@@ -228,13 +228,17 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
                         state: createDetailNavigationState(item, tmdbData),
                       });
                     }}
-                    className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-white px-8 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95 group/play"
+                    className="flex items-center gap-3 bg-brand hover:bg-[#00f04a] text-black px-6 md:px-8 py-3.5 md:py-4 rounded-xl font-black text-sm uppercase transition-all hover:scale-105 active:scale-95 group/play"
                   >
-                    <Play fill="white" size={20} className="group-hover/play:scale-110 transition-transform" />
+                    <Play fill="black" size={20} className="group-hover/play:scale-110 transition-transform" />
                     Watch Now
                   </button>
 
-                  <button className="flex items-center gap-3 bg-white/5 hover:bg-white/10 backdrop-blur-xl text-white px-8 py-4 rounded-xl border border-white/10 font-black text-sm uppercase tracking-widest transition-all hover:scale-105 active:scale-95">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/mylist')}
+                    className="flex items-center gap-3 bg-white/5 hover:bg-white/10 backdrop-blur-xl text-white px-6 md:px-8 py-3.5 md:py-4 rounded-xl border border-white/10 font-black text-sm uppercase transition-all hover:scale-105 active:scale-95"
+                  >
                     <BookmarkPlus size={20} />
                     My List
                   </button>

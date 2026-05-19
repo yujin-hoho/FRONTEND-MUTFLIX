@@ -391,7 +391,7 @@ const ContentDetail = () => {
 
           {/* Metadata Row */}
           <div className="flex items-center gap-2 text-sm text-gray-300 font-medium mb-3 flex-wrap">
-            <span className="text-[#00dc41] font-bold">★ {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
+            <span className="text-[#00dc41] font-bold">Rating {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
             <span className="text-gray-600">|</span>
             <span className="border border-gray-600 px-1.5 rounded-sm text-[11px]">
               {tmdbData?.media_type === 'movie' ? 'Movie' : (tmdbData?.total_seasons ? `${tmdbData.total_seasons} Seasons` : 'TV Series')}
@@ -401,7 +401,7 @@ const ContentDetail = () => {
             {isSeriesContent && (
               <>
                 <span className="text-gray-600">|</span>
-                <span>Updated to {videos.length}/Total {totalEpisodes} Episodes</span>
+                <span>{videos.length} of {totalEpisodes} episodes</span>
               </>
             )}
             {tmdbData?.runtime && (
@@ -528,8 +528,8 @@ const ContentDetail = () => {
             )}
             <h3 className="text-gray-400 text-sm font-medium mb-4">
               {isSeriesContent && uniqueSeasons.length > 1
-                ? `Season ${detailSeason} · ${episodesToShow.length} episode${episodesToShow.length === 1 ? '' : 's'}`
-                : `Episodes ${videos.length > 0 ? `1–${videos.length}` : '—'}`}
+                ? `Season ${detailSeason} | ${episodesToShow.length} episode${episodesToShow.length === 1 ? '' : 's'}`
+                : `Episodes ${videos.length > 0 ? `1-${videos.length}` : '-'}`}
             </h3>
             {loading ? (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">

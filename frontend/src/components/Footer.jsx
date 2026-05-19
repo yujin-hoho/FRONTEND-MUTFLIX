@@ -68,7 +68,7 @@ const Footer = () => {
           <a href="#" className="hover:text-gray-300 transition">Cookie Policy</a>
         </div>
         <div className="text-center md:text-right">
-          © 2026 MUTFLIX. All rights reserved.
+          Copyright 2026 MUTFLIX. All rights reserved.
         </div>
       </div>
     </footer>

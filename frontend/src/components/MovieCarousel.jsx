@@ -108,8 +108,10 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
   const [loadedPosterSrc, setLoadedPosterSrc] = useState('');
   const [cardRef, isNearViewport] = useNearViewport('900px', !!isFirst);
   const navigate = useNavigate();
-  const cardWidth = isHorizontal ? 260 : 190;
-  const posterHeight = isHorizontal ? 165 : 285;
+  const cardWidth = isHorizontal ? 'min(260px, 72vw)' : 'clamp(136px, 40vw, 190px)';
+  const posterStyle = isHorizontal
+    ? { height: '165px' }
+    : { aspectRatio: '2 / 3' };
 
   const tmdbImageUrl = (path, size = 'w500') => {
     if (!path || typeof path !== 'string') return '';
@@ -254,8 +256,8 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
         ${posterFadeIn ? '' : 'animate-poster-reveal'} group cursor-pointer shrink-0`}
       style={{ 
         zIndex: 1, 
-        width: `${cardWidth}px`, 
-        minWidth: `${cardWidth}px`,
+        width: cardWidth,
+        minWidth: cardWidth,
         animationDelay: posterFadeIn ? undefined : `${delay * 105}ms`
       }}
       onMouseEnter={handleMouseEnter}
@@ -263,8 +265,8 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       {/* Poster Container */}
       <div
         onClick={handleNavigate}
-        className="w-full rounded overflow-hidden bg-[#1b1d22] relative border border-transparent group-hover:border-white/20 transition-colors duration-300"
-        style={{ height: `${posterHeight}px` }}
+        className="w-full rounded-md overflow-hidden bg-[#1b1d22] relative border border-white/5 group-hover:border-white/20 transition-colors duration-300 shadow-[0_12px_32px_rgba(0,0,0,0.18)]"
+        style={posterStyle}
       >
         {shouldLoadMedia ? (
           <img 
@@ -275,7 +277,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
             decoding="async" 
             onLoad={() => posterFadeIn && setLoadedPosterSrc(poster)}
             onError={() => posterFadeIn && setLoadedPosterSrc(poster)}
-            className={`w-full h-full object-cover transition-opacity duration-500 transition-transform duration-500 group-hover:scale-105 ${
+            className={`w-full h-full object-cover transition-[opacity,transform] duration-500 group-hover:scale-105 ${
               posterFadeIn && rawPoster
                 ? posterLoaded
                   ? 'opacity-100'
@@ -360,7 +362,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
 
       {/* Title Below Poster */}
       <div className="mt-2 px-0.5">
-        <h3 className="text-white text-[15px] font-bold line-clamp-2 transition-colors">{title}</h3>
+        <h3 className="text-white text-[14px] md:text-[15px] font-bold line-clamp-2 transition-colors leading-snug">{title}</h3>
         {isHorizontal && episodeLabel && (
           <p className="mt-0.5 text-gray-400 text-[12px] font-medium line-clamp-1">{episodeLabel}</p>
         )}
@@ -454,11 +456,14 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
               <div
                 key={i}
                 className="snap-start shrink-0 group cursor-wait"
-                style={{ width: `${isHorizontal ? 260 : 190}px`, minWidth: `${isHorizontal ? 260 : 190}px` }}
+                style={{
+                  width: isHorizontal ? 'min(260px, 72vw)' : 'clamp(136px, 40vw, 190px)',
+                  minWidth: isHorizontal ? 'min(260px, 72vw)' : 'clamp(136px, 40vw, 190px)'
+                }}
               >
                 <div
                   className="w-full bg-[#22252b]/60 rounded-md animate-pulse border border-white/5"
-                  style={{ height: `${isHorizontal ? 165 : 285}px` }}
+                  style={isHorizontal ? { height: '165px' } : { aspectRatio: '2 / 3' }}
                 ></div>
                 <div className="mt-2.5 h-4 w-3/4 bg-[#22252b]/60 rounded animate-pulse"></div>
               </div>

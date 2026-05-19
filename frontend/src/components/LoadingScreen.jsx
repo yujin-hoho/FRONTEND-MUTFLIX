@@ -1,26 +1,25 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 
-/**
- * Di-portal ke document.body supaya menutupi seluruh viewport.
- * Kalau tetap di dalam subtree yang punya transform (mis. animate-page-enter),
- * fixed positioning terikat ke ancestor — footer di luar bisa tampil di "depan" overlay.
- */
 const LoadingScreen = () => {
   const overlay = (
     <div
-      className="fixed inset-0 z-[99999] bg-[#0a0b0f] flex items-center justify-center"
+      className="fixed inset-0 z-[99999] bg-[#080a0e] flex items-center justify-center"
       role="status"
       aria-live="polite"
       aria-busy="true"
     >
-      <div className="relative flex flex-col items-center">
-        <div className="w-12 h-12 border-4 border-[#00dc41]/20 border-t-[#00dc41] rounded-full animate-spin shadow-[0_0_15px_rgba(0,220,65,0.2)]" />
-        <div className="mt-4 flex items-center gap-1 opacity-50">
-          <div className="w-1.5 h-1.5 bg-[#00dc41] rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
-          <div className="w-1.5 h-1.5 bg-[#00dc41] rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-          <div className="w-1.5 h-1.5 bg-[#00dc41] rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
+      <div className="relative flex flex-col items-center px-6">
+        <div className="text-[#00dc41] text-3xl font-black tracking-tight mb-7">MUTFLIX</div>
+        <div className="relative w-14 h-14">
+          <div className="absolute inset-0 rounded-full border border-[#00dc41]/15" />
+          <div className="absolute inset-1 rounded-full border-[3px] border-[#00dc41]/15 border-t-[#00dc41] animate-spin shadow-[0_0_24px_rgba(0,220,65,0.18)]" />
+          <div className="absolute inset-[18px] rounded-full bg-[#00dc41] shadow-[0_0_18px_rgba(0,220,65,0.45)]" />
         </div>
+        <div className="mt-5 h-1 w-44 overflow-hidden rounded-full bg-white/10">
+          <div className="h-full w-1/2 rounded-full bg-[#00dc41] animate-[slideUp_1.1s_ease-in-out_infinite_alternate]" />
+        </div>
+        <span className="sr-only">Loading content</span>
       </div>
     </div>
   );

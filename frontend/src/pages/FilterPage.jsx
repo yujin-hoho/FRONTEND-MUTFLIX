@@ -244,8 +244,8 @@ const FilterGridSkeleton = ({ count = GRID_PAGE_SIZE }) => (
   <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-x-4 gap-y-8 animate-fade-in">
     {Array.from({ length: count }).map((_, i) => (
       <div key={i} className="flex justify-center">
-        <div className="w-[190px] min-w-[190px]">
-          <div className="h-[285px] rounded bg-[#1b1d22] border border-white/5 overflow-hidden relative">
+        <div className="w-[clamp(136px,40vw,190px)] min-w-[clamp(136px,40vw,190px)]">
+          <div className="aspect-[2/3] rounded bg-[#1b1d22] border border-white/5 overflow-hidden relative">
             <div className="absolute inset-0 bg-gradient-to-br from-white/10 via-white/[0.03] to-transparent animate-pulse" />
           </div>
           <div className="mt-2.5 h-4 w-4/5 bg-[#22252b]/70 rounded animate-pulse" />

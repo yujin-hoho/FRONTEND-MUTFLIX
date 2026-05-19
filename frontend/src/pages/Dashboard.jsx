@@ -48,7 +48,7 @@ const BrowseMoreStrip = ({ onNavigate }) => (
         <div>
           <p className="text-white text-[15px] font-semibold tracking-tight">Jelajahi koleksi</p>
           <p className="text-gray-500 text-[13px] mt-1 max-w-md leading-relaxed">
-            Atur region, genre, dan urutkan rating di halaman filter — lebih lega dari deretan kartu tanpa henti.
+            Atur region, genre, dan urutkan rating di halaman filter. Lebih lega dari deretan kartu tanpa henti.
           </p>
         </div>
       </div>
@@ -71,7 +71,7 @@ const backdropOrPosterUrl = (item) => {
   return tmdbImageUrl(raw, 'w1280');
 };
 
-/** Preload gambar di background (jangan await — jangan blokir paint) */
+/** Preload gambar di background tanpa memblokir paint. */
 const preloadDashboardImages = (resolvedItems, continueWatchingItems, topActors = []) => {
   const urls = [];
   const push = (u) => {
@@ -635,7 +635,6 @@ const Dashboard = () => {
                   />
                 </div>
 
-                {/* 👇 SISIPIN DI SINI */}
                 {idx === 2 && (
                   <>
                     <SectionDivider />
