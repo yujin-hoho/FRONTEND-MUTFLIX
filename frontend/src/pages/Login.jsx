@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, ChevronRight, Globe, Loader2 } from 'lucide-react';
 import Footer from '../components/Footer';
 import AuthOverlay from '../components/AuthOverlay';
-import { fetchFolders, getTMDBInfo, tmdbImageUrl } from '../services/api';
+import { fetchFolders, tmdbImageUrl } from '../services/api';
 
 const Login = () => {
     const navigate = useNavigate();
@@ -11,31 +11,30 @@ const Login = () => {
     const [authMode, setAuthMode] = useState('login');
     const [email, setEmail] = useState('');
     const [trending, setTrending] = useState([]);
-    const [loadingTrending, setLoadingTrending] = useState(false);
-
-    useEffect(() => {
-        document.title = "Unlimited Movies & TV shows | MUTFLIX";
-        loadTrending();
-    }, []);
 
     const loadTrending = async () => {
-        setLoadingTrending(true);
         try {
             const data = await fetchFolders();
             if (data && !data.__error) {
                 const allItems = [...(data.movies || []), ...(data.series || [])];
-                const shuffied = allItems.sort(() => 0.5 - Math.random()).slice(0, 10);
-                
-                // Quick enrichment for the first few
-                const enriched = await Promise.all(shuffied.map(async (item) => {
-                    const info = await getTMDBInfo(item.folder_name);
-                    return { ...item, poster_path: info?.poster_path };
-                }));
-                setTrending(enriched.filter(i => i.poster_path));
+                const shuffled = allItems
+                    .filter((item) => item.tmdb_poster_path || item.poster_path || item.poster)
+                    .sort(() => 0.5 - Math.random())
+                    .slice(0, 10)
+                    .map((item) => ({
+                        ...item,
+                        poster_path: item.tmdb_poster_path || item.poster_path || item.poster,
+                    }));
+                setTrending(shuffled);
             }
         } catch (e) { console.error(e); }
-        setLoadingTrending(false);
     };
+
+    useEffect(() => {
+        document.title = "Unlimited Movies & TV shows | MUTFLIX";
+        const id = setTimeout(() => loadTrending(), 0);
+        return () => clearTimeout(id);
+    }, []);
 
     const handleGetStarted = (e) => {
         e.preventDefault();

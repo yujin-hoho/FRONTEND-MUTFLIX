@@ -33,6 +33,8 @@ const usableEpisodeImage = (path) => {
   return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : '';
 };
 
+const firstImagePath = (...values) => firstText(...values);
+
 const toPositiveInt = (value) => {
   const n = value == null || value === '' ? NaN : Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
@@ -180,7 +182,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
 
   const isContinueWatching = progress !== undefined;
   // Prefer TMDB title. For history cards, fall back to saved history title so the row never gets stuck on Loading.
-  const rawTitle = item?.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || (isContinueWatching ? firstText(item?.series_title, item?.folder_name, item?.name, item?.media_title) : null);
+  const rawTitle = item?.tmdb_title || tmdbData?.tmdb_title || tmdbData?.title || firstText(item?.series_title, item?.folder_name, item?.name, item?.media_title);
   const title = rawTitle ? (cleanTitleOutsideParentheses(rawTitle) || rawTitle) : 'Loading...';
   const episodeLabel = isContinueWatching ? getHistoryEpisodeLabel(item, title) : '';
 
@@ -196,7 +198,15 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
   ].join('|');
 
   useEffect(() => {
-    const hasPoster = item.tmdb_poster_path || item.poster_path || item.poster;
+    const hasPoster = firstImagePath(
+      item.tmdb_poster_path,
+      item.poster_path,
+      item.poster,
+      item.image_url,
+      item.poster_url,
+      item.tmdb_backdrop_path,
+      item.backdrop_path
+    );
     const hasTmdbTitle = !!item?.tmdb_title;
     const hasSavedHistoryTitle = isContinueWatching && !!firstText(item?.series_title, item?.folder_name, item?.name, item?.media_title);
     const hasUsableHistoryImage = isContinueWatching && !!firstText(
@@ -235,11 +245,12 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
   }, [isNearViewport, tmdbFetchSignature, item, isContinueWatching, item?.tmdb_title, item?.tmdb_poster_path, item?.poster_path, item?.poster]);
 
   const rawPoster = isContinueWatching
-    ? firstText(usableEpisodeImage(item?.still_path), item?.tmdb_backdrop_path, item?.backdrop_path, tmdbData?.backdrop_path, item?.tmdb_poster_path, item?.poster_path, item?.poster, tmdbData?.poster_path)
-    : (item?.poster_path || item?.tmdb_poster_path || item?.poster || tmdbData?.poster_path || tmdbData?.backdrop_path);
+    ? firstImagePath(usableEpisodeImage(item?.still_path), item?.tmdb_backdrop_path, item?.backdrop_path, tmdbData?.backdrop_path, item?.tmdb_poster_path, item?.poster_path, item?.poster, item?.image_url, item?.poster_url, tmdbData?.poster_path)
+    : firstImagePath(item?.tmdb_poster_path, item?.poster_path, item?.poster, item?.image_url, item?.poster_url, tmdbData?.poster_path, item?.tmdb_backdrop_path, item?.backdrop_path, tmdbData?.backdrop_path);
   const posterPath = typeof rawPoster === 'string' ? rawPoster : '';
   const poster = posterPath ? tmdbImageUrl(posterPath, isHorizontal ? 'w500' : 'w342') : EPISODE_PLACEHOLDER_IMAGE;
   const shouldLoadMedia = !!rawPoster || !posterFadeIn || !posterPath || isNearViewport;
+  const eagerMedia = isFirst || isNearViewport;
   const posterLoaded = !posterFadeIn || !rawPoster || loadedPosterSrc === poster;
 
   const rating = item?.tmdb_rating || tmdbData?.rating || 0;
@@ -258,7 +269,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
         zIndex: 1, 
         width: cardWidth,
         minWidth: cardWidth,
-        animationDelay: posterFadeIn ? undefined : `${delay * 105}ms`
+        animationDelay: posterFadeIn ? undefined : `${Math.min(delay, 8) * 35}ms`
       }}
       onMouseEnter={handleMouseEnter}
     >
@@ -272,7 +283,7 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
           <img 
             src={poster} 
             alt={title} 
-            loading={isFirst ? 'eager' : 'lazy'} 
+            loading={eagerMedia ? 'eager' : 'lazy'} 
             fetchPriority={isFirst ? 'high' : 'auto'}
             decoding="async" 
             onLoad={() => posterFadeIn && setLoadedPosterSrc(poster)}
@@ -439,7 +450,7 @@ const MovieCarousel = ({ title, items, tagType, variant = 'vertical', onDelete, 
                 <MovieCard
                   item={item}
                   tag={tagType === 'top' ? 'TOP 10' : null}
-                  isFirst={idx === 0}
+                  isFirst={idx < (isHorizontal ? 4 : 8)}
                   isLast={idx === items.length - 1}
                   progress={item.progress}
                   variant={variant}

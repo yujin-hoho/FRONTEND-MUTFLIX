@@ -24,6 +24,7 @@ import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
 import { EPISODE_PLACEHOLDER_IMAGE } from '../utils/placeholders';
+import { mergeDetailMetadata, tmdbOptsFromCatalogItem } from '../utils/detailMetadata';
 
 /** Stored delay: negative = tunda (subtitle lebih lambat), positive = percepat (lebih cepat). */
 const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
@@ -47,6 +48,19 @@ const normalizeTmdbImageUrl = (path, size = 'w300') => {
 const usableEpisodeImage = (path) => {
     return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : null;
 };
+
+const hasTrustedTmdbLookup = (item = {}, explicitTrust = false) => Boolean(explicitTrust || item.tmdb_id || item.tmdb_query);
+
+const hasServerVisualMetadata = (item = {}, tmdbData = null) =>
+    Boolean(
+        tmdbData?.poster_path ||
+        tmdbData?.backdrop_path ||
+        item.tmdb_poster_path ||
+        item.poster_path ||
+        item.poster ||
+        item.tmdb_backdrop_path ||
+        item.backdrop_path
+    );
 
 const tmdbPosterUrl = (path, size = 'w342') => {
     if (!path || typeof path !== 'string') return '';
@@ -175,10 +189,20 @@ const WatchPage = () => {
     const urlTime = parseInt(searchParams.get('t'));
     const navigationWatchMeta = location.state?.watchMeta;
     const navigationTmdbData = navigationWatchMeta?.tmdbData || null;
-    const navigationEpisodeData =
-        navigationWatchMeta?.episodeData && typeof navigationWatchMeta.episodeData === 'object'
-            ? navigationWatchMeta.episodeData
-            : {};
+    const navigationCatalogItem = navigationWatchMeta?.catalogItem || null;
+    const navigationTrustedTmdbLookup = Boolean(navigationWatchMeta?.trustedTmdbLookup);
+    const trustedSeasonMetadata = Boolean(
+        navigationTrustedTmdbLookup ||
+        navigationCatalogItem?.tmdb_id ||
+        navigationCatalogItem?.tmdb_query
+    );
+    const navigationEpisodeData = useMemo(
+        () =>
+            navigationWatchMeta?.episodeData && typeof navigationWatchMeta.episodeData === 'object'
+                ? navigationWatchMeta.episodeData
+                : {},
+        [navigationWatchMeta]
+    );
 
     const toInt = (value, fallback) => {
         const n =
@@ -188,7 +212,9 @@ const WatchPage = () => {
 
     // Data state
     const [videos, setVideos] = useState([]);
-    const [tmdbData, setTmdbData] = useState(() => navigationTmdbData);
+    const [tmdbData, setTmdbData] = useState(() =>
+        mergeDetailMetadata(navigationCatalogItem || { folder_name: decodedName, name: decodedName }, navigationTmdbData, decodedName, urlType)
+    );
     const [credits, setCredits] = useState(null);
     const [episodeData, setEpisodeData] = useState(() => navigationEpisodeData);
     const [recommendations, setRecommendations] = useState([]);
@@ -426,7 +452,10 @@ const WatchPage = () => {
         const loadData = async () => {
             setLoading(true);
             setEpisodeData(navigationEpisodeData);
-            setTmdbData(navigationTmdbData);
+            const baseCatalogItem = navigationCatalogItem || { folder_name: decodedName, name: decodedName };
+            const baseMetadata = mergeDetailMetadata(baseCatalogItem, navigationTmdbData, decodedName, urlType);
+            const trustedLookup = hasTrustedTmdbLookup(baseCatalogItem, navigationTrustedTmdbLookup);
+            setTmdbData(baseMetadata);
             setCredits(null);
             fetchedSeasonStillsRef.current = new Set();
             fetchingSeasonStillsRef.current = new Set();
@@ -477,13 +506,17 @@ const WatchPage = () => {
 
                 // Biarkan pemutar & stream mulai lebih dulu — kredit & still episode di background
                 const seasonToPrefetch = targetVideo?.season || urlSeason || 1;
-                if (navigationTmdbData?.tmdb_id && navigationTmdbData?.media_type === 'tv') {
-                    loadSeasonEpisodeData(navigationTmdbData.tmdb_id, seasonToPrefetch);
+                if (trustedLookup && baseMetadata?.tmdb_id && baseMetadata?.media_type === 'tv') {
+                    loadSeasonEpisodeData(baseMetadata.tmdb_id, seasonToPrefetch);
                 }
 
                 setLoading(false);
 
                 // Background: TMDB metadata + credits.
+                if (!trustedLookup && hasServerVisualMetadata(baseCatalogItem, baseMetadata)) {
+                    return;
+                }
+
                 void (async () => {
                     try {
                         const inferredIsSeries =
@@ -491,21 +524,25 @@ const WatchPage = () => {
                             videosList.length > 1 ||
                             videosList.some((v) => toInt(v.season, 1) > 1);
                         const tmdbOptions = {
-                            mediaType: inferredIsSeries ? 'tv' : (urlType === 'movie' ? 'movie' : undefined),
+                            ...tmdbOptsFromCatalogItem(baseCatalogItem, urlType),
+                            mediaType:
+                                tmdbOptsFromCatalogItem(baseCatalogItem, urlType).mediaType ||
+                                (inferredIsSeries ? 'tv' : (urlType === 'movie' ? 'movie' : undefined)),
                         };
-                        const lightTmdb = await getTMDBInfo(decodedName, { ...tmdbOptions, light: true });
+                        const tmdbSearchTitle = baseCatalogItem.tmdb_query || baseCatalogItem.tmdb_title || baseCatalogItem.folder_name || baseCatalogItem.name || decodedName;
+                        const lightTmdb = await getTMDBInfo(tmdbSearchTitle, { ...tmdbOptions, light: true });
                         if (cancelled) return;
-                        const lightResolvedTmdb = lightTmdb || navigationTmdbData;
+                        const lightResolvedTmdb = mergeDetailMetadata(baseCatalogItem, lightTmdb || navigationTmdbData, decodedName, urlType);
                         setTmdbData(lightResolvedTmdb);
-                        if (lightResolvedTmdb?.tmdb_id && lightResolvedTmdb?.media_type === 'tv') {
+                        if (trustedLookup && lightResolvedTmdb?.tmdb_id && lightResolvedTmdb?.media_type === 'tv') {
                             loadSeasonEpisodeData(lightResolvedTmdb.tmdb_id, seasonToPrefetch);
                         }
 
-                        const tmdb = await getTMDBInfo(decodedName, tmdbOptions);
+                        const tmdb = await getTMDBInfo(tmdbSearchTitle, tmdbOptions);
                         if (cancelled) return;
-                        const resolvedTmdb = tmdb || lightResolvedTmdb;
+                        const resolvedTmdb = mergeDetailMetadata(baseCatalogItem, tmdb || lightTmdb || navigationTmdbData, decodedName, urlType);
                         setTmdbData(resolvedTmdb);
-                        if (resolvedTmdb?.tmdb_id) {
+                        if (trustedLookup && resolvedTmdb?.tmdb_id) {
                             const creditsData = await getTMDBCredits(resolvedTmdb.tmdb_id, resolvedTmdb.media_type);
                             if (!cancelled) setCredits(creditsData);
                         }
@@ -520,10 +557,11 @@ const WatchPage = () => {
         };
         loadData();
         return () => { cancelled = true; };
-    }, [decodedName, urlType, urlSeason, urlEp, hasEpisodeQuery, navigationWatchMeta, createImmediateEpisodeData, loadSeasonEpisodeData]);
+    }, [decodedName, urlType, urlSeason, urlEp, hasEpisodeQuery, navigationWatchMeta, navigationCatalogItem, navigationTmdbData, navigationEpisodeData, navigationTrustedTmdbLookup, createImmediateEpisodeData, loadSeasonEpisodeData]);
 
     // Lazy-load TMDB episode stills + episode names per season tab.
     useEffect(() => {
+        if (!trustedSeasonMetadata) return;
         if (!tmdbData?.tmdb_id) return;
         if (tmdbData?.media_type !== 'tv') return;
         if (!isSeriesContent) return;
@@ -531,7 +569,7 @@ const WatchPage = () => {
         const seasonNum = toInt(activeSeason, 1);
         if (!Number.isFinite(seasonNum)) return;
         loadSeasonEpisodeData(tmdbData.tmdb_id, seasonNum);
-    }, [tmdbData?.tmdb_id, activeSeason, isSeriesContent, loadSeasonEpisodeData]);
+    }, [trustedSeasonMetadata, tmdbData?.tmdb_id, tmdbData?.media_type, activeSeason, isSeriesContent, loadSeasonEpisodeData]);
 
     useEffect(() => {
         if (!tmdbData?.tmdb_id || !tmdbData?.media_type) {

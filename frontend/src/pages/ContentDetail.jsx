@@ -3,7 +3,7 @@ import { useParams, useSearchParams, useNavigate, useLocation } from 'react-rout
 import { Play, Share2, Clock, ChevronDown, ChevronUp, User } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchVideos, getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList, fetchFolders, tmdbImageUrl } from '../services/api';
+import { fetchVideos, getServerTMDBMeta, getTMDBCredits, getTMDBSeasonDetails, logout, fetchProfiles, fetchHistory, fetchMyList, addToMyList, removeFromMyList, fetchFolders, tmdbImageUrl } from '../services/api';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -14,6 +14,15 @@ const usableEpisodeImage = (path) => {
   return path && path !== EPISODE_PLACEHOLDER_IMAGE ? path : null;
 };
 
+const hasServerVisualMetadata = (item = {}) =>
+  Boolean(
+    (item.tmdb_poster_path || item.poster_path || item.poster || item.tmdb_backdrop_path || item.backdrop_path) &&
+    (item.tmdb_title || item.name || item.folder_name) &&
+    (item.tmdb_overview || item.tmdb_rating != null || (Array.isArray(item.tmdb_genre_ids) && item.tmdb_genre_ids.length > 0))
+  );
+
+const hasTrustedTmdbLookup = (item = {}) => Boolean(item.tmdb_id || item.tmdb_query);
+
 const ContentDetail = () => {
   const { folderName } = useParams();
   const [searchParams] = useSearchParams();
@@ -22,10 +31,15 @@ const ContentDetail = () => {
   const decodedName = decodeURIComponent(folderName);
   const urlType = searchParams.get('type'); // 'movie' or 'series'
   const navigationDetailItem = location.state?.detailItem;
-  const initialDetailMetadata = useMemo(
-    () => mergeDetailMetadata(navigationDetailItem || { folder_name: decodedName }, null, decodedName, urlType),
-    [navigationDetailItem, decodedName, urlType]
+  const detailCatalogItem = useMemo(
+    () => navigationDetailItem || { folder_name: decodedName, name: decodedName },
+    [navigationDetailItem, decodedName]
   );
+  const initialDetailMetadata = useMemo(
+    () => mergeDetailMetadata(detailCatalogItem, null, decodedName, urlType),
+    [detailCatalogItem, decodedName, urlType]
+  );
+  const [serverCatalogItem, setServerCatalogItem] = useState(null);
 
   const toInt = (value, fallback) => {
     const n =
@@ -100,6 +114,20 @@ const ContentDetail = () => {
     return dataMap;
   }, []);
 
+  const normalizeServerEpisodeData = useCallback((serverEpisodeData = {}) => {
+    const dataMap = {};
+    Object.entries(serverEpisodeData || {}).forEach(([key, value]) => {
+      if (!value || typeof value !== 'object') return;
+      dataMap[key] = {
+        ...value,
+        still_path: usableEpisodeImage(value.still_path) ? tmdbImageUrl(value.still_path, 'w500') : null,
+        name: value.name || null,
+        isTmdbName: Boolean(value.isTmdbName || value.name),
+      };
+    });
+    return dataMap;
+  }, []);
+
   const loadSeasonEpisodeData = useCallback((tmdbId, seasonNum) => {
     const season = toInt(seasonNum, 1);
     if (!tmdbId || !Number.isFinite(season)) return;
@@ -135,12 +163,12 @@ const ContentDetail = () => {
       setLastWatchedMedia(null);
       setEpisodeData({});
       setTmdbData(initialDetailMetadata);
+      setServerCatalogItem(null);
       setCredits(null);
       fetchedSeasonStillsRef.current = new Set();
       fetchingSeasonStillsRef.current = new Set();
       try {
-        const fallbackCatalogItem = navigationDetailItem || { folder_name: decodedName };
-        const foldersPromise = navigationDetailItem ? Promise.resolve(null) : fetchFolders();
+        const fallbackCatalogItem = detailCatalogItem;
 
         const loadVisualMetadata = async (catalogItem, seasonToPrefetch) => {
           const tmdbSearchTitle = catalogItem.tmdb_query || catalogItem.tmdb_title || catalogItem.folder_name || catalogItem.name || decodedName;
@@ -148,20 +176,24 @@ const ContentDetail = () => {
           const immediateMetadata = mergeDetailMetadata(catalogItem, null, decodedName, urlType);
           setTmdbData(immediateMetadata);
 
+          const trustedLookup = hasTrustedTmdbLookup(catalogItem);
+          if (!trustedLookup && hasServerVisualMetadata(catalogItem)) {
+            return;
+          }
+
           try {
-            const lightTmdb = await getTMDBInfo(tmdbSearchTitle, { ...tmdbOptions, light: true });
+            const serverMediaType = tmdbOptions.mediaType || (urlType === 'movie' ? 'movie' : 'tv');
+            const lightTmdb = await getServerTMDBMeta(catalogItem.folder_name || catalogItem.name || tmdbSearchTitle, serverMediaType);
             if (!isMounted) return;
             const lightMetadata = mergeDetailMetadata(catalogItem, lightTmdb, decodedName, urlType);
             setTmdbData(lightMetadata);
-            if (lightMetadata?.tmdb_id && lightMetadata?.media_type === 'tv') {
+            if (trustedLookup && lightMetadata?.tmdb_id && lightMetadata?.media_type === 'tv') {
               loadSeasonEpisodeData(lightMetadata.tmdb_id, seasonToPrefetch);
             }
 
-            const tmdb = await getTMDBInfo(tmdbSearchTitle, tmdbOptions);
-            if (!isMounted) return;
-            const detailMetadata = mergeDetailMetadata(catalogItem, tmdb || lightTmdb, decodedName, urlType);
+            const detailMetadata = mergeDetailMetadata(catalogItem, lightTmdb, decodedName, urlType);
             setTmdbData(detailMetadata);
-            if (detailMetadata?.tmdb_id) {
+            if (trustedLookup && detailMetadata?.tmdb_id) {
               const creditsData = await getTMDBCredits(detailMetadata.tmdb_id, detailMetadata.media_type);
               if (isMounted) setCredits(creditsData);
             }
@@ -174,6 +206,10 @@ const ContentDetail = () => {
         
         if (!isMounted) return;
 
+        const serverItem = videosResp?.catalog_item || null;
+        if (serverItem) setServerCatalogItem(serverItem);
+        const catalogForDetail = serverItem || fallbackCatalogItem;
+
         const videosListRaw = videosResp?.videos || [];
         const videosList = videosListRaw.map((v) => ({
           ...v,
@@ -185,27 +221,30 @@ const ContentDetail = () => {
           return (a.episode || 0) - (b.episode || 0);
         });
 
+        const serverEpisodeData = normalizeServerEpisodeData(videosResp?.episode_data);
+
         setVideos(videosList);
-        setEpisodeData(createImmediateEpisodeData(videosList));
-        setTmdbData((prev) => prev || mergeDetailMetadata(fallbackCatalogItem, null, decodedName, urlType));
+        setEpisodeData(createImmediateEpisodeData(videosList, serverEpisodeData));
+        setTmdbData((prev) => mergeDetailMetadata(catalogForDetail, prev, decodedName, urlType));
 
         // Compute active tab from the fastest available data (don't block UI).
-        const isSeries = urlType === 'series' || (fallbackCatalogItem?.media_type === 'tv') || videosList.length > 1;
+        const isSeries = urlType === 'series' || (catalogForDetail?.media_type === 'tv') || videosList.length > 1;
         setActiveTab(isSeries ? 'episodes' : 'cast');
         setLoading(false);
 
         const firstVisibleSeason = videosList[0]?.season || 1;
-        if (initialDetailMetadata?.tmdb_id && isSeries) {
-          loadSeasonEpisodeData(initialDetailMetadata.tmdb_id, firstVisibleSeason);
+        const immediateTmdb = mergeDetailMetadata(catalogForDetail, null, decodedName, urlType);
+        if (hasTrustedTmdbLookup(catalogForDetail) && immediateTmdb?.tmdb_id && isSeries) {
+          loadSeasonEpisodeData(immediateTmdb.tmdb_id, firstVisibleSeason);
         }
 
         // Step 2: Background fetches (non-blocking).
         // 2a. Visual Metadata. Episode stills are lazy-loaded per season after TMDB id is known.
-        if (navigationDetailItem) {
-          void loadVisualMetadata(navigationDetailItem, firstVisibleSeason);
+        if (serverItem || navigationDetailItem) {
+          void loadVisualMetadata(catalogForDetail, firstVisibleSeason);
         } else {
           void loadVisualMetadata(fallbackCatalogItem, firstVisibleSeason);
-          foldersPromise.then((foldersResp) => {
+          fetchFolders().then((foldersResp) => {
             if (!isMounted) return;
             const catalogItem = findCatalogItemForDetail(foldersResp, decodedName);
             if (catalogItem) void loadVisualMetadata(catalogItem, firstVisibleSeason);
@@ -263,7 +302,7 @@ const ContentDetail = () => {
 
     loadData();
     return () => { isMounted = false; };
-  }, [decodedName, urlType, authUser, profileId, navigationDetailItem, initialDetailMetadata, createImmediateEpisodeData, loadSeasonEpisodeData]);
+  }, [decodedName, urlType, authUser, profileId, navigationDetailItem, detailCatalogItem, initialDetailMetadata, createImmediateEpisodeData, normalizeServerEpisodeData, loadSeasonEpisodeData]);
 
   useEffect(() => {
     const onProfileChange = (event) => {
@@ -465,6 +504,8 @@ const ContentDetail = () => {
                     watchMeta: {
                       tmdbData,
                       episodeData,
+                      catalogItem: serverCatalogItem || detailCatalogItem,
+                      trustedTmdbLookup: hasTrustedTmdbLookup(serverCatalogItem || detailCatalogItem),
                     },
                   },
                 });
@@ -565,6 +606,8 @@ const ContentDetail = () => {
                             watchMeta: {
                               tmdbData,
                               episodeData,
+                              catalogItem: serverCatalogItem || detailCatalogItem,
+                              trustedTmdbLookup: hasTrustedTmdbLookup(serverCatalogItem || detailCatalogItem),
                             },
                           },
                         });
@@ -601,35 +644,70 @@ const ContentDetail = () => {
 /* ====== Episode Card ====== */
 const EpisodeCard = ({ video, index, tmdbData, fallbackImage, onPlay, progress }) => {
   const [isHovered, setIsHovered] = useState(false);
+  const [loadedImageSrc, setLoadedImageSrc] = useState('');
   const episodeNum = video.episode || index + 1;
   const name = tmdbData?.name || video.name || `Episode ${episodeNum}`;
   const imageToUse = usableEpisodeImage(tmdbData?.still_path) || fallbackImage || EPISODE_PLACEHOLDER_IMAGE;
+  const imageLoaded = loadedImageSrc === imageToUse;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadedImageSrc('');
+
+    const img = new Image();
+    const markLoaded = () => {
+      if (!cancelled) setLoadedImageSrc(imageToUse);
+    };
+    img.onload = markLoaded;
+    img.onerror = markLoaded;
+    img.src = imageToUse;
+    if (img.complete) markLoaded();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [imageToUse]);
 
   return (
     <div
-      className="group cursor-pointer transition-all duration-300"
+      className="group cursor-pointer transition-[transform,opacity] duration-300"
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClick={onPlay}
     >
-      <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1a1c22] mb-2 border border-transparent group-hover:border-white/20 transition-colors">
+      <div className="relative aspect-video rounded-lg overflow-hidden bg-[#1a1c22] mb-2 border border-white/5 group-hover:border-white/20 transition-[border-color,box-shadow] duration-300 group-hover:shadow-[0_16px_34px_rgba(0,0,0,0.28)]">
+        <div
+          className={`absolute inset-0 bg-[linear-gradient(110deg,#1a1c22_0%,#242832_42%,#1a1c22_78%)] bg-[length:220%_100%] transition-opacity duration-500 ${
+            imageLoaded ? 'opacity-0' : 'opacity-100 animate-pulse'
+          }`}
+        />
         <img
           src={imageToUse}
           alt={name}
           loading="lazy"
           decoding="async"
-          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+          onLoad={() => setLoadedImageSrc(imageToUse)}
+          onError={() => setLoadedImageSrc(imageToUse)}
+          className={`relative z-[1] w-full h-full object-cover transition-[opacity,transform,filter] duration-700 ease-out group-hover:scale-105 ${
+            imageLoaded ? 'opacity-100 blur-0' : 'opacity-20 blur-sm'
+          }`}
         />
-        <div className={`absolute inset-0 bg-black/40 flex items-center justify-center transition-opacity duration-300 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
+        {!imageLoaded && (
+          <div className="absolute inset-0 z-[2] flex items-center justify-center px-3 text-center">
+            <span className="line-clamp-2 text-[12px] font-semibold text-white/45">{name}</span>
+          </div>
+        )}
+        <div className="absolute inset-x-0 bottom-0 z-[2] h-1/2 bg-gradient-to-t from-black/50 via-black/15 to-transparent pointer-events-none" />
+        <div className={`absolute inset-0 z-[3] bg-black/40 flex items-center justify-center transition-opacity duration-300 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
           <div className="bg-[#00dc41] rounded-full p-3 shadow-[0_0_20px_rgba(0,220,65,0.5)] hover:scale-110 transition-transform">
             <Play fill="black" size={20} className="text-black ml-0.5" />
           </div>
         </div>
-        <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-sm text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
+        <div className="absolute bottom-2 left-2 z-[4] bg-black/70 backdrop-blur-sm text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
           EP{episodeNum}
         </div>
         {progress !== undefined && (
-          <div className="absolute bottom-0 left-0 w-full bg-white/20 h-[3px] overflow-hidden">
+          <div className="absolute bottom-0 left-0 z-[4] w-full bg-white/20 h-[3px] overflow-hidden">
             <div 
               className="bg-[#00dc41] h-full transition-all duration-300" 
               style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}

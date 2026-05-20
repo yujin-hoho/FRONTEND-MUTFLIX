@@ -71,6 +71,36 @@ const backdropOrPosterUrl = (item) => {
   return tmdbImageUrl(raw, 'w1280');
 };
 
+const cardPosterUrl = (item) => {
+  const raw =
+    item.tmdb_poster_path ||
+    item.poster_path ||
+    item.poster ||
+    item.image_url ||
+    item.poster_url ||
+    item.tmdb_backdrop_path ||
+    item.backdrop_path;
+  if (!raw) return null;
+  return tmdbImageUrl(raw, 'w342');
+};
+
+const warmImageUrls = (urls, priorityCount = 0) => {
+  const unique = [...new Set(urls.filter(Boolean))];
+  const run = () => {
+    unique.forEach((url, index) => {
+      const img = new Image();
+      if (index < priorityCount) img.fetchPriority = 'high';
+      img.decoding = 'async';
+      img.src = url;
+    });
+  };
+  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(run, { timeout: 500 });
+  } else {
+    setTimeout(run, 0);
+  }
+};
+
 /** Preload gambar di background tanpa memblokir paint. */
 const preloadDashboardImages = (resolvedItems, continueWatchingItems, topActors = []) => {
   const urls = [];
@@ -78,23 +108,13 @@ const preloadDashboardImages = (resolvedItems, continueWatchingItems, topActors 
     if (u && typeof u === 'string') urls.push(u);
   };
   resolvedItems.slice(0, 8).forEach((item) => push(backdropOrPosterUrl(item)));
+  resolvedItems.slice(0, 36).forEach((item) => push(cardPosterUrl(item)));
   continueWatchingItems.slice(0, 8).forEach((h) => {
     if (h.poster && String(h.poster).startsWith('http')) push(h.poster);
-    else push(backdropOrPosterUrl(h));
+    else push(cardPosterUrl(h) || backdropOrPosterUrl(h));
   });
   topActors.slice(0, 12).forEach((a) => push(a.profile_path));
-  const unique = [...new Set(urls)];
-  const run = () => {
-    unique.forEach((url) => {
-      const img = new Image();
-      img.src = url;
-    });
-  };
-  if (typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function') {
-    window.requestIdleCallback(run, { timeout: 1200 });
-  } else {
-    setTimeout(run, 0);
-  }
+  warmImageUrls(urls, 10);
 };
 
 const tmdbOptsFromItem = (it) => {

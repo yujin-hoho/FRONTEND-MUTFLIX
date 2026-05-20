@@ -86,6 +86,7 @@ const _memCache = {};
 const _memCacheTs = {};
 const _swrInflight = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const FOLDERS_CACHE_KEY = 'folders_v2_server_media';
 
 function cacheGet(key) {
     // Tier 1: memory
@@ -636,6 +637,66 @@ export const getTMDBInfo = async (title, options = {}) => {
     }
 };
 /** Simpan override query TMDB (admin — backend menyimpan di tmdb_overrides) */
+const mapServerTmdbMeta = (details, mediaType) => {
+    if (!details?.id) return null;
+    const type = mediaType === 'movie' ? 'movie' : 'tv';
+    return {
+        tmdb_id: details.id,
+        media_type: type,
+        tmdb_title:
+            type === 'movie'
+                ? details.title || details.original_title || null
+                : details.name || details.original_name || null,
+        title:
+            type === 'movie'
+                ? details.title || details.original_title || null
+                : details.name || details.original_name || null,
+        poster_path: details.poster_path || null,
+        backdrop_path: details.backdrop_path || null,
+        rating: details.vote_average ?? null,
+        overview: details.overview || null,
+        date: details.release_date || details.first_air_date || details.last_air_date || null,
+        genres: details.genres || [],
+        genre_ids: (details.genres || []).map((g) => g.id).filter(Boolean),
+        cast: [],
+        total_episodes: type === 'movie' ? null : details.number_of_episodes || null,
+        total_seasons: type === 'movie' ? null : details.number_of_seasons || null,
+        runtime: details.runtime || (details.episode_run_time ? details.episode_run_time[0] : null),
+        origin_country:
+            type === 'movie'
+                ? details.production_countries?.map((c) => c.iso_3166_1) || []
+                : details.origin_country || [],
+        original_language: details.original_language || null,
+    };
+};
+
+export const getServerTMDBMeta = async (folderName, mediaType = 'tv') => {
+    const type = mediaType === 'movie' ? 'movie' : 'tv';
+    if (!folderName) return null;
+
+    try {
+        const cacheKey = `mutflix_server_tmdb_meta_v1_${type}_${String(folderName).toLowerCase()}`;
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+            try { return JSON.parse(cached); } catch { /* ignore broken cache */ }
+        }
+
+        const res = await fetch(`${BASE_URL}/api/tmdb-meta/${type}?folder_name=${encodeURIComponent(folderName)}`, {
+            headers: getAuthHeaders()
+        });
+        if (!res.ok) return null;
+        const details = await res.json();
+        const result = mapServerTmdbMeta(details, type);
+        if (result) {
+            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch { /* ignore storage quota */ }
+        }
+        return result;
+    } catch (e) {
+        console.error('Server TMDB metadata fetch error:', e);
+        return null;
+    }
+};
+
 export const saveTmdbOverride = async (payload) => {
     const res = await fetch(`${BASE_URL}/api/tmdb-overrides`, {
         method: 'POST',
@@ -775,7 +836,7 @@ const _fetchFoldersRaw = async () => {
 };
 
 // Cached versions — return instantly from cache, refresh in background
-export const fetchFolders = (onUpdate) => cachedFetch('folders', _fetchFoldersRaw, onUpdate);
+export const fetchFolders = (onUpdate) => cachedFetch(FOLDERS_CACHE_KEY, _fetchFoldersRaw, onUpdate);
 
 /**
  * Daftar folder untuk layar utama: selalu tunggu network dulu, lalu update cache.
@@ -785,10 +846,10 @@ export const fetchFolders = (onUpdate) => cachedFetch('folders', _fetchFoldersRa
 export const fetchFoldersFresh = async () => {
     const data = await _fetchFoldersRaw();
     if (data && !data.__error) {
-        cacheSet('folders', data);
+        cacheSet(FOLDERS_CACHE_KEY, data);
         return data;
     }
-    const stale = cacheGet('folders');
+    const stale = cacheGet(FOLDERS_CACHE_KEY);
     if (stale && !stale.__error) return stale;
     return data || { movies: [], series: [] };
 };

@@ -235,6 +235,16 @@ const preloadImage = (src) =>
     img.src = src;
   });
 
+const warmImages = (urls, priorityCount = 0) => {
+  const unique = [...new Set(urls.filter(Boolean))];
+  unique.forEach((src, index) => {
+    const img = new Image();
+    if (index < priorityCount) img.fetchPriority = 'high';
+    img.decoding = 'async';
+    img.src = src;
+  });
+};
+
 const GRID_PAGE_SIZE = 36;
 /** Batch pertama lebih besar supaya sentinel cepat masuk area scroll / intersection */
 const INITIAL_VISIBLE = Math.min(GRID_PAGE_SIZE * 2, 200);
@@ -368,9 +378,11 @@ const FilterPage = () => {
     const posterUrls = firstPage
       .map((item) => tmdbImageUrl(getDisplayPosterPath(item)))
       .filter(Boolean);
-    const minimumReady = Math.min(FIRST_GRID_PRELOAD, firstPage.length);
+    warmImages(posterUrls.slice(0, FIRST_GRID_PRELOAD), 8);
+
+    const minimumReady = Math.min(6, firstPage.length);
     const enoughPostersForFirstPaint = posterUrls.length >= minimumReady;
-    const fallbackDelay = enoughPostersForFirstPaint ? 1200 : 1800;
+    const fallbackDelay = enoughPostersForFirstPaint ? 300 : 500;
 
     const timeout = window.setTimeout(() => {
       if (gridPrepareSeqRef.current === seq) setGridPreparing(false);
