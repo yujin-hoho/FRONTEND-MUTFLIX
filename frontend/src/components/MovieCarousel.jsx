@@ -148,10 +148,21 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
       const fallbackTitle = firstText(item.series_title, item.folder_name, item.name, item.media_title);
       const fallbackBackdrop = firstText(item.tmdb_backdrop_path, item.backdrop_path, tmdbData?.backdrop_path, usableEpisodeImage(item.still_path));
       const fallbackPoster = firstText(item.tmdb_poster_path, item.poster_path, item.poster, tmdbData?.poster_path);
+      const catalogItem = item.catalog_item || {
+        ...item,
+        folder_name: folderName,
+        name: fallbackTitle,
+        tmdb_title: item.tmdb_title || fallbackTitle,
+        tmdb_poster_path: item.tmdb_poster_path || item.poster_path || item.poster || fallbackPoster,
+        tmdb_backdrop_path: item.tmdb_backdrop_path || item.backdrop_path || fallbackBackdrop,
+      };
       navigate(targetUrl, {
         state: {
           watchMeta: {
+            catalogItem,
+            trustedTmdbLookup: Boolean(catalogItem.tmdb_id || catalogItem.tmdb_query || item.tmdb_id || item.tmdb_query),
             tmdbData: tmdbData || {
+              tmdb_id: item.tmdb_id || catalogItem.tmdb_id,
               media_type: type === 'movie' ? 'movie' : 'tv',
               tmdb_title: fallbackTitle,
               title: fallbackTitle,

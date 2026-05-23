@@ -129,6 +129,60 @@ const tmdbOptsFromItem = (it) => {
   return o;
 };
 
+const normalizeLookupKey = (value) => String(value || '').trim().toLowerCase();
+
+const buildCatalogLookup = (items = []) => {
+  const byTitle = new Map();
+  const byPath = new Map();
+
+  items.forEach((item) => {
+    const folderName = item.folder_name || item.name;
+    [
+      folderName,
+      item.name,
+      item.tmdb_title,
+      item.title,
+      item.tmdb_query,
+    ].forEach((value) => {
+      const key = normalizeLookupKey(value);
+      if (key && !byTitle.has(key)) byTitle.set(key, item);
+    });
+
+    const folderPathKey = normalizeLookupKey(folderName);
+    if (folderPathKey && !byPath.has(folderPathKey)) byPath.set(folderPathKey, item);
+
+    if (Array.isArray(item.videos)) {
+      item.videos.forEach((video) => {
+        const pathKey = normalizeLookupKey(video?.path || video?.media_path);
+        if (pathKey && !byPath.has(pathKey)) byPath.set(pathKey, item);
+      });
+    }
+  });
+
+  return { byTitle, byPath };
+};
+
+const findCatalogItemForHistory = (history, catalogLookup) => {
+  if (!catalogLookup) return null;
+
+  const pathKey = normalizeLookupKey(history?.media_path);
+  if (pathKey && catalogLookup.byPath.has(pathKey)) return catalogLookup.byPath.get(pathKey);
+
+  const titleCandidates = [
+    history?.series_title,
+    history?.folder_name,
+    history?.media_title,
+    history?.name,
+  ];
+
+  for (const value of titleCandidates) {
+    const key = normalizeLookupKey(value);
+    if (key && catalogLookup.byTitle.has(key)) return catalogLookup.byTitle.get(key);
+  }
+
+  return null;
+};
+
 const enrichFeaturedFast = async (items) => {
   const picks = (items || []).slice(0, 6);
   const jobs = picks.map(async (item) => {
@@ -248,9 +302,10 @@ const Dashboard = () => {
     return sections.slice(0, 22);
   }, []);
 
-  const buildContinueWatchingItems = useCallback((histories) => {
+  const buildContinueWatchingItems = useCallback((histories, catalogItems = []) => {
     const flatHistory = (histories || []).flat();
     const uniqueHistoryMap = new Map();
+    const catalogLookup = buildCatalogLookup(catalogItems);
     flatHistory.sort((a, b) => new Date(b.last_watched) - new Date(a.last_watched));
 
     flatHistory.forEach(h => {
@@ -258,11 +313,39 @@ const Dashboard = () => {
       const progress = dur > 0 ? (Number(h.position_ms) / dur) * 100 : 0;
       const okProgress = Number.isFinite(progress);
       if (!uniqueHistoryMap.has(h.media_path) && h.position_ms >= 5000 && okProgress) {
+        const catalogItem = findCatalogItemForHistory(h, catalogLookup);
+        const folderName =
+          catalogItem?.folder_name ||
+          catalogItem?.name ||
+          h.series_title ||
+          h.folder_name ||
+          h.media_title;
+        const displayTitle =
+          catalogItem?.tmdb_title ||
+          catalogItem?.title ||
+          catalogItem?.name ||
+          h.series_title ||
+          h.media_title;
         uniqueHistoryMap.set(h.media_path, {
+          ...(catalogItem || {}),
           ...h,
-          name: h.series_title || h.media_title,
-          poster: h.still_path,
-          folder_name: h.series_title || h.media_title,
+          name: displayTitle,
+          poster: h.still_path || catalogItem?.tmdb_backdrop_path || catalogItem?.backdrop_path || catalogItem?.tmdb_poster_path || catalogItem?.poster_path,
+          folder_name: folderName,
+          catalog_item: catalogItem || null,
+          tmdb_id: catalogItem?.tmdb_id || h.tmdb_id,
+          media_type: catalogItem?.media_type || h.media_type,
+          tmdb_title: catalogItem?.tmdb_title || h.tmdb_title,
+          tmdb_poster_path: catalogItem?.tmdb_poster_path || catalogItem?.poster_path || h.tmdb_poster_path,
+          tmdb_backdrop_path: catalogItem?.tmdb_backdrop_path || catalogItem?.backdrop_path || h.tmdb_backdrop_path,
+          tmdb_overview: catalogItem?.tmdb_overview || h.tmdb_overview,
+          tmdb_rating: catalogItem?.tmdb_rating || h.tmdb_rating,
+          tmdb_genre_ids: catalogItem?.tmdb_genre_ids || h.tmdb_genre_ids,
+          tmdb_query: catalogItem?.tmdb_query || h.tmdb_query,
+          tmdb_override_media_type: catalogItem?.tmdb_override_media_type || h.tmdb_override_media_type,
+          override_year: catalogItem?.override_year ?? h.override_year,
+          override_region: catalogItem?.override_region || h.override_region,
+          include_adult: catalogItem?.include_adult ?? h.include_adult,
           progress: progress
         });
       }
@@ -275,7 +358,7 @@ const Dashboard = () => {
       .slice(0, 15);
   }, []);
 
-  const fetchAllProfileContinueWatching = useCallback(async (profiles) => {
+  const fetchAllProfileContinueWatching = useCallback(async (profiles, catalogItems = []) => {
     if (!profiles?.length) return [];
 
     const allHistories = await Promise.all(
@@ -285,7 +368,7 @@ const Dashboard = () => {
       })
     );
 
-    return buildContinueWatchingItems(allHistories);
+    return buildContinueWatchingItems(allHistories, catalogItems);
   }, [buildContinueWatchingItems]);
 
   const handleProfileChange = useCallback((profile) => {
@@ -448,7 +531,7 @@ const Dashboard = () => {
             const primaryHistory = (await primaryHistoryPromise)
               .map((h) => ({ ...h, profile_id: selectedProfileId }));
             if (fetchIdRef.current !== currentFetchId) return [];
-            return buildContinueWatchingItems(primaryHistory);
+            return buildContinueWatchingItems(primaryHistory, shuffledData);
           }
 
           const profiles = await profilesPromise;
@@ -458,7 +541,7 @@ const Dashboard = () => {
             setActiveProfileId(profiles[0].id);
           }
 
-          const allContinueWatching = await fetchAllProfileContinueWatching(profiles.slice(0, 1));
+          const allContinueWatching = await fetchAllProfileContinueWatching(profiles.slice(0, 1), shuffledData);
           if (fetchIdRef.current !== currentFetchId) return [];
           return allContinueWatching;
         } catch (e) {
@@ -491,7 +574,8 @@ const Dashboard = () => {
           if (fetchIdRef.current !== currentFetchId || !latestProfileId) return;
           const history = await fetchHistory(latestProfileId, { activeOnly: true, limit: 30 });
           const fullContinueWatching = buildContinueWatchingItems(
-            history.map((h) => ({ ...h, profile_id: latestProfileId }))
+            history.map((h) => ({ ...h, profile_id: latestProfileId })),
+            shuffledData
           );
           if (fetchIdRef.current !== currentFetchId) return;
           setContinueWatching(fullContinueWatching);

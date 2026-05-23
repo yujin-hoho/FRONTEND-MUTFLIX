@@ -14,8 +14,6 @@ import traceback
 import signal
 import uuid
 import copy
-import shutil
-import subprocess
 from functools import wraps, lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -1315,6 +1313,73 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
         }
     return 200, detail_data
 
+def _resolve_tmdb_meta_cached(media_type, folder_name, override):
+    cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
+    cached_entry, _ = _get_tmdb_meta_cache(cache_key)
+    if cached_entry:
+        return cached_entry.get('status', 200), cached_entry.get('payload') or {}
+
+    key_lock = _tmdb_meta_lock_for(cache_key)
+    with key_lock:
+        cached_entry, _ = _get_tmdb_meta_cache(cache_key)
+        if cached_entry:
+            return cached_entry.get('status', 200), cached_entry.get('payload') or {}
+
+        status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
+        _set_tmdb_meta_cache(cache_key, status, payload)
+        return status, payload
+
+def _episode_metadata_for_videos(folder_name, catalog_item, videos):
+    if not videos:
+        return {}
+
+    catalog_item = catalog_item or {}
+    media_type = (
+        catalog_item.get('tmdb_override_media_type') or
+        catalog_item.get('media_type') or
+        ('movie' if catalog_item.get('type') == 'movie' else 'tv')
+    )
+    if media_type in ('series', 'tv'):
+        media_type = 'tv'
+    elif media_type != 'movie':
+        media_type = 'tv' if len(videos) > 1 else 'movie'
+    if media_type != 'tv':
+        return {}
+
+    lookup_name = catalog_item.get('folder_name') or catalog_item.get('name') or folder_name
+    override = _get_tmdb_overrides_map().get(lookup_name)
+    if not override and catalog_item.get('tmdb_query'):
+        override = {
+            'tmdb_query': catalog_item.get('tmdb_query'),
+            'override_year': catalog_item.get('override_year'),
+            'override_language': catalog_item.get('override_language'),
+            'include_adult': catalog_item.get('include_adult'),
+            'override_region': catalog_item.get('override_region'),
+        }
+
+    status, meta = _resolve_tmdb_meta_cached('tv', lookup_name, override)
+    tmdb_id = meta.get('id') if status == 200 and isinstance(meta, dict) else None
+    if not tmdb_id:
+        return {}
+
+    language = ((override or {}).get('override_language') or 'en-US').strip() or 'en-US'
+    seasons = sorted({int(v.get('season') or 1) for v in videos if str(v.get('season') or 1).isdigit()})
+    episode_data = {}
+    for season in seasons:
+        season_status, season_data = _fetch_tmdb_json_server(f'tv/{tmdb_id}/season/{season}', {'language': language})
+        if season_status != 200 or not isinstance(season_data, dict):
+            continue
+        for ep in season_data.get('episodes') or []:
+            ep_no = ep.get('episode_number')
+            if ep_no is None:
+                continue
+            episode_data[f'{season}_{ep_no}'] = {
+                'still_path': ep.get('still_path'),
+                'name': ep.get('name'),
+                'isTmdbName': bool(ep.get('name')),
+            }
+    return episode_data
+
 @app.route('/api/tmdb-meta/<media_type>', methods=['GET'])
 @token_required(check_expiry=False)
 @rate_limited(limit=300)
@@ -1337,14 +1402,7 @@ def get_tmdb_meta(current_user, media_type):
     if cached_entry:
         return _tmdb_meta_response_from_cache(cached_entry, cache_status)
 
-    key_lock = _tmdb_meta_lock_for(cache_key)
-    with key_lock:
-        cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
-        if cached_entry:
-            return _tmdb_meta_response_from_cache(cached_entry, cache_status)
-
-        status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
-        _set_tmdb_meta_cache(cache_key, status, payload)
+    status, payload = _resolve_tmdb_meta_cached(media_type, folder_name, override)
 
     resp = orjson_jsonify(payload, status=status)
     resp.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if status in (200, 404) else 'no-store'
@@ -1665,6 +1723,14 @@ def _merge_content_release_tmdb_into_folders(all_c):
                     continue
                 if rel.get('tmdb_title'):
                     item['tmdb_title'] = rel['tmdb_title']
+                if rel.get('media_type'):
+                    mt = str(rel.get('media_type') or '').strip().lower()
+                    if mt in ('tv', 'series'):
+                        item['media_type'] = 'tv'
+                        item['type'] = 'series'
+                    elif mt == 'movie':
+                        item['media_type'] = 'movie'
+                        item['type'] = 'movie'
                 if rel.get('tmdb_poster_path'):
                     item['tmdb_poster_path'] = rel['tmdb_poster_path']
                 if rel.get('tmdb_overview'):
@@ -1674,6 +1740,37 @@ def _merge_content_release_tmdb_into_folders(all_c):
     except Exception as e:
         print(f"[CONTENT-RELEASES] merge TMDB metadata into folders failed: {e}", flush=True)
     return all_c
+
+def _catalog_item_for_folder(folder_name, resolved_name=None):
+    """Build the same lightweight catalog metadata used by /api/folders for one detail page."""
+    names = [
+        n for n in (folder_name, resolved_name)
+        if n and not str(n).startswith(("gdrive/", "gdrive_folder/", "telegram/"))
+    ]
+    folders_data = mem_get('folders_list') or {}
+    for item in (folders_data.get('series') or []) + (folders_data.get('movies') or []):
+        item_name = item.get('name')
+        item_source = item.get('source')
+        if item_name in names or item_source == folder_name:
+            catalog_item = copy.deepcopy(item)
+            catalog_item['folder_name'] = item_name or resolved_name or folder_name
+            payload = {'series': [catalog_item], 'movies': []}
+            if catalog_item.get('type') == 'movie' or catalog_item.get('media_type') == 'movie':
+                payload = {'series': [], 'movies': [catalog_item]}
+            _merge_content_release_tmdb_into_folders(payload)
+            _merge_tmdb_overrides_into_folders(payload)
+            merged = (payload.get('series') or payload.get('movies') or [catalog_item])[0]
+            merged['folder_name'] = merged.get('folder_name') or merged.get('name') or resolved_name or folder_name
+            return merged
+
+    name = resolved_name or (names[0] if names else folder_name)
+    if not name:
+        return None
+    catalog_item = {'name': name, 'folder_name': name}
+    payload = {'series': [catalog_item], 'movies': []}
+    _merge_content_release_tmdb_into_folders(payload)
+    _merge_tmdb_overrides_into_folders(payload)
+    return payload['series'][0]
 
 # ==========================================
 # INTRO MARKERS API (Skip Intro - Admin only write)
@@ -3256,7 +3353,16 @@ def get_videos_in_folder(current_user, folder_name):
         cached = mem_get(key)
         if cached:
             dur = CACHE_DURATION_EMPTY if not cached.get("videos") else CACHE_DURATION_VIDEOS
-            if mem_is_fresh(key, dur): return add_cache_headers(orjson_jsonify(cached, cache_key=resp_key), max_age=dur)
+            if mem_is_fresh(key, dur):
+                if not cached.get('catalog_item'):
+                    cached = copy.deepcopy(cached)
+                    cached['catalog_item'] = _catalog_item_for_folder(folder_name)
+                    _response_cache.pop(resp_key, None)
+                if cached.get('episode_data') is None:
+                    cached = copy.deepcopy(cached)
+                    cached['episode_data'] = _episode_metadata_for_videos(folder_name, cached.get('catalog_item'), cached.get('videos') or [])
+                    _response_cache.pop(resp_key, None)
+                return add_cache_headers(orjson_jsonify(cached, cache_key=resp_key), max_age=dur)
             # Stale cache refreshes on this request; fallback below serves stale if GDrive fails.
 
     svc = get_gdrive_service()
@@ -3275,6 +3381,7 @@ def get_videos_in_folder(current_user, folder_name):
                     movie_name_for_supa = movie_item['name']
 
                     break
+    catalog_item = _catalog_item_for_folder(folder_name, resolved_name)
 
     # === CLEAR SUBTITLE MAP CACHES ON FORCE REFRESH ===
     # Tanpa ini, subtitle map yang cached kosong tetap return {} selama 12 jam
@@ -3329,12 +3436,13 @@ def get_videos_in_folder(current_user, folder_name):
                             
                             result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": video['name']})
                         
-                        final = {"videos": result_vids, "has_season_folders": False}
+                        final = {"videos": result_vids, "has_season_folders": False, "catalog_item": catalog_item}
+                        final["episode_data"] = _episode_metadata_for_videos(folder_name, catalog_item, result_vids)
                         mem_set(key, final); _response_cache.pop(resp_key, None)
                         return orjson_jsonify(final, cache_key=resp_key)
                     else:
                         # Folder exists but has no video files
-                        final = {"videos": [], "has_season_folders": False}
+                        final = {"videos": [], "has_season_folders": False, "catalog_item": catalog_item, "episode_data": {}}
                         mem_set(key, final); _response_cache.pop(resp_key, None)
                         return orjson_jsonify(final, cache_key=resp_key)
                 else:
@@ -3358,19 +3466,29 @@ def get_videos_in_folder(current_user, folder_name):
                         sr = svc.files().list(q=sq, fields="files(id, name)").execute()
                         for s in sr.get('files', []):
                             if s['name'].lower().startswith(name.lower()): sub_path = f"gdrive/{s['id']}"; break
-                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False}
+                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False, "catalog_item": catalog_item, "episode_data": {}}
                     mem_set(key, final); _response_cache.pop(resp_key, None)
                     return orjson_jsonify(final, cache_key=resp_key)
              except Exception as e:
                 print(f"[VIDEOS] Error handling '{folder_name}': {e}", flush=True)
                 return orjson_jsonify({"error": "File not found"}, 404)
         vids.sort(key=lambda x: (x.get("season", 999), x.get("episode", 999), x["name"]))
-        final = {"videos": vids, "has_season_folders": has_s}
+        final = {"videos": vids, "has_season_folders": has_s, "catalog_item": catalog_item}
+        final["episode_data"] = _episode_metadata_for_videos(folder_name, catalog_item, vids)
         mem_set(key, final); _response_cache.pop(resp_key, None)
         return add_cache_headers(orjson_jsonify(final, cache_key=resp_key), max_age=(CACHE_DURATION_EMPTY if not final.get("videos") else CACHE_DURATION_VIDEOS))
     
     stale = mem_get(key)
-    if stale: return add_cache_headers(orjson_jsonify(stale, cache_key=resp_key), max_age=60)
+    if stale:
+        if not stale.get('catalog_item'):
+            stale = copy.deepcopy(stale)
+            stale['catalog_item'] = _catalog_item_for_folder(folder_name, resolved_name)
+            _response_cache.pop(resp_key, None)
+        if stale.get('episode_data') is None:
+            stale = copy.deepcopy(stale)
+            stale['episode_data'] = _episode_metadata_for_videos(folder_name, stale.get('catalog_item'), stale.get('videos') or [])
+            _response_cache.pop(resp_key, None)
+        return add_cache_headers(orjson_jsonify(stale, cache_key=resp_key), max_age=60)
     return add_no_cache_headers(orjson_jsonify({"error": "API Error"}, 500))
 
 @app.route('/api/media-details', methods=['POST'])
@@ -3485,160 +3603,6 @@ def _get_fresh_gdrive_token():
         return token
 
 
-TEXT_SUBTITLE_CODECS = {
-    "ass",
-    "ssa",
-    "subrip",
-    "srt",
-    "webvtt",
-    "mov_text",
-    "text",
-    "microdvd",
-    "subviewer",
-    "subviewer1",
-    "sami",
-    "realtext",
-    "mpl2",
-    "vplayer",
-}
-
-
-def _ffmpeg_tool(name):
-    return shutil.which(name)
-
-
-def _gdrive_media_input(fid):
-    token = _get_fresh_gdrive_token()
-    if not token:
-        return None, None
-    return (
-        f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
-        f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n",
-    )
-
-
-def _embedded_track_cache_key(fid):
-    return f"embedded_subtitle_tracks_{fid}"
-
-
-def _embedded_vtt_cache_key(fid, stream_index):
-    return f"embedded_subtitle_vtt_{fid}_{stream_index}"
-
-
-def _subtitle_track_label(stream, ordinal):
-    tags = stream.get("tags") or {}
-    title = (tags.get("title") or tags.get("handler_name") or "").strip()
-    language = (tags.get("language") or stream.get("language") or "").strip()
-    codec = (stream.get("codec_name") or "subtitle").strip()
-    if title and language:
-        return f"{title} ({language.upper()})"
-    if title:
-        return title
-    if language:
-        return language.upper()
-    return f"Subtitle {ordinal}"
-
-
-def _probe_embedded_subtitles(fid):
-    cached = disk_cache.get(_embedded_track_cache_key(fid))
-    if cached is not None:
-        return cached
-
-    ffprobe = _ffmpeg_tool("ffprobe")
-    if not ffprobe:
-        return {"available": False, "error": "ffprobe unavailable", "tracks": []}
-
-    media_url, headers = _gdrive_media_input(fid)
-    if not media_url:
-        return {"available": False, "error": "GDrive token unavailable", "tracks": []}
-
-    cmd = [
-        ffprobe,
-        "-v", "error",
-        "-headers", headers,
-        "-select_streams", "s",
-        "-show_streams",
-        "-print_format", "json",
-        media_url,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, timeout=45, check=False)
-        if result.returncode != 0:
-            err = result.stderr.decode("utf-8", "ignore").strip()[:500]
-            payload = {"available": False, "error": err or "ffprobe failed", "tracks": []}
-            disk_cache.set(_embedded_track_cache_key(fid), payload, expire=300)
-            return payload
-
-        data = orjson.loads(result.stdout or b"{}")
-        tracks = []
-        for ordinal, stream in enumerate(data.get("streams") or [], start=1):
-            codec = (stream.get("codec_name") or "").lower()
-            disposition = stream.get("disposition") or {}
-            tracks.append({
-                "stream_index": stream.get("index"),
-                "label": _subtitle_track_label(stream, ordinal),
-                "language": (stream.get("tags") or {}).get("language") or "",
-                "codec": codec,
-                "default": bool(disposition.get("default")),
-                "forced": bool(disposition.get("forced")),
-                "supported": codec in TEXT_SUBTITLE_CODECS,
-            })
-
-        payload = {"available": bool(tracks), "tracks": tracks}
-        disk_cache.set(_embedded_track_cache_key(fid), payload, expire=12 * 60 * 60)
-        return payload
-    except subprocess.TimeoutExpired:
-        return {"available": False, "error": "ffprobe timeout", "tracks": []}
-    except Exception as e:
-        return {"available": False, "error": str(e), "tracks": []}
-
-
-def _extract_embedded_subtitle_vtt(fid, stream_index):
-    cache_key = _embedded_vtt_cache_key(fid, stream_index)
-    cached = disk_cache.get(cache_key)
-    if cached:
-        return cached
-
-    ffmpeg = _ffmpeg_tool("ffmpeg")
-    if not ffmpeg:
-        return None
-
-    media_url, headers = _gdrive_media_input(fid)
-    if not media_url:
-        return None
-
-    cmd = [
-        ffmpeg,
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-headers", headers,
-        "-i", media_url,
-        "-map", f"0:{stream_index}",
-        "-vn",
-        "-an",
-        "-c:s", "webvtt",
-        "-f", "webvtt",
-        "pipe:1",
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, timeout=120, check=False)
-        if result.returncode != 0 or not result.stdout:
-            err = result.stderr.decode("utf-8", "ignore").strip()[:500]
-            print(f"[EMBEDDED-SUB] extract failed fid={fid} stream={stream_index}: {err}", flush=True)
-            return None
-        content = result.stdout
-        if len(content) > 0:
-            disk_cache.set(cache_key, content, expire=7 * 24 * 60 * 60)
-        return content
-    except subprocess.TimeoutExpired:
-        print(f"[EMBEDDED-SUB] extract timeout fid={fid} stream={stream_index}", flush=True)
-        return None
-    except Exception as e:
-        print(f"[EMBEDDED-SUB] extract error fid={fid} stream={stream_index}: {e}", flush=True)
-        return None
-
-
 def _make_stream_token(fid, ttl=None):
     """Create a file-scoped token usable by <video>, where custom auth headers are not possible."""
     exp = int(time.time() + (ttl or _stream_token_ttl))
@@ -3734,47 +3698,6 @@ def gdrive_stream(fid):
     if not _verify_stream_token(fid, request.args.get('stream_token')):
         return jsonify({"error": "Unauthorized stream"}), 401
     return _proxy_gdrive_media(fid)
-
-
-@app.route("/api/embedded-subtitles/<path:file_path>")
-@token_required(check_expiry=True)
-@rate_limited(limit=80)
-def get_embedded_subtitles(current_user, file_path):
-    """List subtitle streams embedded inside a GDrive video file."""
-    if not file_path.startswith("gdrive/"):
-        return orjson_jsonify({"available": False, "tracks": [], "error": "Unsupported source"})
-    fid = file_path.split("/", 1)[1]
-    return orjson_jsonify(_probe_embedded_subtitles(fid))
-
-
-@app.route("/api/embedded-subtitle/<path:file_path>")
-@token_required(check_expiry=True)
-@rate_limited(limit=60)
-def serve_embedded_subtitle(current_user, file_path):
-    """Extract one embedded text subtitle stream as WebVTT."""
-    if not file_path.startswith("gdrive/"):
-        return jsonify({"error": "Unsupported source"}), 400
-
-    try:
-        stream_index = int(request.args.get("stream_index", ""))
-    except (TypeError, ValueError):
-        return jsonify({"error": "Missing stream_index"}), 400
-
-    fid = file_path.split("/", 1)[1]
-    probe = _probe_embedded_subtitles(fid)
-    track = next((t for t in probe.get("tracks", []) if t.get("stream_index") == stream_index), None)
-    if not track:
-        return jsonify({"error": "Subtitle stream not found"}), 404
-    if not track.get("supported"):
-        return jsonify({"error": f"Subtitle codec '{track.get('codec')}' is not text-based"}), 415
-
-    content = _extract_embedded_subtitle_vtt(fid, stream_index)
-    if not content:
-        return jsonify({"error": "Could not extract embedded subtitle"}), 500
-
-    resp = Response(content, mimetype="text/vtt; charset=utf-8")
-    resp.headers["Cache-Control"] = "private, max-age=86400"
-    return resp
 
 @app.route("/api/hls-manifest/<fid>")
 def get_hls_manifest(fid):
