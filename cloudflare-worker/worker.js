@@ -63,25 +63,28 @@ export default {
     
     // ── Optimasi: Paksa jadi chunk (misal 15MB) agar gampang di-cache di Edge ──
     const originalRange = request.headers.get('Range') || '';
-    const CHUNK_SIZE = 15 * 1024 * 1024; // 15MB
+    const INITIAL_CHUNK_SIZE = 16 * 1024 * 1024; // 16MB
+    const STREAM_CHUNK_SIZE = 64 * 1024 * 1024; // 64MB
+    const CACHEABLE_MAX_BYTES = 70 * 1024 * 1024;
     let modifiedRange = originalRange;
 
     if (!originalRange) {
       // Jika request tanpa Range (misal initial load), paksa jadi 0-CHUNK
-      modifiedRange = `bytes=0-${CHUNK_SIZE - 1}`;
+      modifiedRange = `bytes=0-${INITIAL_CHUNK_SIZE - 1}`;
     } else {
       const match = originalRange.trim().match(/bytes=(\d+)-(.*)/);
       if (match) {
         const start = parseInt(match[1], 10);
         const endStr = match[2];
+        const chunkSize = start === 0 ? INITIAL_CHUNK_SIZE : STREAM_CHUNK_SIZE;
         if (!endStr) {
           // Range terbuka, misal 'bytes=0-', kita batasi ukurannya
-          modifiedRange = `bytes=${start}-${start + CHUNK_SIZE - 1}`;
+          modifiedRange = `bytes=${start}-${start + chunkSize - 1}`;
         } else {
           const end = parseInt(endStr, 10);
-          if (end - start + 1 > CHUNK_SIZE) {
+          if (end - start + 1 > chunkSize) {
             // Range dibatasi tapi masih terlalu besar
-            modifiedRange = `bytes=${start}-${start + CHUNK_SIZE - 1}`;
+            modifiedRange = `bytes=${start}-${start + chunkSize - 1}`;
           }
         }
       }
@@ -156,7 +159,7 @@ export default {
       // Only cache small responses (e.g., < 25MB) to prevent stream backpressure
       // from stalling the client video player (since clone() forces both streams to be consumed).
       const contentLength = parseInt(gdriveResp.headers.get('content-length'), 10);
-      if (contentLength && contentLength < 25 * 1024 * 1024) {
+      if (contentLength && contentLength <= CACHEABLE_MAX_BYTES) {
         ctx.waitUntil(cache.put(cacheKey, response.clone()));
       }
 

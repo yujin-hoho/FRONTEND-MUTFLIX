@@ -23,6 +23,19 @@ const hasServerVisualMetadata = (item = {}) =>
 
 const hasTrustedTmdbLookup = (item = {}) => Boolean(item.tmdb_id || item.tmdb_query);
 
+const hasDisplayMetadata = (metadata = {}) =>
+  Boolean(
+    metadata?.tmdb_id ||
+    metadata?.poster_path ||
+    metadata?.backdrop_path ||
+    metadata?.overview ||
+    metadata?.date ||
+    metadata?.runtime ||
+    metadata?.rating > 0 ||
+    (Array.isArray(metadata?.genres) && metadata.genres.length > 0) ||
+    (Array.isArray(metadata?.genre_ids) && metadata.genre_ids.length > 0)
+  );
+
 const ContentDetail = () => {
   const { folderName } = useParams();
   const [searchParams] = useSearchParams();
@@ -362,13 +375,15 @@ const ContentDetail = () => {
   const title =
     cleanTitleOutsideParentheses(tmdbData?.tmdb_title || tmdbData?.title || decodedName) ||
     (tmdbData?.tmdb_title || tmdbData?.title || decodedName);
+  const metadataReady = hasDisplayMetadata(tmdbData);
   const rating = tmdbData?.rating;
-  const overview = tmdbData?.overview || "No description available for this title.";
+  const overview = tmdbData?.overview || '';
   const year = tmdbData?.date ? tmdbData.date.substring(0, 4) : "";
   const totalEpisodes = tmdbData?.total_episodes || videos.length;
-  const directorName = credits?.director || 'Unknown';
+  const directorName = credits?.director || '';
   const castList = credits?.cast || [];
-  const castNames = castList.map(c => c.name).slice(0, 8).join(', ') || 'Cast information unavailable';
+  const castNames = castList.map(c => c.name).slice(0, 8).join(', ');
+  const genreList = tmdbData?.genres || [];
 
   const normalizeImageUrl = (path, size) => {
     if (!path || typeof path !== 'string') return '';
@@ -377,10 +392,25 @@ const ContentDetail = () => {
 
   const backdropPath =
     normalizeImageUrl(tmdbData?.backdrop_path, 'w1280') ||
-    normalizeImageUrl(tmdbData?.poster_path, 'w780') ||
-    'https://images.unsplash.com/photo-1542204165-65bf26472b9b?q=80&w=1974&auto=format&fit=crop';
+    normalizeImageUrl(tmdbData?.poster_path, 'w780');
 
-  const tabs = isSeriesContent ? ['Episodes', 'Cast'] : ['Cast'];
+  const metadataItems = [
+    rating > 0 ? <span className="text-[#00dc41] font-bold">Rating {Number(rating).toFixed(1)}</span> : null,
+    tmdbData?.media_type || tmdbData?.total_seasons
+      ? (
+        <span className="border border-gray-600 px-1.5 rounded-sm text-[11px]">
+          {tmdbData?.media_type === 'movie' ? 'Movie' : (tmdbData?.total_seasons ? `${tmdbData.total_seasons} Seasons` : 'TV Series')}
+        </span>
+      )
+      : null,
+    year ? <span>{year}</span> : null,
+    isSeriesContent && metadataReady ? <span>{videos.length} of {totalEpisodes} episodes</span> : null,
+    tmdbData?.runtime ? <span>{tmdbData.runtime} min</span> : null,
+  ].filter(Boolean);
+
+  const tabs = isSeriesContent
+    ? ['Episodes', ...(castList.length > 0 || loading ? ['Cast'] : [])]
+    : (castList.length > 0 || loading ? ['Cast'] : []);
 
   if (loading && !tmdbData) {
     return <LoadingScreen />;
@@ -399,14 +429,16 @@ const ContentDetail = () => {
       <div className="relative w-full min-h-[50vh] md:min-h-[75vh] animate-fade-in">
         {/* Backdrop Image */}
         <div className="absolute inset-0 w-full h-full">
-          <img
-            src={backdropPath}
-            alt={title}
-            loading="eager"
-            fetchPriority="high"
-            decoding="async"
-            className="w-full h-full object-cover object-top opacity-60"
-          />
+          {backdropPath && (
+            <img
+              src={backdropPath}
+              alt={title}
+              loading="eager"
+              fetchPriority="high"
+              decoding="async"
+              className="w-full h-full object-cover object-top opacity-60"
+            />
+          )}
           <div className="absolute inset-0 bg-gradient-to-r from-[#111319]/90 via-[#111319]/60 to-[#111319]/10"></div>
           <div className="absolute inset-0 bg-gradient-to-t from-[#111319]/90 via-[#111319]/40 to-transparent"></div>
         </div>
@@ -416,6 +448,7 @@ const ContentDetail = () => {
           <h1 className="text-3xl md:text-5xl font-bold text-white mb-4 leading-tight">{title}</h1>
 
           {/* Tag Badges */}
+          {metadataReady && (
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             <span className="bg-[#00dc41]/20 text-[#00dc41] text-[11px] font-bold px-2 py-0.5 rounded border border-[#00dc41]/30">
               {isSeriesContent ? 'Hot Series' : 'Hot Movie'}
@@ -427,54 +460,47 @@ const ContentDetail = () => {
               Original
             </span>
           </div>
+          )}
 
           {/* Metadata Row */}
-          <div className="flex items-center gap-2 text-sm text-gray-300 font-medium mb-3 flex-wrap">
-            <span className="text-[#00dc41] font-bold">Rating {rating > 0 ? Number(rating).toFixed(1) : 'NR'}</span>
-            <span className="text-gray-600">|</span>
-            <span className="border border-gray-600 px-1.5 rounded-sm text-[11px]">
-              {tmdbData?.media_type === 'movie' ? 'Movie' : (tmdbData?.total_seasons ? `${tmdbData.total_seasons} Seasons` : 'TV Series')}
-            </span>
-            <span className="text-gray-600">|</span>
-            <span>{year}</span>
-            {isSeriesContent && (
-              <>
-                <span className="text-gray-600">|</span>
-                <span>{videos.length} of {totalEpisodes} episodes</span>
-              </>
-            )}
-            {tmdbData?.runtime && (
-              <>
-                <span className="text-gray-600">|</span>
-                <span>{tmdbData.runtime} min</span>
-              </>
-            )}
-          </div>
+          {metadataItems.length > 0 && (
+            <div className="flex items-center gap-2 text-sm text-gray-300 font-medium mb-3 flex-wrap">
+              {metadataItems.map((item, idx) => (
+                <span key={idx} className="contents">
+                  {idx > 0 && <span className="text-gray-600">|</span>}
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Genre Tags */}
+          {genreList.length > 0 && (
           <div className="flex items-center gap-2 mb-4 flex-wrap">
-            {tmdbData?.genres && tmdbData.genres.length > 0 ? tmdbData.genres.map((genre, idx) => (
+            {genreList.map((genre, idx) => (
               <span key={idx} className="bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition border border-white/10">
                 {genre.name}
               </span>
-            )) : ['Drama', 'Romance', 'Comedy', 'Action'].slice(0, 3).map(genre => (
-              <span key={genre} className="bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white text-[12px] font-medium px-3 py-1 rounded-full cursor-pointer transition border border-white/10">
-                {genre}
-              </span>
             ))}
           </div>
+          )}
 
           {/* Director & Cast */}
-          <div className="text-[13px] text-gray-400 mb-1">
-            <span className="text-gray-500">Director: </span>
-            <span className="text-white/80 hover:text-[#00dc41] cursor-pointer transition">{directorName}</span>
-          </div>
-          <div className="text-[13px] text-gray-400 mb-3 line-clamp-1">
-            <span className="text-gray-500">Cast: </span>
-            <span className="text-white/80">{castNames}</span>
-          </div>
+          {directorName && (
+            <div className="text-[13px] text-gray-400 mb-1">
+              <span className="text-gray-500">Director: </span>
+              <span className="text-white/80 hover:text-[#00dc41] cursor-pointer transition">{directorName}</span>
+            </div>
+          )}
+          {castNames && (
+            <div className="text-[13px] text-gray-400 mb-3 line-clamp-1">
+              <span className="text-gray-500">Cast: </span>
+              <span className="text-white/80">{castNames}</span>
+            </div>
+          )}
 
           {/* Description */}
+          {overview && (
           <div className="mb-5">
             <p className={`text-gray-400 text-[13px] leading-relaxed ${expandedDesc ? '' : 'line-clamp-2'}`}>
               <span className="text-gray-500">Description: </span>
@@ -487,6 +513,7 @@ const ContentDetail = () => {
               {expandedDesc ? 'Less' : 'More'} {expandedDesc ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </button>
           </div>
+          )}
 
           {/* Action Buttons */}
           <div className="flex items-center gap-3 flex-wrap">
@@ -528,6 +555,7 @@ const ContentDetail = () => {
         </div>
       </div>
 
+      {tabs.length > 0 && (
       <div className="sticky top-[64px] z-30 bg-[#111319]/95 backdrop-blur-md border-b border-white/10">
         <div className="px-6 md:px-16 flex items-center gap-6 md:gap-8">
           {tabs.map(tab => (
@@ -544,6 +572,7 @@ const ContentDetail = () => {
           ))}
         </div>
       </div>
+      )}
 
       <div className="px-6 md:px-16 py-6 animate-fade-in-up" style={{ animationDelay: '0.3s', opacity: 0, animationFillMode: 'forwards' }}>
 
@@ -738,13 +767,7 @@ const CastGrid = ({ castList, loading }) => {
   }
 
   if (!castList || castList.length === 0) {
-    return (
-      <div className="text-center py-16 text-gray-500">
-        <User size={40} className="mx-auto mb-3 text-gray-600" />
-        <p className="text-lg mb-1">Cast information unavailable</p>
-        <p className="text-sm">TMDB data could not be loaded for this title.</p>
-      </div>
-    );
+    return null;
   }
 
   return (

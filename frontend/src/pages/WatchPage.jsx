@@ -62,6 +62,19 @@ const hasServerVisualMetadata = (item = {}, tmdbData = null) =>
         item.backdrop_path
     );
 
+const hasDisplayMetadata = (metadata = {}) =>
+    Boolean(
+        metadata?.tmdb_id ||
+        metadata?.poster_path ||
+        metadata?.backdrop_path ||
+        metadata?.overview ||
+        metadata?.date ||
+        metadata?.runtime ||
+        metadata?.rating > 0 ||
+        (Array.isArray(metadata?.genres) && metadata.genres.length > 0) ||
+        (Array.isArray(metadata?.genre_ids) && metadata.genre_ids.length > 0)
+    );
+
 const tmdbPosterUrl = (path, size = 'w342') => {
     if (!path || typeof path !== 'string') return '';
     return tmdbImageUrl(path, size) || '';
@@ -366,10 +379,14 @@ const WatchPage = () => {
 
     // ─── Derived values ────────────────────────────
     const title = cleanTitleOutsideParentheses(tmdbData?.tmdb_title || tmdbData?.title || decodedName) || (tmdbData?.tmdb_title || tmdbData?.title || decodedName);
+    const metadataReady = hasDisplayMetadata(tmdbData);
     const rating = tmdbData?.rating;
     const overview = tmdbData?.overview || '';
     const year = (tmdbData?.date || '').substring(0, 4) || '';
     const castList = credits?.cast || [];
+    const genreTags = Array.isArray(tmdbData?.genres) && tmdbData.genres.length > 0
+        ? tmdbData.genres.map((genre) => genre.name).filter(Boolean)
+        : (tmdbData?.genre_ids || []).map(id => TMDB_GENRES[id]).filter(Boolean);
     const currentSeasonNum = toInt(currentVideo?.season, 1);
     const currentEpisodeNum = toInt(currentVideo?.episode, 1);
     const currentEpData = episodeData[`${currentSeasonNum}_${currentEpisodeNum}`];
@@ -382,6 +399,21 @@ const WatchPage = () => {
         : title;
     const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
     const bufferedPercent = duration > 0 ? (buffered / duration) * 100 : 0;
+    const metadataStats = [
+        rating > 0 ? (
+            <span className="text-[#00dc41] font-bold text-[16px] flex items-center gap-1">
+                Rating {Number(rating).toFixed(1)}
+                {tmdbData?.vote_count > 0 && (
+                    <span className="text-gray-500 text-[12px] font-normal tracking-wide">
+                        ({Number(tmdbData.vote_count).toLocaleString()} ratings)
+                    </span>
+                )}
+            </span>
+        ) : null,
+        year ? <span>{year}</span> : null,
+        tmdbData?.runtime ? <span>{tmdbData.runtime} min</span> : null,
+        metadataReady && isSeriesContent && videos.length > 0 ? <span>{videos.length} Episodes</span> : null,
+    ].filter(Boolean);
     const episodeFallbackThumb = useMemo(() => {
         if (!isSeriesContent) return null;
         return (
@@ -2247,39 +2279,27 @@ const WatchPage = () => {
                         </div>
 
                         {/* Meta Stats Row */}
-                        <div className="flex items-center gap-3 text-sm text-gray-300 mb-4 flex-wrap">
-                            {rating > 0 && (
-                                <span className="text-[#00dc41] font-bold text-[16px] flex items-center gap-1">
-                                    ★ {Number(rating).toFixed(1)}
-                                    <span className="text-gray-500 text-[12px] font-normal tracking-wide">
-                                        ({(tmdbData?.vote_count ? (tmdbData.vote_count / 1000).toFixed(1) : '74.1')}k ratings)
+                        {metadataStats.length > 0 && (
+                            <div className="flex items-center gap-3 text-sm text-gray-300 mb-4 flex-wrap">
+                                {metadataStats.map((item, idx) => (
+                                    <span key={idx} className="contents">
+                                        {idx > 0 && <span className="text-gray-600">|</span>}
+                                        {item}
                                     </span>
-                                    <span className="text-[#00dc41] text-[12px] font-medium ml-1 cursor-pointer hover:underline">· Rate now</span>
-                                </span>
-                            )}
-                            <span className="bg-[#00dc41] text-black px-1.5 py-0.5 rounded text-[11px] font-bold ml-2">TOP 1</span>
-                            <span className="text-[13px] font-bold text-white">Hot Dramas</span>
-                            <span className="text-gray-600">|</span>
-                            <span>13+</span>
-                            <span className="text-gray-600">|</span>
-                            <span>{year}</span>
-                            <span className="text-gray-600">|</span>
-                            <span>{isSeriesContent ? videos.length : 1} Episodes</span>
-                        </div>
+                                ))}
+                            </div>
+                        )}
 
                         {/* Tags Row */}
-                        <div className="flex items-center gap-2 mb-4 flex-wrap">
-                            {/* We will extract some genre tags from tmdbData if possible, or fallback */}
-                            {tmdbData?.genre_ids ? tmdbData.genre_ids.map(id => TMDB_GENRES[id]).filter(Boolean).map((tag, i) => (
-                                <span key={i} className="bg-white/10 text-gray-300 px-2 py-0.5 rounded text-[12px] cursor-pointer hover:bg-white/20 transition">
-                                    {tag}
-                                </span>
-                            )) : ['Chinese Mainland', 'Romance', 'Costume', 'Mandarin'].map(tag => (
-                                <span key={tag} className="bg-white/10 text-gray-300 px-2 py-0.5 rounded text-[12px] cursor-pointer hover:bg-white/20 transition">
-                                    {tag}
-                                </span>
-                            ))}
-                        </div>
+                        {genreTags.length > 0 && (
+                            <div className="flex items-center gap-2 mb-4 flex-wrap">
+                                {genreTags.map((tag, i) => (
+                                    <span key={i} className="bg-white/10 text-gray-300 px-2 py-0.5 rounded text-[12px] cursor-pointer hover:bg-white/20 transition">
+                                        {tag}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
 
                         {/* Description */}
                         {overview && (
