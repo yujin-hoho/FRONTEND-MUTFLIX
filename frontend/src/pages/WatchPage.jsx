@@ -30,6 +30,7 @@ import { mergeDetailMetadata, tmdbOptsFromCatalogItem } from '../utils/detailMet
 const SUB_DELAY_UI_CONVENTION = 'neg-is-delay';
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space';
+const STREAM_WORKER_URL = (import.meta.env.VITE_STREAM_WORKER_URL || 'https://mutflix-stream.mutflix.workers.dev').replace(/\/$/, '');
 const LOCAL_RESUME_KEY = 'mutflix_resume_positions';
 const WATCH_SESSION_KEY = 'mutflix_watch_sessions';
 const PLAYER_PREFS_KEY = 'mutflix_player_prefs';
@@ -1068,12 +1069,17 @@ const WatchPage = () => {
                         const fallbackProxyUrl = fallbackProxyPath
                             ? (import.meta.env.DEV ? fallbackProxyPath : `${BASE_URL}${fallbackProxyPath}`)
                             : null;
+                        const workerStreamUrl = token
+                            ? `${STREAM_WORKER_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(token)}`
+                            : null;
 
                         let streamUrl;
                         if (isHls) {
                             // HLS manifest is rewritten by backend to stable segment proxy URLs.
                             const hlsUrl = details.hls_manifest_url || `/api/hls-manifest/${fileId}?access_token=${encodeURIComponent(token)}`;
                             streamUrl = addStreamCacheBuster(resolveBackendUrl(hlsUrl));
+                        } else if (workerStreamUrl) {
+                            streamUrl = addStreamCacheBuster(workerStreamUrl);
                         } else if (details.stream_url) {
                             streamUrl = addStreamCacheBuster(resolveBackendUrl(details.stream_url));
                         } else {
@@ -1081,13 +1087,15 @@ const WatchPage = () => {
                             streamUrl = addStreamCacheBuster(fallbackProxyUrl);
                         }
 
-                        console.log('[Player] Loading via backend proxy:', token ? streamUrl.replace(token, '...') : streamUrl);
+                        console.log('[Player] Loading stream:', token ? streamUrl.replace(token, '...') : streamUrl);
 
                         /**
                          * Helper: coba play video, dengan fallback lama untuk backend lama
                          * yang belum mengirim stream_url.
                          */
+                        const usingDirectWorkerProxy = !!(!isHls && workerStreamUrl && fallbackProxyUrl);
                         const usingStableBackendProxy = !!(!isHls && details.stream_url && fallbackProxyUrl);
+                        const shouldFallbackToBackendProxy = usingDirectWorkerProxy || usingStableBackendProxy;
 
                         const tryPlayWithFallback = (videoSrc) => {
                             if (!videoRef.current) return;
@@ -1097,9 +1105,9 @@ const WatchPage = () => {
                             armStreamReadyWatchdog(loadSeq, 'backend-proxy');
 
                             const onErrorFallback = () => {
-                                if (!usingStableBackendProxy || cancelled) return;
-                                // Stable proxy gagal -> fallback lama untuk kompatibilitas.
-                                console.warn('[Player] Stable backend stream failed, falling back to legacy proxy');
+                                if (!shouldFallbackToBackendProxy || cancelled) return;
+                                // Worker/stable proxy gagal -> fallback lama untuk kompatibilitas.
+                                console.warn('[Player] Primary stream failed, falling back to backend proxy');
                                 videoRef.current.removeEventListener('error', onErrorFallback);
                                 videoRef.current.src = addStreamCacheBuster(fallbackProxyUrl);
                                 applyPlayerPrefsToVideo();
@@ -1108,7 +1116,7 @@ const WatchPage = () => {
                                 playWithAutoplayFallback('Fallback autoplay');
                             };
 
-                            if (usingStableBackendProxy) {
+                            if (shouldFallbackToBackendProxy) {
                                 videoRef.current.addEventListener('error', onErrorFallback, { once: true });
                             }
 
