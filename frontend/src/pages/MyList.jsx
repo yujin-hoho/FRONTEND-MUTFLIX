@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, Trash2, CheckCircle2, Clock, PlayCircle, Film, Tv, Play, Info, MoreVertical } from 'lucide-react';
 import Navbar from '../components/Navbar';
 import LoginModal from '../components/LoginModal';
-import { fetchMyList, removeFromMyList, updateMyListStatus, fetchProfiles, logout, getTMDBInfo, fetchHistory, tmdbImageUrl } from '../services/api';
+import { fetchMyList, removeFromMyList, updateMyListStatus, fetchProfiles, logout, getServerTMDBMeta, fetchHistory, tmdbImageUrl } from '../services/api';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 
@@ -71,7 +71,7 @@ const MyList = () => {
             await mapWithConcurrency(data, 6, async (item, idx) => {
                 if (item.meta_json?.tmdb_poster_path) return;
 
-                const tmdb = await getTMDBInfo(item.folder_name, { light: true });
+                const tmdb = await getServerTMDBMeta(item.folder_name, item.media_type || 'tv');
                 if (tmdb && currentFetchId === fetchIdRef.current) {
                     enrichedData[idx] = {
                         ...item,

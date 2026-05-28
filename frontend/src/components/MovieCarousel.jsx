@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, X, Pencil } from 'lucide-react';
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo, fetchVideos, tmdbImageUrl as serverTmdbImageUrl } from '../services/api';
+import { getServerTMDBMeta, fetchVideos, tmdbImageUrl as serverTmdbImageUrl } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute, preloadWatchPageRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -244,7 +244,9 @@ export const MovieCard = ({ item, tag, isFirst, progress, variant = 'vertical', 
     const resetId = setTimeout(() => {
       if (!cancelled) setTmdbData(null);
     }, 0);
-    getTMDBInfo(searchTitle, { ...tmdbOptsFromItem(item), light: true }).then((data) => {
+    const opts = tmdbOptsFromItem(item);
+    const mediaType = opts.mediaType || (item.media_type === 'movie' || item.type === 'movie' ? 'movie' : 'tv');
+    getServerTMDBMeta(searchTitle, mediaType).then((data) => {
       if (!cancelled && data) setTmdbData(data);
     });
     return () => {

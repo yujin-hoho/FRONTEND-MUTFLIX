@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import {
     fetchVideos, getStreamDetails, fetchSubtitle, getEmbeddedSubtitles, fetchEmbeddedSubtitle,
-    getTMDBInfo, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES,
+    getServerTMDBMeta, getTMDBCredits, getTMDBSeasonDetails, logout, TMDB_GENRES,
     fetchProfiles, createProfile, saveHistory, fetchHistory, getTMDBMoreLikeThis,
     tmdbImageUrl
 } from '../services/api';
@@ -389,7 +389,16 @@ const WatchPage = () => {
         ? tmdbData.genres.map((genre) => genre.name).filter(Boolean)
         : (tmdbData?.genre_ids || []).map(id => TMDB_GENRES[id]).filter(Boolean);
     const currentSeasonNum = toInt(currentVideo?.season, 1);
-    const currentEpisodeNum = toInt(currentVideo?.episode, 1);
+    const currentVideoIndexInSeason = useMemo(() => {
+        if (!currentVideo) return -1;
+        const s = toInt(currentVideo.season, 1);
+        const seasonEpisodes = videos.filter(v => toInt(v.season, 1) === s);
+        return seasonEpisodes.findIndex(v => v.path === currentVideo.path);
+    }, [videos, currentVideo]);
+
+    const currentEpisodeNum = currentVideo?.episode != null && currentVideo.episode !== 0
+        ? toInt(currentVideo.episode, 1)
+        : (currentVideoIndexInSeason !== -1 ? currentVideoIndexInSeason + 1 : 1);
     const currentEpData = episodeData[`${currentSeasonNum}_${currentEpisodeNum}`];
     const currentEpName = typeof currentEpData?.name === 'string' ? currentEpData.name.trim() : '';
     const currentVideoName = typeof currentVideo?.name === 'string' ? currentVideo.name.trim() : '';
@@ -501,7 +510,7 @@ const WatchPage = () => {
                 const videosList = videosListRaw.map((v) => ({
                     ...v,
                     season: toInt(v.season, 1),
-                    episode: toInt(v.episode, 1),
+                    episode: toInt(v.episode, null),
                 }));
                 videosList.sort((a, b) => {
                     if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
@@ -556,14 +565,12 @@ const WatchPage = () => {
                             urlType === 'series' ||
                             videosList.length > 1 ||
                             videosList.some((v) => toInt(v.season, 1) > 1);
-                        const tmdbOptions = {
-                            ...tmdbOptsFromCatalogItem(baseCatalogItem, urlType),
-                            mediaType:
-                                tmdbOptsFromCatalogItem(baseCatalogItem, urlType).mediaType ||
-                                (inferredIsSeries ? 'tv' : (urlType === 'movie' ? 'movie' : undefined)),
-                        };
+                        const serverMediaType =
+                            tmdbOptsFromCatalogItem(baseCatalogItem, urlType).mediaType ||
+                            (inferredIsSeries ? 'tv' : 'movie');
                         const tmdbSearchTitle = baseCatalogItem.tmdb_query || baseCatalogItem.tmdb_title || baseCatalogItem.folder_name || baseCatalogItem.name || decodedName;
-                        const lightTmdb = await getTMDBInfo(tmdbSearchTitle, { ...tmdbOptions, light: true });
+
+                        const lightTmdb = await getServerTMDBMeta(tmdbSearchTitle, serverMediaType);
                         if (cancelled) return;
                         const lightResolvedTmdb = mergeDetailMetadata(baseCatalogItem, lightTmdb || navigationTmdbData, decodedName, urlType);
                         setTmdbData(lightResolvedTmdb);
@@ -571,12 +578,8 @@ const WatchPage = () => {
                             loadSeasonEpisodeData(lightResolvedTmdb.tmdb_id, seasonToPrefetch);
                         }
 
-                        const tmdb = await getTMDBInfo(tmdbSearchTitle, tmdbOptions);
-                        if (cancelled) return;
-                        const resolvedTmdb = mergeDetailMetadata(baseCatalogItem, tmdb || lightTmdb || navigationTmdbData, decodedName, urlType);
-                        setTmdbData(resolvedTmdb);
-                        if (trustedLookup && resolvedTmdb?.tmdb_id) {
-                            const creditsData = await getTMDBCredits(resolvedTmdb.tmdb_id, resolvedTmdb.media_type);
+                        if (lightResolvedTmdb?.tmdb_id) {
+                            const creditsData = await getTMDBCredits(lightResolvedTmdb.tmdb_id, lightResolvedTmdb.media_type);
                             if (!cancelled) setCredits(creditsData);
                         }
                     } catch (e) {

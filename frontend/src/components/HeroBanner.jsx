@@ -1,7 +1,7 @@
 import { Play, BookmarkPlus, Pencil } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getTMDBInfo, tmdbImageUrl } from '../services/api';
+import { getServerTMDBMeta, tmdbImageUrl } from '../services/api';
 import { detailTypeOfItem, isSeriesLike } from '../utils/mediaType';
 import { preloadContentDetailRoute } from '../utils/routePreload';
 import { cleanTitleOutsideParentheses } from '../utils/cleanTitle';
@@ -63,7 +63,9 @@ const HeroBanner = ({ items, isAdmin, onEditPoster }) => {
       const title = item.tmdb_title || item.folder_name || item.name;
       if (!title) return;
 
-      const p = getTMDBInfo(title, { ...tmdbOptsFromItem(item), light: true })
+      const opts = tmdbOptsFromItem(item);
+      const mediaType = opts.mediaType || (item.media_type === 'movie' || item.type === 'movie' ? 'movie' : 'tv');
+      const p = getServerTMDBMeta(title, mediaType)
         .then((data) => {
           if (cancelled || !data) return;
           // Allow fallback to poster when backdrop isn't available yet.

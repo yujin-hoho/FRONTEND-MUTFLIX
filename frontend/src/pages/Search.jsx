@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { searchContent, getTMDBInfo, logout, fetchFoldersFresh } from '../services/api';
+import { searchContent, getServerTMDBMeta, logout, fetchFoldersFresh } from '../services/api';
 import Footer from '../components/Footer';
 
 const tmdbOptsFromItem = (item) => {
@@ -153,7 +153,9 @@ const Search = () => {
             if (!title) return item;
 
             try {
-              const tmdbData = await getTMDBInfo(title, { ...tmdbOptsFromItem(item), light: true });
+              const opts = tmdbOptsFromItem(item);
+              const mediaType = opts.mediaType || (item.media_type === 'movie' || item.type === 'movie' ? 'movie' : 'tv');
+              const tmdbData = await getServerTMDBMeta(title, mediaType);
               if (tmdbData) {
                 return {
                   ...item,

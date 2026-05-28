@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import { MovieCard } from '../components/MovieCarousel';
-import { fetchFolders, getTMDBInfo, TMDB_GENRES, logout, tmdbImageUrl as serverTmdbImageUrl } from '../services/api';
+import { fetchFolders, getServerTMDBMeta, TMDB_GENRES, logout, tmdbImageUrl as serverTmdbImageUrl } from '../services/api';
 import Footer from '../components/Footer';
 import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
 
@@ -526,11 +526,8 @@ const FilterPage = () => {
             const hasEnoughInfo = hasPosterAndGenres(item);
             let tmdbData = null;
             if (!hasEnoughInfo && mayCallTmdb.has(index)) {
-              tmdbData = await getTMDBInfo(title, {
-                ...override,
-                mediaType: override.mediaType || inferred || undefined,
-                light: true,
-              });
+              const mediaType = override.mediaType || inferred || (item.media_type === 'movie' || item.type === 'movie' ? 'movie' : 'tv');
+              tmdbData = await getServerTMDBMeta(title, mediaType);
             }
 
             const srcGenreIds =

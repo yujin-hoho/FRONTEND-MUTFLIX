@@ -141,14 +141,25 @@ const ContentDetail = () => {
     return dataMap;
   }, []);
 
+  const getEpisodeNum = useCallback((video) => {
+    if (!video) return 1;
+    if (video.episode != null && video.episode !== 0) {
+      return toInt(video.episode, 1);
+    }
+    const s = toInt(video.season, 1);
+    const seasonEpisodes = videos.filter(v => toInt(v.season, 1) === s);
+    const idx = seasonEpisodes.findIndex(v => v.path === video.path);
+    return idx !== -1 ? idx + 1 : 1;
+  }, [videos]);
+
   const loadSeasonEpisodeData = useCallback((tmdbId, seasonNum) => {
     const season = toInt(seasonNum, 1);
-    if (!tmdbId || !Number.isFinite(season)) return;
+    if (!tmdbId || !Number.isFinite(season)) return Promise.resolve();
     const key = `${tmdbId}_${season}`;
-    if (fetchedSeasonStillsRef.current.has(key) || fetchingSeasonStillsRef.current.has(key)) return;
+    if (fetchedSeasonStillsRef.current.has(key) || fetchingSeasonStillsRef.current.has(key)) return Promise.resolve();
 
     fetchingSeasonStillsRef.current.add(key);
-    void getTMDBSeasonDetails(tmdbId, season)
+    return getTMDBSeasonDetails(tmdbId, season)
       .then((seasonData) => {
         if (seasonData?.episodes) {
           const dataMap = {};
@@ -190,11 +201,6 @@ const ContentDetail = () => {
           const immediateMetadata = mergeDetailMetadata(catalogItem, null, decodedName, urlType);
           setTmdbData(immediateMetadata);
 
-          const trustedLookup = hasTrustedTmdbLookup(catalogItem);
-          if (!trustedLookup && hasServerVisualMetadata(catalogItem)) {
-            return;
-          }
-
           try {
             const serverMediaType = tmdbOptions.mediaType || (urlType === 'movie' ? 'movie' : 'tv');
             const searchName = catalogItem.tmdb_query || catalogItem.tmdb_title || (!isIdPath(catalogItem.folder_name) ? catalogItem.folder_name : null) || (!isIdPath(catalogItem.name) ? catalogItem.name : null) || tmdbSearchTitle;
@@ -202,18 +208,24 @@ const ContentDetail = () => {
             if (!isMounted) return;
             const lightMetadata = mergeDetailMetadata(catalogItem, lightTmdb, decodedName, urlType);
             setTmdbData(lightMetadata);
-            if (trustedLookup && lightMetadata?.tmdb_id && lightMetadata?.media_type === 'tv') {
-              loadSeasonEpisodeData(lightMetadata.tmdb_id, seasonToPrefetch);
-            }
 
-            const detailMetadata = mergeDetailMetadata(catalogItem, lightTmdb, decodedName, urlType);
-            setTmdbData(detailMetadata);
-            if (trustedLookup && detailMetadata?.tmdb_id) {
-              const creditsData = await getTMDBCredits(detailMetadata.tmdb_id, detailMetadata.media_type);
-              if (isMounted) setCredits(creditsData);
+            const tmdbId = lightMetadata?.tmdb_id;
+            const mediaType = lightMetadata?.media_type;
+
+            if (tmdbId) {
+              const promises = [];
+              if (mediaType === 'tv') {
+                promises.push(loadSeasonEpisodeData(tmdbId, seasonToPrefetch));
+              }
+              promises.push(
+                getTMDBCredits(tmdbId, mediaType).then((creditsData) => {
+                  if (isMounted) setCredits(creditsData);
+                })
+              );
+              await Promise.all(promises);
             }
-          } catch {
-            /* ignore */
+          } catch (err) {
+            console.error("Error loading visual metadata:", err);
           }
         };
 
@@ -229,7 +241,7 @@ const ContentDetail = () => {
         const videosList = videosListRaw.map((v) => ({
           ...v,
           season: toInt(v.season, 1),
-          episode: toInt(v.episode, 1),
+          episode: toInt(v.episode, null),
         }));
         videosList.sort((a, b) => {
           if (a.season !== b.season) return (a.season || 1) - (b.season || 1);
@@ -245,27 +257,22 @@ const ContentDetail = () => {
         // Compute active tab from the fastest available data (don't block UI).
         const isSeries = urlType === 'series' || (catalogForDetail?.media_type === 'tv') || videosList.length > 1;
         setActiveTab(isSeries ? 'episodes' : 'cast');
-        setLoading(false);
 
         const firstVisibleSeason = videosList[0]?.season || 1;
-        const immediateTmdb = mergeDetailMetadata(catalogForDetail, null, decodedName, urlType);
-        if (hasTrustedTmdbLookup(catalogForDetail) && immediateTmdb?.tmdb_id && isSeries) {
-          loadSeasonEpisodeData(immediateTmdb.tmdb_id, firstVisibleSeason);
-        }
 
-        // Step 2: Background fetches (non-blocking).
-        // 2a. Visual Metadata. Episode stills are lazy-loaded per season after TMDB id is known.
+        // Step 2: Sequential visual metadata fetches (blocking loading screen).
         if (serverItem || navigationDetailItem) {
-          void loadVisualMetadata(catalogForDetail, firstVisibleSeason);
+          await loadVisualMetadata(catalogForDetail, firstVisibleSeason);
         } else {
-          void loadVisualMetadata(fallbackCatalogItem, firstVisibleSeason);
-          fetchFolders().then((foldersResp) => {
-            if (!isMounted) return;
-            const catalogItem = findCatalogItemForDetail(foldersResp, decodedName);
-            if (catalogItem) void loadVisualMetadata(catalogItem, firstVisibleSeason);
-          }).catch(() => {
-            /* fallback already started */
-          });
+          try {
+            const foldersResp = await fetchFolders();
+            if (isMounted) {
+              const catalogItem = findCatalogItemForDetail(foldersResp, decodedName);
+              await loadVisualMetadata(catalogItem || fallbackCatalogItem, firstVisibleSeason);
+            }
+          } catch {
+            await loadVisualMetadata(fallbackCatalogItem, firstVisibleSeason);
+          }
         }
 
         // 2b. User Data (History, My List)
@@ -414,7 +421,7 @@ const ContentDetail = () => {
     ? ['Episodes', ...(castList.length > 0 || loading ? ['Cast'] : [])]
     : (castList.length > 0 || loading ? ['Cast'] : []);
 
-  if (loading && !tmdbData) {
+  if (loading && !hasDisplayMetadata(tmdbData)) {
     return <LoadingScreen />;
   }
 
@@ -522,7 +529,7 @@ const ContentDetail = () => {
             <button
               onClick={() => {
                 const target = lastWatchedMedia || videos[0] || { episode: 1, season: 1 };
-                const epParam = target.episode || 1;
+                const epParam = getEpisodeNum(target);
                 const sParam = target.season || 1;
                 let targetUrl = `/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`;
                 if (target.position_ms) {
@@ -625,7 +632,7 @@ const ContentDetail = () => {
                       fallbackImage={backdropPath}
                       progress={historyMap[video.path]?.progress}
                       onPlay={() => {
-                        const epParam = video.episode || idx + 1;
+                        const epParam = getEpisodeNum(video);
                         const sParam = video.season || 1;
                         let targetUrl = `/watch/${folderName}?ep=${epParam}&s=${sParam}&type=${urlType || (isSeriesContent ? 'series' : 'movie')}`;
                         const pos = historyMap[video.path]?.position_ms;

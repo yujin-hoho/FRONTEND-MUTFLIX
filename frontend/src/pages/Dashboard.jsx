@@ -8,7 +8,7 @@ import LoginModal from '../components/LoginModal';
 import Footer from '../components/Footer';
 import LoadingScreen from '../components/LoadingScreen';
 import TmdbPosterEditModal from '../components/TmdbPosterEditModal';
-import { fetchFolders, logout, getTMDBInfo, TMDB_GENRES, fetchProfiles, fetchHistory, hideHistory, cacheClear, tmdbImageUrl } from '../services/api';
+import { fetchFolders, logout, getServerTMDBMeta, getTMDBCredits, TMDB_GENRES, fetchProfiles, fetchHistory, hideHistory, cacheClear, tmdbImageUrl } from '../services/api';
 
 const shuffleArray = (array) => {
   const newArr = [...array];
@@ -191,7 +191,9 @@ const enrichFeaturedFast = async (items) => {
     const title = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
     if (!title) return item;
     try {
-      const data = await getTMDBInfo(title, { ...tmdbOptsFromItem(item), light: true });
+      const opts = tmdbOptsFromItem(item);
+      const mediaType = opts.mediaType || (item.media_type === 'movie' || item.type === 'movie' ? 'movie' : 'tv');
+      const data = await getServerTMDBMeta(title, mediaType);
       if (!data) return item;
       return {
         ...item,
@@ -415,7 +417,8 @@ const Dashboard = () => {
       const opts = tmdbOptsFromItem(item);
 
       try {
-        const apiData = await getTMDBInfo(searchTitle, { ...opts, light: true });
+        const mediaType = opts.mediaType || (item.media_type === 'movie' || item.type === 'movie' ? 'movie' : 'tv');
+        const apiData = await getServerTMDBMeta(searchTitle, mediaType);
         if (!apiData || fetchIdRef.current !== currentFetchId) return;
         const resolvedItem = { ...item };
         resolvedItem.tmdb_id = apiData.tmdb_id || item.tmdb_id;
@@ -447,30 +450,19 @@ const Dashboard = () => {
     const castIndices = candidateIndices
       .filter((idx) => {
         const item = resolvedItems[idx] || items[idx];
-        return item?.tmdb_query || item?.tmdb_poster_path || item?.poster_path || item?.tmdb_rating;
+        return item?.tmdb_id;
       })
       .slice(0, TMDB_CAST_LIMIT);
 
     await mapWithConcurrency(castIndices, 4, async (idx) => {
       if (fetchIdRef.current !== currentFetchId) return;
       const item = resolvedItems[idx] || items[idx];
-      const searchTitle = item.tmdb_query || item.tmdb_title || item.folder_name || item.name;
-      if (!searchTitle) return;
-
       try {
-        const apiData = await getTMDBInfo(searchTitle, tmdbOptsFromItem(item));
-        if (!apiData || fetchIdRef.current !== currentFetchId) return;
+        const creditsData = await getTMDBCredits(item.tmdb_id, item.media_type);
+        if (!creditsData || fetchIdRef.current !== currentFetchId) return;
         resolvedItems[idx] = {
           ...item,
-          tmdb_id: apiData.tmdb_id || item.tmdb_id,
-          media_type: apiData.media_type || item.media_type,
-          tmdb_title: apiData.tmdb_title || apiData.title || item.tmdb_title,
-          tmdb_poster_path: apiData.poster_path || item.tmdb_poster_path,
-          tmdb_backdrop_path: apiData.backdrop_path || item.tmdb_backdrop_path,
-          tmdb_genre_ids: apiData.genre_ids || (apiData.genres ? apiData.genres.map(g => g.id) : null) || item.tmdb_genre_ids || [],
-          tmdb_overview: apiData.overview || item.tmdb_overview,
-          tmdb_rating: apiData.rating || item.tmdb_rating,
-          tmdb_cast: apiData.cast || [],
+          tmdb_cast: creditsData.cast || [],
         };
       } catch {
         /* keep light metadata */
