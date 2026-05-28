@@ -9,14 +9,12 @@ import { createDetailNavigationState } from '../utils/detailMetadata';
 import { EPISODE_PLACEHOLDER_IMAGE } from '../utils/placeholders';
 
 const tmdbOptsFromItem = (item) => {
-  if (!item?.tmdb_query) return {};
-  const o = {
-    query: item.tmdb_query,
-    mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
-  };
-  if (item.override_year != null && item.override_year !== '') o.year = Number(item.override_year);
-  if (item.override_region) o.region = item.override_region;
-  if (item.include_adult) o.includeAdult = true;
+  const o = {};
+  if (item?.tmdb_query) o.query = item.tmdb_query;
+  o.mediaType = isSeriesLike(item) ? 'tv' : 'movie';
+  if (item?.override_year != null && item?.override_year !== '') o.year = Number(item.override_year);
+  if (item?.override_region) o.region = item.override_region;
+  if (item?.include_adult) o.includeAdult = true;
   return o;
 };
 

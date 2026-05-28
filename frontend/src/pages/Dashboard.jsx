@@ -118,14 +118,16 @@ const preloadDashboardImages = (resolvedItems, continueWatchingItems, topActors 
 };
 
 const tmdbOptsFromItem = (it) => {
-  if (!it?.tmdb_query) return {};
-  const o = {
-    query: it.tmdb_query,
-    mediaType: it.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
-  };
-  if (it.override_year != null && it.override_year !== '') o.year = Number(it.override_year);
-  if (it.override_region) o.region = it.override_region;
-  if (it.include_adult) o.includeAdult = true;
+  const o = {};
+  if (it?.tmdb_query) o.query = it.tmdb_query;
+  const isSeries = it?.tmdb_override_media_type === 'tv' || 
+                   it?.media_type === 'tv' || 
+                   it?.type === 'series' || 
+                   it?.type === 'tv';
+  o.mediaType = isSeries ? 'tv' : 'movie';
+  if (it?.override_year != null && it.override_year !== '') o.year = Number(it.override_year);
+  if (it?.override_region) o.region = it.override_region;
+  if (it?.include_adult) o.includeAdult = true;
   return o;
 };
 

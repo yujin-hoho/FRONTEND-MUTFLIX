@@ -69,14 +69,14 @@ const inferTmdbMediaType = (item) => {
 };
 
 const tmdbOptsFromItem = (item) => {
-  if (!item?.tmdb_query) return {};
-  return {
-    query: item.tmdb_query,
-    mediaType: item.tmdb_override_media_type === 'movie' ? 'movie' : 'tv',
-    year: item.override_year != null && item.override_year !== '' ? Number(item.override_year) : undefined,
-    region: item.override_region || undefined,
-    includeAdult: !!item.include_adult,
-  };
+  const o = {};
+  if (item?.tmdb_query) o.query = item.tmdb_query;
+  const inferred = inferTmdbMediaType(item) || 'movie';
+  o.mediaType = item?.tmdb_override_media_type === 'movie' ? 'movie' : item?.tmdb_override_media_type === 'tv' ? 'tv' : inferred;
+  if (item?.override_year != null && item?.override_year !== '') o.year = Number(item.override_year);
+  if (item?.override_region) o.region = item.override_region;
+  if (item?.include_adult) o.includeAdult = true;
+  return o;
 };
 
 const itemMatchesVarietyShow = (item) => {

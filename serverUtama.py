@@ -1349,7 +1349,15 @@ def get_tmdb_meta(current_user, media_type):
         return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
 
     folder_name = request.args.get('folder_name')
-    status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(media_type, folder_name)
+    resolved_name = folder_name
+    if folder_name and folder_name.startswith(("gdrive_folder/", "gdrive/", "telegram/")):
+        folders_data = mem_get('folders_list')
+        if folders_data:
+            for movie_item in folders_data.get('movies', []):
+                if movie_item.get('source') == folder_name:
+                    resolved_name = movie_item['name']
+                    break
+    status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(media_type, resolved_name)
 
     resp = orjson_jsonify(payload, status=status)
     resp.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if status in (200, 404) else 'no-store'
@@ -1768,7 +1776,7 @@ def _catalog_item_for_folder(folder_name, resolved_name=None):
     if not name:
         return None
     catalog_item = {'name': name, 'folder_name': name}
-    is_movie = folder_name.startswith(("gdrive/", "telegram/"))
+    is_movie = folder_name.startswith(("gdrive/", "gdrive_folder/", "telegram/"))
     payload = {'series': [], 'movies': [catalog_item]} if is_movie else {'series': [catalog_item], 'movies': []}
     _merge_content_release_tmdb_into_folders(payload)
     _merge_tmdb_overrides_into_folders(payload)
@@ -3193,7 +3201,7 @@ def background_cache_worker():
                         old_folders = mem_get(folders_key); old_keys = set()
                         if old_folders: 
                             for cat in old_folders: 
-                                for item in old_folders[cat]: old_keys.add(item.get('source') if item.get('source','').startswith('gdrive/') else item['name'])
+                                for item in old_folders[cat]: old_keys.add(item.get('source') if item.get('source','').startswith(('gdrive/', 'gdrive_folder/', 'telegram/')) else item['name'])
                         folders_data = fetch_gdrive_categorized_content(service)
                         if folders_data:
                             series_dedup, movies_dedup = _deduplicate_all_content(folders_data.get("series", []), folders_data.get("movies", []))
@@ -3203,7 +3211,7 @@ def background_cache_worker():
                             folders_data["movies"] = movies_dedup
                             for category in folders_data:
                                 for item in folders_data[category]:
-                                    k = item.get('source') if item.get('source','').startswith('gdrive/') else item['name']
+                                    k = item.get('source') if item.get('source','').startswith(('gdrive/', 'gdrive_folder/', 'telegram/')) else item['name']
                                     if k not in old_keys: priority_new_items.add(k)
                             mem_set(folders_key, folders_data); updated_count += 1
                             # Invalidate pre-serialized response cache for folders
@@ -3230,7 +3238,7 @@ def background_cache_worker():
                 items_to_refresh = []
                 for item in all_items:
                     folder_name = item['name']; source_path = item.get('source')
-                    target = source_path if (source_path and source_path.startswith("gdrive/")) else folder_name
+                    target = source_path if (source_path and source_path.startswith(("gdrive/", "gdrive_folder/", "telegram/"))) else folder_name
                     # [FIX] For movies with gdrive_folder/gdrive source, resolve to actual name
                     # so fetch_gdrive_videos can find the folder by name in GDrive
                     resolve_target = folder_name if target.startswith(("gdrive_folder/", "gdrive/")) else target
@@ -3258,7 +3266,7 @@ def background_cache_worker():
                 missing_sub_items = []
                 for item in all_items:
                     folder_name_bg = item['name']; source_path_bg = item.get('source')
-                    target_bg = source_path_bg if (source_path_bg and source_path_bg.startswith("gdrive/")) else folder_name_bg
+                    target_bg = source_path_bg if (source_path_bg and source_path_bg.startswith(("gdrive/", "gdrive_folder/", "telegram/"))) else folder_name_bg
                     resolve_target_bg = folder_name_bg if target_bg.startswith(("gdrive_folder/", "gdrive/")) else target_bg
                     cache_key_bg = f"videos_{target_bg}"
                     cached_data = mem_get(cache_key_bg)
