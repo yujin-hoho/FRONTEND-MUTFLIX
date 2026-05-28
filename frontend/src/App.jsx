@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useParams, useSearchParams } from 'react-router-dom';
 import { ProtectedRoute, PublicRoute } from './components/ProtectedRoute';
 import { preloadContentDetailRoute, preloadWatchPageRoute } from './utils/routePreload';
 
@@ -16,6 +16,13 @@ const RouteFallback = () => (
     <div className="w-10 h-10 border-2 border-[#00dc41]/30 border-t-[#00dc41] rounded-full animate-spin" />
   </div>
 );
+
+const ContentDetailWrapper = () => {
+  const { folderName } = useParams();
+  const [searchParams] = useSearchParams();
+  const type = searchParams.get('type') || '';
+  return <ContentDetail key={`${folderName}_${type}`} />;
+};
 
 function App() {
   useEffect(() => {
@@ -50,7 +57,7 @@ function App() {
         
         <Route path="/detail/:folderName" element={
           <ProtectedRoute>
-            <ContentDetail />
+            <ContentDetailWrapper />
           </ProtectedRoute>
         } />
         

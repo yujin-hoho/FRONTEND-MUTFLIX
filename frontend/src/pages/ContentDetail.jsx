@@ -64,7 +64,7 @@ const ContentDetail = () => {
   const [tmdbData, setTmdbData] = useState(initialDetailMetadata);
   const [credits, setCredits] = useState(null);
   const [episodeData, setEpisodeData] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('episodes');
   const [expandedDesc, setExpandedDesc] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -421,7 +421,7 @@ const ContentDetail = () => {
     ? ['Episodes', ...(castList.length > 0 || loading ? ['Cast'] : [])]
     : (castList.length > 0 || loading ? ['Cast'] : []);
 
-  if (loading && !hasDisplayMetadata(tmdbData)) {
+  if (loading) {
     return <LoadingScreen />;
   }
 
