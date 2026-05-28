@@ -197,9 +197,9 @@ else:
 CACHE_DIR = "cache"
 if not os.path.exists(CACHE_DIR): os.makedirs(CACHE_DIR)
 CACHE_REFRESH_INTERVAL = 300    # 5 min - BG worker refreshes every content cycle
-CACHE_DURATION_FOLDERS = 300    # 5 min - folder response cache
-CACHE_DURATION_VIDEOS  = 300    # 5 min - video response cache
-CACHE_DURATION_EMPTY   = 300      # 5 min — empty results retry lebih cepat
+CACHE_DURATION_FOLDERS = 86400   # 24 hours - folder response cache
+CACHE_DURATION_VIDEOS  = 86400   # 24 hours - video response cache
+CACHE_DURATION_EMPTY   = 1800     # 30 min - empty results retry lebih cepat
 TMDB_CACHE_TTL_SECONDS = int(os.environ.get('TMDB_CACHE_TTL_SECONDS', '86400'))  # 24 jam default
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
 
@@ -217,6 +217,9 @@ _mem_lock = threading.Lock()
 # 24 workers — handles parallel GDrive calls, subtitle fetches, DB queries
 # Cost: ~24MB RAM (1MB stack per thread) — negligible
 _global_executor = ThreadPoolExecutor(max_workers=24)
+_tmdb_meta_executor = ThreadPoolExecutor(
+    max_workers=int(os.environ.get('TMDB_META_WORKERS', '64'))
+)
 
 # === JWT DECODE CACHE ===
 # Cache decoded JWT payloads keyed by token string — avoids ~0.5ms decode per auth request
@@ -1181,6 +1184,31 @@ def _tmdb_meta_lock_for(cache_key):
             _tmdb_meta_key_locks[cache_key] = lock
         return lock
 
+def _get_or_resolve_tmdb_meta_payload(media_type, folder_name):
+    """Resolve one TMDB metadata payload, using the same cache path as the GET endpoint."""
+    media_type = (media_type or '').strip().lower()
+    folder_name = (folder_name or '').strip()
+    if media_type not in ('tv', 'movie'):
+        return 400, {'error': 'media_type must be tv or movie'}, None
+    if not folder_name:
+        return 400, {'error': 'folder_name is required'}, None
+
+    override = _get_tmdb_overrides_map().get(folder_name)
+    cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
+    cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
+    if cached_entry:
+        return cached_entry.get('status', 200), cached_entry.get('payload'), cache_status
+
+    key_lock = _tmdb_meta_lock_for(cache_key)
+    with key_lock:
+        cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
+        if cached_entry:
+            return cached_entry.get('status', 200), cached_entry.get('payload'), cache_status
+
+        status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
+        _set_tmdb_meta_cache(cache_key, status, payload)
+        return status, payload, 'MISS'
+
 def _parse_year_from_folder_name(folder_name):
     patterns = [
         r'\((\d{4})\)',
@@ -1313,101 +1341,74 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
         }
     return 200, detail_data
 
-def _resolve_tmdb_meta_cached(media_type, folder_name, override):
-    cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
-    cached_entry, _ = _get_tmdb_meta_cache(cache_key)
-    if cached_entry:
-        return cached_entry.get('status', 200), cached_entry.get('payload') or {}
-
-    key_lock = _tmdb_meta_lock_for(cache_key)
-    with key_lock:
-        cached_entry, _ = _get_tmdb_meta_cache(cache_key)
-        if cached_entry:
-            return cached_entry.get('status', 200), cached_entry.get('payload') or {}
-
-        status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
-        _set_tmdb_meta_cache(cache_key, status, payload)
-        return status, payload
-
-def _episode_metadata_for_videos(folder_name, catalog_item, videos):
-    if not videos:
-        return {}
-
-    catalog_item = catalog_item or {}
-    media_type = (
-        catalog_item.get('tmdb_override_media_type') or
-        catalog_item.get('media_type') or
-        ('movie' if catalog_item.get('type') == 'movie' else 'tv')
-    )
-    if media_type in ('series', 'tv'):
-        media_type = 'tv'
-    elif media_type != 'movie':
-        media_type = 'tv' if len(videos) > 1 else 'movie'
-    if media_type != 'tv':
-        return {}
-
-    lookup_name = catalog_item.get('folder_name') or catalog_item.get('name') or folder_name
-    override = _get_tmdb_overrides_map().get(lookup_name)
-    if not override and catalog_item.get('tmdb_query'):
-        override = {
-            'tmdb_query': catalog_item.get('tmdb_query'),
-            'override_year': catalog_item.get('override_year'),
-            'override_language': catalog_item.get('override_language'),
-            'include_adult': catalog_item.get('include_adult'),
-            'override_region': catalog_item.get('override_region'),
-        }
-
-    status, meta = _resolve_tmdb_meta_cached('tv', lookup_name, override)
-    tmdb_id = meta.get('id') if status == 200 and isinstance(meta, dict) else None
-    if not tmdb_id:
-        return {}
-
-    language = ((override or {}).get('override_language') or 'en-US').strip() or 'en-US'
-    seasons = sorted({int(v.get('season') or 1) for v in videos if str(v.get('season') or 1).isdigit()})
-    episode_data = {}
-    for season in seasons:
-        season_status, season_data = _fetch_tmdb_json_server(f'tv/{tmdb_id}/season/{season}', {'language': language})
-        if season_status != 200 or not isinstance(season_data, dict):
-            continue
-        for ep in season_data.get('episodes') or []:
-            ep_no = ep.get('episode_number')
-            if ep_no is None:
-                continue
-            episode_data[f'{season}_{ep_no}'] = {
-                'still_path': ep.get('still_path'),
-                'name': ep.get('name'),
-                'isTmdbName': bool(ep.get('name')),
-            }
-    return episode_data
-
 @app.route('/api/tmdb-meta/<media_type>', methods=['GET'])
 @token_required(check_expiry=False)
-@rate_limited(limit=300)
 def get_tmdb_meta(current_user, media_type):
     """Resolve folder metadata on the server, including search, detail, overrides, and cache."""
     if not TMDB_API_KEY:
         return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
 
-    media_type = (media_type or '').strip().lower()
-    if media_type not in ('tv', 'movie'):
-        return orjson_jsonify({'error': 'media_type must be tv or movie'}, 400)
-
-    folder_name = (request.args.get('folder_name') or '').strip()
-    if not folder_name:
-        return orjson_jsonify({'error': 'folder_name is required'}, 400)
-
-    override = _get_tmdb_overrides_map().get(folder_name)
-    cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
-    cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
-    if cached_entry:
-        return _tmdb_meta_response_from_cache(cached_entry, cache_status)
-
-    status, payload = _resolve_tmdb_meta_cached(media_type, folder_name, override)
+    folder_name = request.args.get('folder_name')
+    status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(media_type, folder_name)
 
     resp = orjson_jsonify(payload, status=status)
     resp.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if status in (200, 404) else 'no-store'
-    resp.headers['X-TMDB-Meta-Cache'] = 'MISS'
+    resp.headers['X-TMDB-Meta-Cache'] = cache_status or 'MISS'
     return resp
+
+@app.route('/api/tmdb-meta/bulk', methods=['POST'])
+@token_required(check_expiry=False)
+def bulk_tmdb_meta(current_user):
+    """Resolve many folder metadata records aggressively in one request."""
+    if not TMDB_API_KEY:
+        return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
+
+    data = request.get_json(silent=True) or {}
+    raw_items = data.get('items') or []
+    if not isinstance(raw_items, list):
+        return orjson_jsonify({'error': 'items must be a list'}, 400)
+
+    unique_items = []
+    seen = set()
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        media_type = str(raw.get('media_type') or raw.get('type') or '').strip().lower()
+        if media_type == 'series':
+            media_type = 'tv'
+        folder_name = str(raw.get('folder_name') or raw.get('name') or '').strip()
+        key = (media_type, folder_name)
+        if media_type not in ('tv', 'movie') or not folder_name or key in seen:
+            continue
+        seen.add(key)
+        unique_items.append({'media_type': media_type, 'folder_name': folder_name})
+
+    def _resolve_item(item):
+        status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(
+            item['media_type'],
+            item['folder_name'],
+        )
+        return {
+            'media_type': item['media_type'],
+            'folder_name': item['folder_name'],
+            'status': status,
+            'cache': cache_status or 'MISS',
+            'payload': payload,
+        }
+
+    futures = [_tmdb_meta_executor.submit(_resolve_item, item) for item in unique_items]
+    results = []
+    for future in as_completed(futures):
+        try:
+            results.append(future.result())
+        except Exception as e:
+            results.append({
+                'status': 500,
+                'cache': 'ERROR',
+                'payload': {'error': str(e)},
+            })
+
+    return orjson_jsonify({'results': results, 'count': len(results)})
 
 def _tmdb_image_cache_key(size, image_path):
     raw = json.dumps({'v': 1, 'size': size, 'path': image_path}, sort_keys=True, separators=(',', ':'))
@@ -2623,6 +2624,9 @@ def _normalize_text(text):
     # Allow single-char tokens (important for CJK where each char is a word)
     return [w for w in words if w]
 
+def _normalize_search_string(text):
+    return ' '.join(_normalize_text(text or ''))
+
 def build_search_index():
     """Build inverted search index from folders data in RAM or Disk Cache.
     Called during warmup and after each BG worker refresh."""
@@ -2661,9 +2665,17 @@ def build_search_index():
                 if rel.get('tmdb_rating'): entry['tmdb_rating'] = rel['tmdb_rating']
                 if rel.get('tmdb_overview'): entry['tmdb_overview'] = rel['tmdb_overview']
             
-            # Index setiap kata dari nama
-            words = _normalize_text(name)
+            # Index folder name plus visible TMDB title, so search follows what users see.
+            searchable_text = name
+            if entry.get('tmdb_title'):
+                searchable_text = f"{searchable_text} {entry['tmdb_title']}"
+
+            words = _normalize_text(searchable_text)
+            indexed_words = set()
             for word in words:
+                if word in indexed_words:
+                    continue
+                indexed_words.add(word)
                 new_index[word].append(entry)
                 # Also index prefixes (untuk autocomplete)
                 for i in range(2, len(word)):
@@ -2868,6 +2880,35 @@ def fetch_gdrive_subtitle_map(folder_name):
 
 def escape_gdrive_query(value): return value.replace("'", "\\'")
 
+def _folder_dedup_key(item):
+    name = _normalize_folder_name(item.get('name') or '')
+    media_type = (item.get('type') or '').strip().lower()
+    return f"{media_type}:{name}"
+
+def _normalize_folder_name(name):
+    return re.sub(r'\s+', ' ', (name or '').strip()).lower()
+
+def _deduplicate_all_content(series_list, movies_list):
+    seen_keys = {}  # normalized_name -> item
+    
+    # 1. Process series first (so TV/Series takes priority over Movies)
+    deduped_series = []
+    for item in series_list:
+        norm_name = _normalize_folder_name(item.get('name') or '')
+        if norm_name not in seen_keys:
+            seen_keys[norm_name] = item
+            deduped_series.append(item)
+            
+    # 2. Process movies next
+    deduped_movies = []
+    for item in movies_list:
+        norm_name = _normalize_folder_name(item.get('name') or '')
+        if norm_name not in seen_keys:
+            seen_keys[norm_name] = item
+            deduped_movies.append(item)
+            
+    return deduped_series, deduped_movies
+
 def fetch_gdrive_categorized_content(service):
     if not service or not GDRIVE_FOLDER_IDS: return None 
     categorized_content = {"series": [], "movies": []}
@@ -2947,15 +2988,41 @@ def fetch_gdrive_videos(service, folder_name):
             category_folder_ids = _get_category_folder_ids(service)
             all_possible_parent_ids = set(GDRIVE_FOLDER_IDS) | category_folder_ids
             clean_folder_name = escape_gdrive_query(folder_name)
+            requested_folder_key = _normalize_folder_name(folder_name)
             folder_q = f"name = '{clean_folder_name}' and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false"
-            folder_res = service.files().list(q=folder_q, pageSize=50, fields="files(id, parents, mimeType, shortcutDetails(targetId))").execute()
             
             series_folder_ids = []
+            seen_series_folder_ids = set()
+
+            def add_series_folder(folder):
+                if folder.get('parents', [None])[0] not in all_possible_parent_ids:
+                    return
+                folder_id = None
+                if folder['mimeType'] == 'application/vnd.google-apps.folder':
+                    folder_id = folder['id']
+                elif folder['mimeType'] == 'application/vnd.google-apps.shortcut':
+                    folder_id = folder.get('shortcutDetails', {}).get('targetId')
+                if folder_id and folder_id not in seen_series_folder_ids:
+                    seen_series_folder_ids.add(folder_id)
+                    series_folder_ids.append(folder_id)
+
+            folder_res = service.files().list(q=folder_q, pageSize=50, fields="files(id, name, parents, mimeType, shortcutDetails(targetId))").execute()
             for folder in folder_res.get('files', []):
-                if folder.get('parents', [None])[0] in all_possible_parent_ids:
-                    if folder['mimeType'] == 'application/vnd.google-apps.folder': series_folder_ids.append(folder['id'])
-                    elif folder['mimeType'] == 'application/vnd.google-apps.shortcut': 
-                        if folder.get('shortcutDetails'): series_folder_ids.append(folder['shortcutDetails'].get('targetId'))
+                add_series_folder(folder)
+
+            try:
+                parent_clauses = " or ".join([f"'{fid}' in parents" for fid in all_possible_parent_ids])
+                normalized_folder_q = f"({parent_clauses}) and (mimeType = 'application/vnd.google-apps.folder' or mimeType = 'application/vnd.google-apps.shortcut') and trashed = false"
+                page_token = None
+                while True:
+                    folder_res = service.files().list(q=normalized_folder_q, pageSize=PAGE_SIZE, pageToken=page_token, fields="nextPageToken, files(id, name, parents, mimeType, shortcutDetails(targetId))").execute()
+                    for folder in folder_res.get('files', []):
+                        if _normalize_folder_name(folder.get('name', '')) == requested_folder_key:
+                            add_series_folder(folder)
+                    page_token = folder_res.get('nextPageToken')
+                    if not page_token: break
+            except Exception as normalized_lookup_error:
+                print(f"[GDRIVE] Normalized folder lookup skipped for '{folder_name}': {normalized_lookup_error}", flush=True)
             
             if not series_folder_ids: return {"videos": [], "has_season_folders": False}
             
@@ -3124,9 +3191,12 @@ def background_cache_worker():
                                 for item in old_folders[cat]: old_keys.add(item.get('source') if item.get('source','').startswith('gdrive/') else item['name'])
                         folders_data = fetch_gdrive_categorized_content(service)
                         if folders_data:
+                            series_dedup, movies_dedup = _deduplicate_all_content(folders_data.get("series", []), folders_data.get("movies", []))
+                            series_dedup.sort(key=lambda x: x['name'])
+                            movies_dedup.sort(key=lambda x: x['name'])
+                            folders_data["series"] = series_dedup
+                            folders_data["movies"] = movies_dedup
                             for category in folders_data:
-                                unique_items = {(f['name'].lower()): f for f in reversed(folders_data[category])}
-                                folders_data[category] = list(unique_items.values()); folders_data[category].sort(key=lambda x: x['name'])
                                 for item in folders_data[category]:
                                     k = item.get('source') if item.get('source','').startswith('gdrive/') else item['name']
                                     if k not in old_keys: priority_new_items.add(k)
@@ -3237,10 +3307,9 @@ def get_folders(current_user):
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
-        all_c["series"].extend(res.get("series", [])); all_c["movies"].extend(res.get("movies", []))
-        for cat in all_c:
-            u_map = {(f['name'].lower()): f for f in reversed(all_c[cat])}
-            all_c[cat] = list(u_map.values()); all_c[cat].sort(key=lambda x: x['name'])
+        series_dedup, movies_dedup = _deduplicate_all_content(res.get("series", []), res.get("movies", []))
+        all_c["series"] = series_dedup
+        all_c["movies"] = movies_dedup
 
         # [NEW] Merge Telegram catalog items as additional "movies" source.
         # Server returns only metadata; actual bytes are fetched on client via TDLib to avoid server bandwidth.
@@ -3271,10 +3340,12 @@ def get_folders(current_user):
         finally:
             release_db_connection(conn, db_type)
 
-        # Deduplicate again after merge (by name)
-        u_map_m = {(f['name'].lower()): f for f in reversed(all_c["movies"])}
-        all_c["movies"] = list(u_map_m.values())
-        all_c["movies"].sort(key=lambda x: x['name'])
+        # Deduplicate again after merge (by name across both categories)
+        series_dedup, movies_dedup = _deduplicate_all_content(all_c["series"], all_c["movies"])
+        series_dedup.sort(key=lambda x: x['name'])
+        movies_dedup.sort(key=lambda x: x['name'])
+        all_c["series"] = series_dedup
+        all_c["movies"] = movies_dedup
 
         mem_set(key, all_c)
         _invalidate_response_cache('resp_folders', 'resp_folders_merged')
@@ -3358,10 +3429,6 @@ def get_videos_in_folder(current_user, folder_name):
                     cached = copy.deepcopy(cached)
                     cached['catalog_item'] = _catalog_item_for_folder(folder_name)
                     _response_cache.pop(resp_key, None)
-                if cached.get('episode_data') is None:
-                    cached = copy.deepcopy(cached)
-                    cached['episode_data'] = _episode_metadata_for_videos(folder_name, cached.get('catalog_item'), cached.get('videos') or [])
-                    _response_cache.pop(resp_key, None)
                 return add_cache_headers(orjson_jsonify(cached, cache_key=resp_key), max_age=dur)
             # Stale cache refreshes on this request; fallback below serves stale if GDrive fails.
 
@@ -3437,12 +3504,11 @@ def get_videos_in_folder(current_user, folder_name):
                             result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": video['name']})
                         
                         final = {"videos": result_vids, "has_season_folders": False, "catalog_item": catalog_item}
-                        final["episode_data"] = _episode_metadata_for_videos(folder_name, catalog_item, result_vids)
                         mem_set(key, final); _response_cache.pop(resp_key, None)
                         return orjson_jsonify(final, cache_key=resp_key)
                     else:
                         # Folder exists but has no video files
-                        final = {"videos": [], "has_season_folders": False, "catalog_item": catalog_item, "episode_data": {}}
+                        final = {"videos": [], "has_season_folders": False, "catalog_item": catalog_item}
                         mem_set(key, final); _response_cache.pop(resp_key, None)
                         return orjson_jsonify(final, cache_key=resp_key)
                 else:
@@ -3466,7 +3532,7 @@ def get_videos_in_folder(current_user, folder_name):
                         sr = svc.files().list(q=sq, fields="files(id, name)").execute()
                         for s in sr.get('files', []):
                             if s['name'].lower().startswith(name.lower()): sub_path = f"gdrive/{s['id']}"; break
-                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False, "catalog_item": catalog_item, "episode_data": {}}
+                    final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False, "catalog_item": catalog_item}
                     mem_set(key, final); _response_cache.pop(resp_key, None)
                     return orjson_jsonify(final, cache_key=resp_key)
              except Exception as e:
@@ -3474,7 +3540,6 @@ def get_videos_in_folder(current_user, folder_name):
                 return orjson_jsonify({"error": "File not found"}, 404)
         vids.sort(key=lambda x: (x.get("season", 999), x.get("episode", 999), x["name"]))
         final = {"videos": vids, "has_season_folders": has_s, "catalog_item": catalog_item}
-        final["episode_data"] = _episode_metadata_for_videos(folder_name, catalog_item, vids)
         mem_set(key, final); _response_cache.pop(resp_key, None)
         return add_cache_headers(orjson_jsonify(final, cache_key=resp_key), max_age=(CACHE_DURATION_EMPTY if not final.get("videos") else CACHE_DURATION_VIDEOS))
     
@@ -3483,10 +3548,6 @@ def get_videos_in_folder(current_user, folder_name):
         if not stale.get('catalog_item'):
             stale = copy.deepcopy(stale)
             stale['catalog_item'] = _catalog_item_for_folder(folder_name, resolved_name)
-            _response_cache.pop(resp_key, None)
-        if stale.get('episode_data') is None:
-            stale = copy.deepcopy(stale)
-            stale['episode_data'] = _episode_metadata_for_videos(folder_name, stale.get('catalog_item'), stale.get('videos') or [])
             _response_cache.pop(resp_key, None)
         return add_cache_headers(orjson_jsonify(stale, cache_key=resp_key), max_age=60)
     return add_no_cache_headers(orjson_jsonify({"error": "API Error"}, 500))
@@ -3807,16 +3868,23 @@ def search_content(current_user):
     if not query or len(query) < 1:
         return orjson_jsonify([])
 
-    normalized_query = query.lower()
-    resp_key = "resp_search_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
+    normalized_query = _normalize_search_string(query)
+    resp_key = "resp_search_v2_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
     cached_bytes = _response_cache.get(resp_key)
     if cached_bytes:
         return add_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200), max_age=30)
     
     words = _normalize_text(query)
+    if not words:
+        return orjson_jsonify([])
     
     results = []
     seen = set()
+
+    def _item_search_text(item):
+        return _normalize_search_string(
+            f"{item.get('name', '')} {item.get('tmdb_title', '')}"
+        )
     
     # Strategy 1: Inverted index intersection (fast, exact word matching)
     if words:
@@ -3832,7 +3900,12 @@ def search_content(current_user):
             
             first_matches = _search_index.get(words[0], [])
             for item in first_matches:
-                if item['name'] in common_names and item['name'] not in seen:
+                item_text = _item_search_text(item)
+                if (
+                    item['name'] in common_names and
+                    item['name'] not in seen and
+                    all(word in item_text for word in words)
+                ):
                     seen.add(item['name'])
                     results.append(item)
     
@@ -3840,25 +3913,40 @@ def search_content(current_user):
     if not results:
         query_lower = normalized_query
         folders = mem_get('folders_list')
+        releases = mem_get('content_releases') or []
+        tmdb_by_folder = {r.get('folder_name', '').lower(): r for r in releases if r.get('folder_name')}
         if folders:
             for media_type in ['series', 'movies']:
                 for item in folders.get(media_type, []):
                     name = item.get('name', '')
                     if name in seen:
                         continue
-                    # Match if query is a substring of the folder name (case-insensitive)
-                    if query_lower in name.lower():
+                    rel = tmdb_by_folder.get(name.lower()) or {}
+                    item_text = _normalize_search_string(
+                        f"{name} {rel.get('tmdb_title', '')}"
+                    )
+                    # Match the full normalized query, or every query word for spaced titles.
+                    if query_lower in item_text or all(word in item_text for word in words):
                         seen.add(name)
-                        results.append({
+                        result = {
                             'name': name,
                             'folder_name': name,
                             'type': item.get('type', media_type.rstrip('s')),
                             'source': item.get('source', '')
-                        })
+                        }
+                        if rel.get('tmdb_title'): result['tmdb_title'] = rel['tmdb_title']
+                        if rel.get('tmdb_poster_path'): result['tmdb_poster_path'] = rel['tmdb_poster_path']
+                        if rel.get('tmdb_rating'): result['tmdb_rating'] = rel['tmdb_rating']
+                        if rel.get('tmdb_overview'): result['tmdb_overview'] = rel['tmdb_overview']
+                        results.append(result)
     
     # Sort by relevance: exact prefix match first, then alphabetical
     query_lower = normalized_query
-    results.sort(key=lambda x: (0 if x['name'].lower().startswith(query_lower) else 1, x['name']))
+    results.sort(key=lambda x: (
+        0 if _item_search_text(x).startswith(query_lower) else 1,
+        0 if query_lower in _item_search_text(x) else 1,
+        x['name']
+    ))
     
     # Final TMDB enrichment for fallback results (Strategy 1 already has it, but it's safe to overwrite/ensure)
     releases = mem_get('content_releases') or []
