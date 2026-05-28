@@ -184,7 +184,8 @@ const ContentDetail = () => {
         const fallbackCatalogItem = detailCatalogItem;
 
         const loadVisualMetadata = async (catalogItem, seasonToPrefetch) => {
-          const tmdbSearchTitle = catalogItem.tmdb_query || catalogItem.tmdb_title || catalogItem.folder_name || catalogItem.name || decodedName;
+          const isIdPath = (s) => !s || s.startsWith('gdrive/') || s.startsWith('gdrive_folder/') || s.startsWith('telegram/');
+          const tmdbSearchTitle = catalogItem.tmdb_query || catalogItem.tmdb_title || (!isIdPath(catalogItem.folder_name) ? catalogItem.folder_name : null) || (!isIdPath(catalogItem.name) ? catalogItem.name : null) || (!isIdPath(decodedName) ? decodedName : '');
           const tmdbOptions = tmdbOptsFromCatalogItem(catalogItem, urlType);
           const immediateMetadata = mergeDetailMetadata(catalogItem, null, decodedName, urlType);
           setTmdbData(immediateMetadata);
@@ -196,7 +197,8 @@ const ContentDetail = () => {
 
           try {
             const serverMediaType = tmdbOptions.mediaType || (urlType === 'movie' ? 'movie' : 'tv');
-            const lightTmdb = await getServerTMDBMeta(catalogItem.folder_name || catalogItem.name || tmdbSearchTitle, serverMediaType);
+            const searchName = catalogItem.tmdb_query || catalogItem.tmdb_title || (!isIdPath(catalogItem.folder_name) ? catalogItem.folder_name : null) || (!isIdPath(catalogItem.name) ? catalogItem.name : null) || tmdbSearchTitle;
+            const lightTmdb = await getServerTMDBMeta(searchName, serverMediaType);
             if (!isMounted) return;
             const lightMetadata = mergeDetailMetadata(catalogItem, lightTmdb, decodedName, urlType);
             setTmdbData(lightMetadata);

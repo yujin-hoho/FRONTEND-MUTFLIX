@@ -1768,10 +1768,15 @@ def _catalog_item_for_folder(folder_name, resolved_name=None):
     if not name:
         return None
     catalog_item = {'name': name, 'folder_name': name}
-    payload = {'series': [catalog_item], 'movies': []}
+    is_movie = folder_name.startswith(("gdrive/", "telegram/"))
+    payload = {'series': [], 'movies': [catalog_item]} if is_movie else {'series': [catalog_item], 'movies': []}
     _merge_content_release_tmdb_into_folders(payload)
     _merge_tmdb_overrides_into_folders(payload)
-    return payload['series'][0]
+    merged = (payload.get('movies') or payload.get('series'))[0]
+    if is_movie:
+        merged['type'] = 'movie'
+        merged['media_type'] = 'movie'
+    return merged
 
 # ==========================================
 # INTRO MARKERS API (Skip Intro - Admin only write)
@@ -3464,6 +3469,13 @@ def get_videos_in_folder(current_user, folder_name):
                 fid = folder_name.split('/', 1)[1]
                 # Handle gdrive_folder/ — list files inside the folder
                 if folder_name.startswith("gdrive_folder/"):
+                    try:
+                        folder_meta = svc.files().get(fileId=fid, fields="name").execute()
+                        resolved_folder_name = folder_meta.get('name', resolved_name)
+                        catalog_item = _catalog_item_for_folder(folder_name, resolved_folder_name)
+                    except Exception as fe:
+                        print(f"[VIDEOS] Failed to resolve gdrive_folder name: {fe}", flush=True)
+
                     PAGE_SIZE = 100
                     files_q = f"'{fid}' in parents and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt') and trashed = false"
                     files_res = svc.files().list(q=files_q, pageSize=PAGE_SIZE, fields="files(id, name, mimeType, parents)").execute()
@@ -3515,6 +3527,7 @@ def get_videos_in_folder(current_user, folder_name):
                     # Handle gdrive/ — standalone video file
                     meta = svc.files().get(fileId=fid, fields="name, parents").execute()
                     name, _ = os.path.splitext(meta.get('name', 'Unknown'))
+                    catalog_item = _catalog_item_for_folder(folder_name, name)
                     sub_path = None; pid = meta.get('parents', [None])[0]
                     # Cek Supabase subtitle
                     supa_folder = movie_name_for_supa or name
