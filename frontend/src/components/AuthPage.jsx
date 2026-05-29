@@ -51,19 +51,19 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
     setIsLoading(true);
 
     if (!formData.username.trim() || !formData.password) {
-      setError('Username dan password wajib diisi.');
+      setError('Username and password are required.');
       setIsLoading(false);
       return;
     }
 
     if (!isLogin) {
       if (!formData.token.trim()) {
-        setError('Token pendaftaran wajib diisi.');
+        setError('Registration token is required.');
         setIsLoading(false);
         return;
       }
       if (formData.password.length < 8) {
-        setError('Password harus memiliki panjang minimal 8 karakter.');
+        setError('Password must be at least 8 characters long.');
         setIsLoading(false);
         return;
       }
@@ -94,7 +94,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.message || data.detail || 'Terjadi kesalahan pada server.');
+        throw new Error(data.message || data.detail || 'An unexpected server error occurred.');
       }
 
       if (isLogin) {
@@ -102,7 +102,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
         onLoginSuccess(data);
       } else {
         // Successful registration
-        setSuccessMessage('Pendaftaran berhasil! Silakan masuk menggunakan akun baru Anda.');
+        setSuccessMessage('Registration successful! Please sign in using your new account.');
         setIsLogin(true);
         setFormData({
           username: formData.username,
@@ -122,11 +122,11 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
   if (currentSession) {
     const formattedExpiry = () => {
       if (!currentSession.expires_at || currentSession.expires_at === 'None') {
-        return 'Selamanya (Lifetime)';
+        return 'Forever (Lifetime)';
       }
       try {
         const date = new Date(currentSession.expires_at);
-        return date.toLocaleDateString('id-ID', {
+        return date.toLocaleDateString('en-US', {
           year: 'numeric',
           month: 'long',
           day: 'numeric',
@@ -152,8 +152,8 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
           </div>
 
           <div className="space-y-2">
-            <h2 className="text-2xl font-bold text-white tracking-tight">Login Berhasil</h2>
-            <p className="text-sm text-slate-400">Selamat datang kembali di ekosistem Mutflix.</p>
+            <h2 className="text-2xl font-bold text-white tracking-tight">Sign In Successful</h2>
+            <p className="text-sm text-slate-400">Welcome back to the Mutflix catalog.</p>
           </div>
 
           <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-5 text-left space-y-4">
@@ -163,7 +163,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
             </div>
 
             <div>
-              <span className="text-xs text-slate-500 block uppercase tracking-wider font-semibold">Peran (Role)</span>
+              <span className="text-xs text-slate-500 block uppercase tracking-wider font-semibold">User Role</span>
               <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold mt-1 uppercase ${
                 currentSession.role === 'admin' 
                   ? 'bg-rose-500/10 border border-rose-500/20 text-rose-400' 
@@ -174,12 +174,12 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
             </div>
 
             <div>
-              <span className="text-xs text-slate-500 block uppercase tracking-wider font-semibold">Masa Aktif</span>
+              <span className="text-xs text-slate-500 block uppercase tracking-wider font-semibold">Expiration Time</span>
               <span className="text-sm text-slate-300 font-medium">{formattedExpiry()}</span>
             </div>
 
             <div>
-              <span className="text-xs text-slate-500 block uppercase tracking-wider font-semibold">Token Sesi (JWT)</span>
+              <span className="text-xs text-slate-500 block uppercase tracking-wider font-semibold">Session Token (JWT)</span>
               <div className="flex items-center justify-between gap-2 mt-1 bg-slate-900 border border-slate-800 rounded-lg p-2">
                 <span className="text-xs text-slate-400 font-mono truncate max-w-[240px]">
                   {currentSession.token}
@@ -187,10 +187,10 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
                 <button 
                   onClick={() => {
                     navigator.clipboard.writeText(currentSession.token);
-                    alert('Token sesi berhasil disalin ke clipboard.');
+                    alert('Session token successfully copied to clipboard.');
                   }}
                   className="p-1 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded transition-colors"
-                  title="Salin Token"
+                  title="Copy Token"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
@@ -204,7 +204,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
             onClick={onLogout}
             className="w-full py-3 px-4 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl transition-all shadow-lg shadow-green-950/30 active:scale-[0.98] outline-none"
           >
-            Keluar Sesi (Logout)
+            Sign Out (Logout)
           </button>
         </div>
       </div>
@@ -220,12 +220,12 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
         {/* Header */}
         <div className="text-center space-y-2">
           <h2 className="text-3xl font-bold tracking-tight text-white">
-            {isLogin ? 'Masuk ke Mutflix' : 'Daftar Akun Baru'}
+            {isLogin ? 'Sign In to Mutflix' : 'Register New Account'}
           </h2>
           <p className="text-slate-400 text-sm">
             {isLogin 
-              ? 'Silakan masuk untuk menikmati katalog terlengkap.' 
-              : 'Gunakan token akses Anda untuk mendaftarkan akun baru.'}
+              ? 'Please sign in to enjoy the ultimate catalog.' 
+              : 'Use your access token to register a new account.'}
           </p>
         </div>
 
@@ -236,7 +236,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <div>
-              <span className="font-semibold block mb-0.5">Kesalahan</span>
+              <span className="font-semibold block mb-0.5">Error</span>
               {error}
             </div>
           </div>
@@ -249,7 +249,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <div>
-              <span className="font-semibold block mb-0.5">Berhasil</span>
+              <span className="font-semibold block mb-0.5">Success</span>
               {successMessage}
             </div>
           </div>
@@ -262,7 +262,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
           {!isLogin && (
             <div className="space-y-1.5">
               <label htmlFor="token" className="text-xs font-semibold uppercase tracking-wider text-slate-400 block">
-                Token Pendaftaran
+                Registration Token
               </label>
               <div className="relative">
                 <input
@@ -290,7 +290,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
               type="text"
               required
               autoComplete="username"
-              placeholder="Masukkan username"
+              placeholder="Enter username"
               value={formData.username}
               onChange={handleInputChange}
               className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-green-500 focus:ring-1 focus:ring-green-500 text-slate-100 placeholder:text-slate-600 outline-none transition-all"
@@ -309,7 +309,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
                 type={showPassword ? 'text' : 'password'}
                 required
                 autoComplete="current-password"
-                placeholder={isLogin ? 'Masukkan password' : 'Min. 8 karakter'}
+                placeholder={isLogin ? 'Enter password' : 'Min. 8 characters'}
                 value={formData.password}
                 onChange={handleInputChange}
                 className="w-full pl-4 pr-11 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-green-500 focus:ring-1 focus:ring-green-500 text-slate-100 placeholder:text-slate-600 outline-none transition-all"
@@ -344,7 +344,7 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
                   onChange={handleInputChange}
                   className="rounded border-slate-800 text-green-500 focus:ring-0 focus:ring-offset-0 bg-slate-950 w-4 h-4 cursor-pointer"
                 />
-                Ingat Saya (Sesi Panjang)
+                Remember Me
               </label>
             </div>
           )}
@@ -361,10 +361,10 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                 </svg>
-                Memproses...
+                Processing...
               </>
             ) : (
-              isLogin ? 'Masuk' : 'Daftar'
+              isLogin ? 'Sign In' : 'Register'
             )}
           </button>
         </form>
@@ -376,8 +376,8 @@ export default function AuthPage({ onLoginSuccess, currentSession, onLogout }) {
             className="text-sm text-slate-400 hover:text-white transition-colors underline decoration-slate-600 hover:decoration-white underline-offset-4"
           >
             {isLogin 
-              ? 'Belum punya akun? Daftar sekarang' 
-              : 'Sudah punya akun? Masuk di sini'}
+              ? 'New to Mutflix? Register now' 
+              : 'Already have an account? Sign in here'}
           </button>
         </div>
       </div>

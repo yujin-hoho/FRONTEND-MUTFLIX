@@ -8,7 +8,21 @@ const getApiUrl = (path) => {
   return `https://melancholia112-mutflix.hf.space${path}`;
 };
 
+// Netflix Classic Smiley Face SVG Component
+export function NetflixSmiley({ className = "w-full h-full text-white" }) {
+  return (
+    <svg viewBox="0 0 100 100" className={className} fill="currentColor">
+      {/* Sleek Netflix-Style Eyes */}
+      <rect x="32" y="32" width="10" height="20" rx="5" />
+      <rect x="58" y="32" width="10" height="20" rx="5" />
+      {/* Sleek Netflix-Style Smile */}
+      <path d="M25 62 C 35 76, 65 76, 75 62" stroke="currentColor" strokeWidth="7" strokeLinecap="round" fill="none" />
+    </svg>
+  );
+}
+
 // Flat color helper to match profile selections
+
 const getFlatColorFromSeed = (seed) => {
   const colors = [
     'bg-red-600 shadow-red-950/20',
@@ -54,13 +68,13 @@ export default function ProfileSelection({ session, onProfileSelect }) {
       });
       
       if (!response.ok) {
-        throw new Error(`Koneksi database profil gagal (Status: ${response.status}).`);
+        throw new Error(`Profile database connection failed (Status: ${response.status}).`);
       }
       
       // Connection successfully verified! Proceed to dashboard
       onProfileSelect(profile);
     } catch (err) {
-      setError(`Gagal menghubungkan profil "${profile.name}": ${err.message || 'Silakan coba lagi.'}`);
+      setError(`Failed to connect profile "${profile.name}": ${err.message || 'Please try again.'}`);
     } finally {
       setVerifyingProfileId(null);
     }
@@ -76,7 +90,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
         }
       });
       if (!response.ok) {
-        throw new Error('Gagal memuat profil pengguna.');
+        throw new Error('Failed to load user profiles.');
       }
       const data = await response.json();
       setProfiles(Array.isArray(data) ? data : []);
@@ -124,7 +138,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
       });
 
       if (!response.ok) {
-        throw new Error('Gagal menambahkan profil baru.');
+        throw new Error('Failed to add new profile.');
       }
 
       await fetchProfiles();
@@ -158,7 +172,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
       });
 
       if (!response.ok) {
-        throw new Error('Gagal memperbarui profil.');
+        throw new Error('Failed to update profile.');
       }
 
       await fetchProfiles();
@@ -171,7 +185,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
   };
 
   const handleDeleteProfile = async (profileId) => {
-    if (!confirm('Apakah Anda yakin ingin menghapus profil ini beserta seluruh riwayat menontonnya?')) return;
+    if (!confirm('Are you sure you want to delete this profile and all of its watch history?')) return;
     setIsActionLoading(true);
 
     try {
@@ -185,7 +199,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
       });
 
       if (!response.ok) {
-        throw new Error('Gagal menghapus profil.');
+        throw new Error('Failed to delete profile.');
       }
 
       await fetchProfiles();
@@ -203,12 +217,12 @@ export default function ProfileSelection({ session, onProfileSelect }) {
       {/* Title */}
       <div className="text-center space-y-3 mb-12">
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-white animate-fadeIn">
-          {isManageMode ? 'Kelola Profil' : 'Siapa yang Menonton?'}
+          {isManageMode ? 'Manage Profiles' : "Who's Watching?"}
         </h1>
         <p className="text-slate-400 text-sm sm:text-base">
           {isManageMode 
-            ? 'Pilih salah satu profil untuk diubah atau dihapus.' 
-            : 'Pilih profil Anda untuk mulai menjelajah katalog film.'}
+            ? 'Select a profile to modify or delete.' 
+            : 'Choose your profile to start exploring the catalog.'}
         </p>
       </div>
 
@@ -219,7 +233,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
-          <span className="text-slate-400 text-sm tracking-wide">Memuat daftar profil...</span>
+          <span className="text-slate-400 text-sm tracking-wide">Loading profiles...</span>
         </div>
       ) : error ? (
         <div className="text-center py-12 space-y-4 max-w-md">
@@ -230,7 +244,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
             onClick={fetchProfiles} 
             className="px-5 py-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-sm font-semibold rounded-lg transition-colors"
           >
-            Coba Lagi
+            Retry
           </button>
         </div>
       ) : (
@@ -261,7 +275,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
                       ) : (
-                        profile.name.charAt(0).toUpperCase()
+                        <NetflixSmiley className="w-16 h-16 text-white/95" />
                       )}
                       
                       {/* Management Overlays */}
@@ -277,7 +291,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
                   
                   {/* Profile Name */}
                   <span className="text-slate-400 text-base sm:text-lg group-hover:text-white transition-colors tracking-wide max-w-[120px] truncate">
-                    {isVerifying ? 'Verifikasi...' : profile.name}
+                    {isVerifying ? 'Verifying...' : profile.name}
                   </span>
                 </div>
               );
@@ -295,7 +309,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
                   </svg>
                 </div>
                 <span className="text-slate-500 text-base sm:text-lg group-hover:text-slate-300 transition-colors tracking-wide">
-                  Tambah Profil
+                  Add Profile
                 </span>
               </div>
             )}
@@ -311,7 +325,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
                   : 'border-slate-700 text-slate-400 hover:border-slate-300 hover:text-white'
               }`}
             >
-              {isManageMode ? 'Selesai Mengelola' : 'Kelola Profil'}
+              {isManageMode ? 'Done Managing' : 'Manage Profiles'}
             </button>
           </div>
         </div>
@@ -324,7 +338,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
             
             <div className="flex items-center justify-between">
               <h3 className="text-xl font-bold text-white tracking-tight">
-                {activeModal === 'add' ? 'Tambah Profil Baru' : 'Ubah Detail Profil'}
+                {activeModal === 'add' ? 'Add New Profile' : 'Edit Profile'}
               </h3>
               <button 
                 onClick={() => setActiveModal(null)} 
@@ -341,26 +355,26 @@ export default function ProfileSelection({ session, onProfileSelect }) {
               {/* Visual Avatar Preview */}
               <div className="flex flex-col items-center justify-center space-y-3">
                 <div className={`w-24 h-24 rounded-2xl ${getFlatColorFromSeed(modalData.seed)} flex items-center justify-center text-3xl font-extrabold text-white shadow-xl`}>
-                  {(modalData.name || 'P').charAt(0).toUpperCase()}
+                  <NetflixSmiley className="w-14 h-14 text-white/95" />
                 </div>
                 <button
                   type="button"
                   onClick={() => setModalData(prev => ({ ...prev, seed: Math.random().toString(36).substring(7) }))}
                   className="text-xs text-sky-400 hover:text-sky-300 font-medium transition-colors"
                 >
-                  Acak Skema Warna Avatar
+                  Randomize Avatar Colors
                 </button>
               </div>
 
               {/* Name Input */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wider text-slate-400 block">
-                  Nama Profil
+                  Profile Name
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="Masukkan nama profil"
+                  placeholder="Enter profile name"
                   value={modalData.name}
                   onChange={(e) => setModalData(prev => ({ ...prev, name: e.target.value }))}
                   className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-green-500 focus:ring-1 focus:ring-green-500 text-slate-100 placeholder:text-slate-600 outline-none transition-all"
@@ -377,7 +391,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
                     onClick={() => handleDeleteProfile(selectedProfile.id)}
                     className="w-full py-3 px-4 bg-transparent border border-red-500/30 text-red-500 hover:bg-red-500/10 disabled:bg-slate-800/20 disabled:text-slate-600 font-semibold rounded-xl transition-all active:scale-[0.98] outline-none"
                   >
-                    Hapus
+                    Delete
                   </button>
                 )}
                 <button
@@ -385,7 +399,7 @@ export default function ProfileSelection({ session, onProfileSelect }) {
                   disabled={isActionLoading || !modalData.name.trim()}
                   className="w-full py-3 px-4 bg-green-600 hover:bg-green-500 disabled:bg-slate-800 text-white font-semibold rounded-xl transition-all shadow-lg active:scale-[0.98] flex items-center justify-center gap-2 outline-none"
                 >
-                  {isActionLoading ? 'Memproses...' : (activeModal === 'add' ? 'Simpan' : 'Perbarui')}
+                  {isActionLoading ? 'Processing...' : (activeModal === 'add' ? 'Save' : 'Update')}
                 </button>
               </div>
             </form>

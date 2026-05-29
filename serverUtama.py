@@ -1285,13 +1285,13 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
             search_params['first_air_date_year'] = str(year)
         search_path = 'search/tv'
         detail_prefix = 'tv'
-        detail_params = {'append_to_response': 'content_ratings'}
+        detail_params = {'append_to_response': 'content_ratings,videos'}
     else:
         if year:
             search_params['primary_release_year'] = str(year)
         search_path = 'search/movie'
         detail_prefix = 'movie'
-        detail_params = {}
+        detail_params = {'append_to_response': 'videos'}
 
     if override:
         language = (override.get('override_language') or '').strip()
@@ -1363,6 +1363,47 @@ def get_tmdb_meta(current_user, media_type):
     resp.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if status in (200, 404) else 'no-store'
     resp.headers['X-TMDB-Meta-Cache'] = cache_status or 'MISS'
     return resp
+
+@app.route('/api/search-trailer', methods=['GET'])
+@token_required(check_expiry=False)
+def search_trailer(current_user):
+    query = request.args.get('q')
+    if not query:
+        return orjson_jsonify({'error': 'query is required'}, 400)
+    
+    cache_key = f"trailer_search_{query.lower().strip()}"
+    try:
+        cached_val = disk_cache.get(cache_key)
+        if cached_val:
+            return orjson_jsonify({'videoId': cached_val})
+    except:
+        pass
+
+    instances = [
+        'https://yewtu.be',
+        'https://vid.puffyan.us',
+        'https://invidious.flokinet.to',
+        'https://inv.tux.im',
+        'https://invidious.io.lol'
+    ]
+    for instance in instances:
+        try:
+            r = requests.get(f"{instance}/api/v1/search", params={'q': query}, timeout=4)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list):
+                    first_video = next((vid for vid in data if vid.get('type') == 'video'), None)
+                    if first_video and first_video.get('videoId'):
+                        vid_id = first_video['videoId']
+                        try:
+                            disk_cache.set(cache_key, vid_id, expire=86400 * 7)
+                        except:
+                            pass
+                        return orjson_jsonify({'videoId': vid_id})
+        except Exception:
+            pass
+            
+    return orjson_jsonify({'error': 'no trailer found'}, 404)
 
 @app.route('/api/tmdb-meta/bulk', methods=['POST'])
 @token_required(check_expiry=False)
