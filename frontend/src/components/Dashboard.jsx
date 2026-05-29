@@ -15,11 +15,32 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
   const [isBulkLoading, setIsBulkLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState('all'); // 'all' | 'series' | 'movies'
+  const [activeCategory, setActiveCategory] = useState('all'); // 'all' | 'series' | 'movies' | 'variety'
   const [selectedItem, setSelectedItem] = useState(null); // Detail modal
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const searchInputRef = useRef(null);
+
+  const [myList, setMyList] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`mutflix_mylist_${activeProfile.id}`);
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const toggleMyList = (item) => {
+    const isAdded = myList.some(x => x.name === item.name);
+    let updated;
+    if (isAdded) {
+      updated = myList.filter(x => x.name !== item.name);
+    } else {
+      updated = [...myList, item];
+    }
+    setMyList(updated);
+    localStorage.setItem(`mutflix_mylist_${activeProfile.id}`, JSON.stringify(updated));
+  };
 
   // Detailed Media and custom player state
   const [selectedItemVideos, setSelectedItemVideos] = useState([]);
@@ -443,13 +464,13 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
   };
 
   return (
-    <div className="w-full max-w-7xl mx-auto pt-0 pb-6 px-4 sm:px-6 relative z-10 select-none animate-fadeIn">
+    <div className="w-full pt-4 pb-6 px-4 sm:px-8 md:px-12 relative z-10 select-none animate-fadeIn">
       
       {/* Navigation & Header */}
-      <header className="sticky top-0 bg-[#141414]/80 backdrop-blur-xl z-50 pt-2 pb-2.5 px-6 md:px-8 -mx-4 sm:-mx-6 md:-mx-8 border-b border-white/5 flex flex-wrap md:flex-nowrap items-center justify-between gap-4 md:gap-6 mb-6 select-none transition-all duration-300">
+      <header className="sticky top-0 bg-[#141414]/80 backdrop-blur-xl z-50 pt-2 pb-2.5 px-6 md:px-8 -mx-2 sm:-mx-4 md:-mx-6 flex flex-wrap md:flex-nowrap items-center justify-between gap-4 md:gap-6 mb-6 select-none transition-all duration-300">
         {/* Left: Brand Logo */}
         <div className="flex items-center gap-1.5 cursor-pointer active:scale-98 transition-all flex-shrink-0" onClick={() => setActiveCategory('all')}>
-          <span className="text-2xl md:text-3xl font-extrabold tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-green-400 via-emerald-500 to-green-600">
+          <span className="text-2xl md:text-3xl font-extrabold tracking-tighter text-green-500">
             MUTFLIX
           </span>
           <span className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></span>
@@ -469,7 +490,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 <button
                   key={tab.id}
                   onClick={() => setActiveCategory(tab.id)}
-                  className="group relative px-2.5 py-2 text-xs font-bold tracking-wider transition-all duration-300 select-none cursor-pointer uppercase flex-shrink-0"
+                  className="group relative px-3 py-2 text-sm md:text-base font-bold tracking-wider transition-all duration-300 select-none cursor-pointer uppercase flex-shrink-0"
                 >
                   <span className={`relative z-10 transition-colors duration-300 ${
                     isActive ? 'text-green-500 font-extrabold' : 'text-white/80 group-hover:text-green-400'
@@ -516,7 +537,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="Cari..."
+                placeholder="Search..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onBlur={() => {
@@ -558,7 +579,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 <div className="fixed inset-0 z-40" onClick={() => setIsProfileOpen(false)} />
                 <div className="absolute right-0 mt-3 w-52 bg-slate-950/90 border border-white/10 backdrop-blur-xl rounded-2xl shadow-[0_10px_35px_rgba(0,0,0,0.6)] z-50 p-1.5 animate-fadeIn text-left">
                   <div className="px-3 py-2 border-b border-white/5 mb-1.5">
-                    <p className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Profil Aktif</p>
+                    <p className="text-[10px] uppercase font-bold tracking-wider text-slate-500">Active Profile</p>
                     <p className="text-xs font-bold text-white truncate">{activeProfile.name}</p>
                   </div>
                   <button
@@ -571,7 +592,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                     </svg>
-                    Ganti Profil
+                    Switch Profile
                   </button>
                   <button
                     onClick={() => {
@@ -599,7 +620,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
           </svg>
-          <span className="text-slate-400 text-sm tracking-widest uppercase font-semibold">Mengambil Berkas Katalog...</span>
+          <span className="text-slate-400 text-sm tracking-widest uppercase font-semibold">Fetching Catalog Library...</span>
         </div>
       ) : error ? (
         <div className="text-center py-20 max-w-md mx-auto space-y-4">
@@ -610,7 +631,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
             onClick={() => fetchFoldersAndMetadata(true)}
             className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white font-semibold rounded-xl transition-colors active:scale-98 shadow-lg shadow-green-950/20"
           >
-            Coba Sinkronkan Ulang
+            Retry Sync
           </button>
         </div>
       ) : (
@@ -618,7 +639,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
           
           {/* 1. HERO BANNER - Billboard Content */}
           {featuredItem && activeCategory === 'all' && !searchQuery && (
-            <div className="w-full relative h-[420px] rounded-2xl overflow-hidden border border-slate-900 bg-slate-950">
+            <div className="relative h-[480px] md:h-[560px] -mx-4 sm:-mx-8 md:-mx-12 overflow-hidden bg-slate-950 shadow-2xl">
               
               {/* Blurred backdrop image background */}
               {featuredItem.tmdb_poster_path ? (
@@ -637,7 +658,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               {/* Content Detail Panel */}
               <div className="absolute bottom-0 left-0 p-8 sm:p-12 max-w-2xl space-y-4 z-10 text-left">
                 <span className="inline-flex px-2.5 py-0.5 rounded bg-green-600/10 border border-green-500/20 text-green-400 text-xs font-semibold tracking-wider uppercase">
-                  Sorotan Terpopuler
+                  Popular Spotlight
                 </span>
 
                 <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight leading-tight">
@@ -652,24 +673,34 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     </span>
                     <span className="text-xs text-slate-600">|</span>
                     <span className="text-xs text-slate-400 capitalize">
-                      {featuredItem.type === 'series' ? 'Serial TV' : 'Film'}
+                      {featuredItem.type === 'series' ? 'TV Series' : 'Movie'}
                     </span>
                   </div>
                 )}
 
                 <p className="text-slate-300 text-sm sm:text-base leading-relaxed line-clamp-3">
-                  {featuredItem.tmdb_overview || 'Katalog terlengkap dapat langsung diputar secara instan tanpa hambatan bandwidth.'}
+                  {featuredItem.tmdb_overview || 'The most complete catalog available to stream instantly with zero bandwidth throttling.'}
                 </p>
 
-                <div className="pt-2">
+                <div className="pt-2 flex flex-wrap items-center gap-3">
                   <button 
                     onClick={() => setSelectedItem(featuredItem)}
-                    className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl text-sm transition-all shadow-lg shadow-green-950/30 flex items-center gap-2 active:scale-98"
+                    className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl text-sm transition-all shadow-lg shadow-green-950/30 flex items-center gap-2 active:scale-98 cursor-pointer"
                   >
                     <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
                       <path d="M8 5v14l11-7z" />
                     </svg>
-                    Tonton Sekarang
+                    Watch Now
+                  </button>
+                  <button 
+                    onClick={() => toggleMyList(featuredItem)}
+                    className={`px-6 py-2.5 border rounded-xl text-sm font-bold transition-all flex items-center gap-2 active:scale-98 cursor-pointer ${
+                      myList.some(x => x.name === featuredItem.name)
+                        ? 'bg-white text-black border-white shadow-lg'
+                        : 'bg-white/10 hover:bg-white/20 border-white/10 hover:border-white/20 text-white'
+                    }`}
+                  >
+                    <span>{myList.some(x => x.name === featuredItem.name) ? '✓ In My List' : '+ My List'}</span>
                   </button>
                 </div>
               </div>
@@ -693,13 +724,13 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               <div className="flex items-center justify-between border-b border-slate-900 pb-2">
                 <h3 className="text-xl font-bold tracking-tight text-white flex items-center gap-2">
                   <span className="w-1.5 h-5 bg-green-500 rounded-full"></span>
-                  Hasil Pencarian untuk "{searchQuery}"
+                  Search Results for "{searchQuery}"
                 </h3>
                 <span className="text-xs text-slate-500 font-semibold uppercase tracking-wider">
                   {(activeCategory === 'all' ? [...filteredSeries, ...filteredMovies] :
                     activeCategory === 'series' ? filteredSeries :
                     activeCategory === 'movies' ? filteredMovies :
-                    filteredVariety).length} Ditemukan
+                    filteredVariety).length} Found
                 </span>
               </div>
               
@@ -721,9 +752,9 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                   </svg>
                   <div className="space-y-1">
-                    <h4 className="text-lg font-bold text-slate-200">Katalog Tidak Ditemukan</h4>
+                    <h4 className="text-lg font-bold text-slate-200">Catalog Not Found</h4>
                     <p className="text-slate-500 text-sm max-w-sm mx-auto">
-                      Tidak ada tayangan yang cocok dengan kueri "{searchQuery}" pada kategori ini.
+                      No shows match the query "{searchQuery}" in this category.
                     </p>
                   </div>
                 </div>
@@ -739,7 +770,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                   <div className="flex items-center justify-between px-1">
                     <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                       <span className="w-1 h-5 bg-green-500 rounded-full"></span>
-                      Serial TV Terpopuler
+                      Popular TV Series
                     </h3>
                   </div>
 
@@ -757,7 +788,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                   <div className="flex items-center justify-between px-1">
                     <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                       <span className="w-1 h-5 bg-green-500 rounded-full"></span>
-                      Rekomendasi Film Terbaik
+                      Recommended Movies
                     </h3>
                   </div>
 
@@ -769,13 +800,31 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 </div>
               )}
 
-              {/* Row 3: VARIETY SHOW SECTION */}
+              {/* Row 3: MY LIST SECTION */}
+              {activeCategory === 'all' && myList.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      My List
+                    </h3>
+                  </div>
+
+                  <div className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide snap-x snap-mandatory scroll-smooth">
+                    {myList.map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Row 4: VARIETY SHOW SECTION */}
               {(activeCategory === 'all' || activeCategory === 'variety') && filteredVariety.length > 0 && (
                 <div className="space-y-3 text-left">
                   <div className="flex items-center justify-between px-1">
                     <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                       <span className="w-1 h-5 bg-green-500 rounded-full"></span>
-                      Variety Show Terpopuler
+                      Popular Variety Shows
                     </h3>
                   </div>
 
@@ -794,9 +843,9 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                   </svg>
                   <div className="space-y-1">
-                    <h4 className="text-lg font-bold text-slate-200">Tidak ada Variety Show</h4>
+                    <h4 className="text-lg font-bold text-slate-200">No Variety Shows Found</h4>
                     <p className="text-slate-500 text-sm max-w-sm mx-auto">
-                      Belum ada katalog variety show yang tersedia untuk saat ini.
+                      No variety shows are available in the catalog at this time.
                     </p>
                   </div>
                 </div>
