@@ -1706,6 +1706,16 @@ def _merge_tmdb_overrides_into_folders(all_c):
         print(f"[TMDB-OVERRIDE] merge into folders failed: {e}", flush=True)
     return all_c
 
+def _normalize_key(name):
+    if not name:
+        return ""
+    import re
+    cleaned = name.lower()
+    cleaned = re.sub(r'\(?\d{4}\)?', ' ', cleaned) # remove year
+    cleaned = re.sub(r'[^a-z0-9]', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
 def _merge_content_release_tmdb_into_folders(all_c):
     """Attach lightweight TMDB metadata cached in content_releases to /api/folders."""
     if not all_c:
@@ -1715,19 +1725,29 @@ def _merge_content_release_tmdb_into_folders(all_c):
         if releases is None:
             releases = _load_releases()
             mem_set('content_releases', releases)
-        by_name = {
-            (r.get('folder_name') or '').lower(): r
-            for r in releases
-            if r.get('folder_name')
-        }
-        if not by_name:
-            return all_c
+        by_name = {}
+        for r in releases:
+            f_name = r.get('folder_name')
+            if not f_name:
+                continue
+            f_name_lower = f_name.lower().strip()
+            by_name[f_name_lower] = r
+            norm_key = _normalize_key(f_name)
+            if norm_key:
+                by_name[norm_key] = r
+
         for cat in ('series', 'movies'):
             for item in all_c.get(cat) or []:
                 name = item.get('name')
                 if not name:
                     continue
-                rel = by_name.get(name.lower())
+                # Try raw exact match first
+                rel = by_name.get(name.lower().strip())
+                # Try normalized match next
+                if not rel:
+                    norm_name = _normalize_key(name)
+                    rel = by_name.get(norm_name)
+                
                 if not rel:
                     continue
                 if rel.get('tmdb_title'):
@@ -1749,6 +1769,7 @@ def _merge_content_release_tmdb_into_folders(all_c):
     except Exception as e:
         print(f"[CONTENT-RELEASES] merge TMDB metadata into folders failed: {e}", flush=True)
     return all_c
+
 
 def _catalog_item_for_folder(folder_name, resolved_name=None):
     """Build the same lightweight catalog metadata used by /api/folders for one detail page."""
@@ -3331,20 +3352,22 @@ def get_folders(current_user):
             conn, db_type = get_db_connection()
             cur = conn.cursor()
             if db_type == 'postgres':
-                cur.execute("SELECT tmdb_title, folder_name, chat_id, video_message_id FROM telegram_catalog ORDER BY added_at DESC LIMIT 500")
+                cur.execute("SELECT tmdb_title, folder_name, chat_id, video_message_id, tmdb_poster_path FROM telegram_catalog ORDER BY added_at DESC LIMIT 500")
             else:
-                cur.execute("SELECT tmdb_title, folder_name, chat_id, video_message_id FROM telegram_catalog ORDER BY added_at DESC LIMIT 500")
+                cur.execute("SELECT tmdb_title, folder_name, chat_id, video_message_id, tmdb_poster_path FROM telegram_catalog ORDER BY added_at DESC LIMIT 500")
             rows = cur.fetchall() or []
             for r in rows:
                 # sqlite row may be tuple; postgres may be tuple too
-                tmdb_title, folder_name, chat_id, video_message_id = r[0], r[1], r[2], r[3]
+                tmdb_title, folder_name, chat_id, video_message_id, tmdb_poster_path = r[0], r[1], r[2], r[3], r[4]
                 if not chat_id or not video_message_id:
                     continue
                 display_name = (tmdb_title or folder_name or "").strip()
                 if not display_name:
                     continue
                 all_c["movies"].append({
-                    "name": display_name,
+                    "name": folder_name or display_name,
+                    "tmdb_title": display_name,
+                    "tmdb_poster_path": tmdb_poster_path,
                     "type": "movie",
                     "source": f"telegram/{int(chat_id)}/{int(video_message_id)}",
                 })
