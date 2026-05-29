@@ -211,7 +211,8 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               tmdb_poster_path: res.payload.poster_path,
               tmdb_backdrop_path: res.payload.backdrop_path,
               tmdb_overview: res.payload.overview,
-              tmdb_rating: res.payload.vote_average
+              tmdb_rating: res.payload.vote_average,
+              tmdb_genres: res.payload.genres
             };
           }
         });
@@ -401,90 +402,110 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     setHoveredTrailerId(null);
   };
 
+  // Helper function to check if item belongs to specific genre
+  const hasGenre = (item, genreNames, genreIds = []) => {
+    // 1. Check tmdb_genres from TMDB API
+    if (item.tmdb_genres && Array.isArray(item.tmdb_genres)) {
+      return item.tmdb_genres.some(g => {
+        const name = (g.name || '').toLowerCase();
+        const id = g.id;
+        return genreNames.some(gn => name.includes(gn.toLowerCase())) || genreIds.includes(id);
+      });
+    }
+    // 2. Check genres directly
+    if (item.genres && Array.isArray(item.genres)) {
+      return item.genres.some(g => {
+        const name = (g.name || '').toLowerCase();
+        const id = g.id;
+        return genreNames.some(gn => name.includes(gn.toLowerCase())) || genreIds.includes(id);
+      });
+    }
+    // 3. Fallback to overview keyword scan
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    const name = (item.name || '').toLowerCase();
+    const title = (item.tmdb_title || '').toLowerCase();
+    return genreNames.some(gn => {
+      const gLower = gn.toLowerCase();
+      return overview.includes(gLower) || name.includes(gLower) || title.includes(gLower);
+    });
+  };
+
+  // Helper to check if a series is a variety show
+  const isVarietyShow = (item) => {
+    // Check using hasGenre helper with standard variety/reality/talk genres
+    const hasVarietyGenre = hasGenre(item, ['variety', 'reality', 'talk show', 'talk-show', 'stage', 'knowing bros', 'running man'], [10764, 10767]);
+    if (hasVarietyGenre) return true;
+    
+    // Additional name/title checks just in case
+    const name = (item.name || '').toLowerCase();
+    const title = (item.tmdb_title || '').toLowerCase();
+    return name.includes('variety') || name.includes('show') || name.includes('reality') || name.includes('talk') || name.includes('korean') || name.includes('stage') ||
+           title.includes('variety') || title.includes('show') || title.includes('reality') || title.includes('talk') || title.includes('knowing bros') || title.includes('running man');
+  };
+
   // Filters logic (Prioritizes showing the clean TMDB title over plain folder names)
   const filteredSeries = content.series.filter(item => {
     const title = (item.tmdb_title || item.name || '').toLowerCase();
-    return title.includes(searchQuery.toLowerCase());
+    return item.type === 'series' && title.includes(searchQuery.toLowerCase());
   });
 
   const filteredMovies = content.movies.filter(item => {
     const title = (item.tmdb_title || item.name || '').toLowerCase();
-    return title.includes(searchQuery.toLowerCase());
+    return item.type === 'movie' && title.includes(searchQuery.toLowerCase());
   });
 
-  const filteredVariety = [...content.series, ...content.movies].filter(item => {
-    const name = (item.name || '').toLowerCase();
-    const title = (item.tmdb_title || '').toLowerCase();
-    const isVariety = name.includes('variety') || name.includes('show') || name.includes('reality') || name.includes('talk') || name.includes('korean') || name.includes('stage') ||
-                      title.includes('variety') || title.includes('show') || title.includes('reality') || title.includes('talk') || title.includes('knowing bros') || title.includes('running man');
-    return isVariety && (name.includes(searchQuery.toLowerCase()) || title.includes(searchQuery.toLowerCase()));
+  const filteredVariety = content.series.filter(item => {
+    const title = (item.tmdb_title || item.name || '').toLowerCase();
+    return item.type === 'series' && isVarietyShow(item) && title.includes(searchQuery.toLowerCase());
   });
 
   const topRatedTV = content.series
-    .filter(item => item.tmdb_rating !== undefined)
+    .filter(item => item.type === 'series' && item.tmdb_rating !== undefined)
     .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
 
   const topRatedMovie = content.movies
-    .filter(item => item.tmdb_rating !== undefined)
+    .filter(item => item.type === 'movie' && item.tmdb_rating !== undefined)
     .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
 
-  const topRatedVariety = [...content.series, ...content.movies]
-    .filter(item => {
-      const name = (item.name || '').toLowerCase();
-      const title = (item.tmdb_title || '').toLowerCase();
-      return name.includes('variety') || name.includes('show') || name.includes('reality') || name.includes('talk') || name.includes('korean') || name.includes('stage') ||
-             title.includes('variety') || title.includes('show') || title.includes('reality') || title.includes('talk') || title.includes('knowing bros') || title.includes('running man');
-    })
-    .filter(item => item.tmdb_rating !== undefined)
+  const topRatedVariety = content.series
+    .filter(item => item.type === 'series' && isVarietyShow(item) && item.tmdb_rating !== undefined)
     .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
 
   const telegramCollection = [...content.series, ...content.movies]
     .filter(item => item.source && item.source.startsWith("telegram/"));
 
-  // Genre Filters based on tmdb_overview keyword scanning
-  const actionAdventure = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    const name = (item.name || '').toLowerCase();
-    return overview.includes('action') || overview.includes('adventure') || overview.includes('fight') || overview.includes('war') || overview.includes('battle') || name.includes('action');
-  });
+  // Genre Filters based on TMDB genres & tmdb_overview fallback
+  const actionAdventure = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['action', 'adventure', 'fight', 'war', 'battle'], [28, 12, 10759])
+  );
 
-  const dramaRomance = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    return overview.includes('romance') || overview.includes('love') || overview.includes('relationship') || overview.includes('drama') || overview.includes('romantic');
-  });
+  const dramaRomance = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['romance', 'love', 'relationship', 'drama', 'romantic'], [18, 10749])
+  );
 
-  const scifiFantasy = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    return overview.includes('sci-fi') || overview.includes('science fiction') || overview.includes('fantasy') || overview.includes('alien') || overview.includes('space') || overview.includes('magic') || overview.includes('monster');
-  });
+  const scifiFantasy = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['sci-fi', 'science fiction', 'fantasy', 'alien', 'space', 'magic', 'monster'], [878, 14, 10765])
+  );
 
-  const comedyShows = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    return overview.includes('comedy') || overview.includes('funny') || overview.includes('humor') || overview.includes('laugh');
-  });
+  const comedyShows = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['comedy', 'funny', 'humor', 'laugh'], [35])
+  );
 
-  const horrorThriller = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    const name = (item.name || '').toLowerCase();
-    return overview.includes('horror') || overview.includes('thriller') || overview.includes('scary') || overview.includes('ghost') || overview.includes('demon') || overview.includes('killer') || overview.includes('murder') || overview.includes('mystery') || overview.includes('suspense') || name.includes('horror') || name.includes('thriller');
-  });
+  const horrorThriller = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['horror', 'thriller', 'scary', 'ghost', 'demon', 'killer', 'murder', 'suspense'], [27, 53])
+  );
 
-  const mysteryCrime = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    const name = (item.name || '').toLowerCase();
-    return overview.includes('mystery') || overview.includes('crime') || overview.includes('detective') || overview.includes('police') || overview.includes('investigation') || overview.includes('prison') || overview.includes('heist') || overview.includes('thief') || name.includes('mystery') || name.includes('crime');
-  });
+  const mysteryCrime = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['mystery', 'crime', 'detective', 'police', 'investigation', 'prison', 'heist', 'thief'], [9648, 80])
+  );
 
-  const animeAnimation = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    const name = (item.name || '').toLowerCase();
-    return overview.includes('anime') || overview.includes('animation') || overview.includes('cartoon') || overview.includes('animated') || overview.includes('manga') || name.includes('anime') || name.includes('animation');
-  });
+  const animeAnimation = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['anime', 'animation', 'cartoon', 'animated', 'manga'], [16])
+  );
 
-  const docHistory = [...content.series, ...content.movies].filter(item => {
-    const overview = (item.tmdb_overview || '').toLowerCase();
-    return overview.includes('documentary') || overview.includes('history') || overview.includes('historical') || overview.includes('biography') || overview.includes('true story') || overview.includes('factual');
-  });
+  const docHistory = [...content.series, ...content.movies].filter(item => 
+    hasGenre(item, ['documentary', 'history', 'historical', 'biography', 'true story', 'factual'], [99, 36])
+  );
 
   // Pick a featured item for the gorgeous Hero Banner (preferably one with resolved posters)
   const allItems = [...content.movies, ...content.series];
