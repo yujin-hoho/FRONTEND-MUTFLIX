@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import MediaDetails from './MediaDetails';
+import { useNavigate } from 'react-router-dom';
 
 // API Helper to handle dev/prod URL matching with HuggingFace Space
 const getApiUrl = (path) => {
@@ -90,10 +90,10 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
   const [error, setError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('all'); // 'all' | 'series' | 'movies' | 'variety'
-  const [selectedItem, setSelectedItem] = useState(null); // Detail modal
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const searchInputRef = useRef(null);
+  const navigate = useNavigate();
 
   const [myList, setMyList] = useState(() => {
     try {
@@ -116,20 +116,12 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     localStorage.setItem(`mutflix_mylist_${activeProfile.id}`, JSON.stringify(updated));
   };
 
-  // Detailed Media and custom player state
-  const [selectedItemVideos, setSelectedItemVideos] = useState([]);
-  const [isVideosLoading, setIsVideosLoading] = useState(false);
-  const [activeSeason, setActiveSeason] = useState(1);
-  const [playingVideo, setPlayingVideo] = useState(null);
-  const [videoStreamDetails, setVideoStreamDetails] = useState(null);
-  const [continueWatching, setContinueWatching] = useState([]);
-
   // Hover Delay state
   const [hoveredItem, setHoveredItem] = useState(null);
   const [hoveredTrailerId, setHoveredTrailerId] = useState(null);
   const hoverTimeoutRef = useRef(null);
 
-  const CACHE_KEY = 'mutflix_catalog_cache';
+  const CACHE_KEY = 'mutflix_catalog_cache_v2';
   const CACHE_TTL = 15 * 60 * 1000; // 15 Menit Cache
 
   const fetchFoldersAndMetadata = async (forceRefresh = false) => {
@@ -212,7 +204,8 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               tmdb_backdrop_path: res.payload.backdrop_path,
               tmdb_overview: res.payload.overview,
               tmdb_rating: res.payload.vote_average,
-              tmdb_genres: res.payload.genres
+              tmdb_genres: res.payload.genres,
+              tmdb_credits: res.payload.credits
             };
           }
         });
@@ -254,125 +247,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     fetchFoldersAndMetadata(false);
   }, [session.token]);
 
-  // Watch History (Continue Watching)
-  const fetchWatchHistory = async () => {
-    if (!activeProfile || !activeProfile.id) return;
-    try {
-      const response = await fetch(getApiUrl(`/api/history/get/${activeProfile.id}`), {
-        headers: { 'x-access-token': session.token }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setContinueWatching(Array.isArray(data) ? data : []);
-      }
-    } catch (err) {
-      console.error('Gagal mengambil riwayat menonton:', err);
-    }
-  };
-
-  useEffect(() => {
-    fetchWatchHistory();
-  }, [activeProfile]);
-
-  // Fetch playable files for details view
-  const fetchVideosForItem = async (item) => {
-    setIsVideosLoading(true);
-    setSelectedItemVideos([]);
-    try {
-      const path = item.source || item.path || `gdrive_folder/${item.name}`;
-      const response = await fetch(getApiUrl(`/api/videos/${encodeURIComponent(path)}`), {
-        headers: { 'x-access-token': session.token }
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setSelectedItemVideos(data.videos || []);
-        if (data.videos && data.videos.length > 0) {
-          const seasons = data.videos.map(v => v.season).filter(s => s !== undefined && s !== null);
-          if (seasons.length > 0) {
-            setActiveSeason(Math.min(...seasons));
-          } else {
-            setActiveSeason(1);
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Gagal memuat video:', err);
-    } finally {
-      setIsVideosLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    if (selectedItem) {
-      fetchVideosForItem(selectedItem);
-    }
-  }, [selectedItem]);
-
-  // Play controls
-  const handlePlayVideo = async (video) => {
-    setPlayingVideo(video);
-    setVideoStreamDetails(null);
-    try {
-      if (video.path.startsWith('telegram/')) {
-        const parts = video.path.split('/');
-        const chat_id = parts[1];
-        const message_id = parts[2];
-        const url = `/api/telegram/stream/${chat_id}/${message_id}?token=${encodeURIComponent(session.token)}`;
-        setVideoStreamDetails({ stream_url: url });
-      } else {
-        const response = await fetch(getApiUrl(`/api/gdrive-stream-details/${encodeURIComponent(video.path)}`), {
-          headers: { 'x-access-token': session.token }
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setVideoStreamDetails(data);
-        }
-      }
-    } catch (err) {
-      console.error('Gagal memutar video:', err);
-    }
-  };
-
-  const handleClosePlayer = () => {
-    setPlayingVideo(null);
-    setVideoStreamDetails(null);
-    fetchWatchHistory();
-  };
-
-  const handleVideoTimeUpdate = async (e) => {
-    const video = e.currentTarget;
-    if (!video || !playingVideo || !activeProfile) return;
-    const currentTimeMs = Math.floor(video.currentTime * 1000);
-    const durationMs = Math.floor(video.duration * 1000);
-
-    // Save progress periodically
-    if (video.paused || Math.floor(video.currentTime) % 10 === 0) {
-      try {
-        await fetch(getApiUrl('/api/history/save'), {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-access-token': session.token
-          },
-          body: JSON.stringify({
-            profile_id: activeProfile.id,
-            media_path: playingVideo.path,
-            media_title: playingVideo.name,
-            series_title: selectedItem ? selectedItem.name : playingVideo.name,
-            source: playingVideo.source || (selectedItem && selectedItem.source) || 'Google Drive',
-            still_path: (selectedItem && selectedItem.tmdb_poster_path) || null,
-            subtitle_path: playingVideo.subtitle_path || null,
-            position_ms: currentTimeMs,
-            duration_ms: durationMs,
-            season: playingVideo.season || null,
-            episode: playingVideo.episode || null
-          })
-        });
-      } catch (err) {
-        console.error('Gagal menyimpan riwayat:', err);
-      }
-    }
-  };
+  // Detail view state removed, handled in specific pages
 
   // Hover delay handlers
   const handleMouseEnter = (item) => {
@@ -527,7 +402,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
         onMouseEnter={() => handleMouseEnter(item)}
         onMouseLeave={handleMouseLeave}
         onClick={() => {
-          setSelectedItem(item);
+          navigate(`/${item.type === 'series' || item.type === 'tv' ? 'series' : 'movie'}/${encodeURIComponent(item.name)}`, { state: { item } });
           handleMouseLeave();
         }}
         className={`relative group bg-slate-900 rounded-lg overflow-hidden shadow-lg cursor-pointer transition-all duration-300 hover:scale-105 hover:shadow-black/50 ${extraClasses}`}
@@ -576,7 +451,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     return (
       <div 
         key={item.name}
-        onClick={() => setSelectedItem(item)}
+        onClick={() => navigate(`/${item.type === 'series' || item.type === 'tv' ? 'series' : 'movie'}/${encodeURIComponent(item.name)}`, { state: { item } })}
         className="flex-shrink-0 flex items-end relative select-none cursor-pointer pl-2 pr-2 h-48 sm:h-60 md:h-72 group"
       >
         {/* Giant outline rank number */}
@@ -645,7 +520,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 <button
                   key={tab.id}
                   onClick={() => setActiveCategory(tab.id)}
-                  className="group relative px-3 py-2 text-sm md:text-base font-bold tracking-wider transition-all duration-300 select-none cursor-pointer uppercase flex-shrink-0"
+                  className="group relative px-3 py-2 text-sm md:text-base font-bold tracking-wider transition-all duration-300 select-none cursor-pointer flex-shrink-0"
                 >
                   <span className={`relative z-10 transition-colors duration-300 ${
                     isActive ? 'text-green-500 font-extrabold' : 'text-white/80 group-hover:text-green-400'
@@ -838,7 +713,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
 
                 <div className="pt-2 flex flex-wrap items-center gap-3">
                   <button 
-                    onClick={() => setSelectedItem(featuredItem)}
+                    onClick={() => navigate(`/${featuredItem.type === 'series' || featuredItem.type === 'tv' ? 'series' : 'movie'}/${encodeURIComponent(featuredItem.name)}`, { state: { item: featuredItem } })}
                     className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white font-bold rounded-full text-sm transition-all shadow-lg shadow-green-950/30 flex items-center gap-2 active:scale-98 cursor-pointer"
                   >
                     <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
@@ -1210,25 +1085,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
         </div>
       )}
 
-      {/* 4. DETAIL MEDIA PANEL MODAL */}
-      {selectedItem && (
-        <MediaDetails
-          selectedItem={selectedItem}
-          onClose={() => setSelectedItem(null)}
-          selectedItemVideos={selectedItemVideos}
-          isVideosLoading={isVideosLoading}
-          activeSeason={activeSeason}
-          setActiveSeason={setActiveSeason}
-          handlePlayVideo={handlePlayVideo}
-          playingVideo={playingVideo}
-          videoStreamDetails={videoStreamDetails}
-          handleClosePlayer={handleClosePlayer}
-          handleVideoTimeUpdate={handleVideoTimeUpdate}
-          continueWatching={continueWatching}
-          getPosterUrl={getPosterUrl}
-          getApiUrl={getApiUrl}
-        />
-      )}
+
     </div>
   );
 }

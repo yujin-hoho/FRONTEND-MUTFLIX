@@ -1285,13 +1285,13 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
             search_params['first_air_date_year'] = str(year)
         search_path = 'search/tv'
         detail_prefix = 'tv'
-        detail_params = {'append_to_response': 'content_ratings,videos'}
+        detail_params = {'append_to_response': 'content_ratings,videos,credits'}
     else:
         if year:
             search_params['primary_release_year'] = str(year)
         search_path = 'search/movie'
         detail_prefix = 'movie'
-        detail_params = {'append_to_response': 'videos'}
+        detail_params = {'append_to_response': 'videos,credits'}
 
     if override:
         language = (override.get('override_language') or '').strip()
