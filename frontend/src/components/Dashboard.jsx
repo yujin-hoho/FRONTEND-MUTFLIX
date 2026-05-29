@@ -62,7 +62,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     setIsLoading(true);
     setError(null);
     try {
-      // Cek apakah ada data cache lokal yang masih valid
+      // Check for valid local cache first
       if (!forceRefresh) {
         const cached = localStorage.getItem(CACHE_KEY);
         if (cached) {
@@ -74,104 +74,35 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               return;
             }
           } catch (e) {
-            console.warn('Gagal membaca cache lokal catalog:', e);
+            console.warn('Failed to read local cache catalog:', e);
           }
         }
       }
 
-      // 1. Fetch Google Drive and Telegram folders list
+      // Fetch catalog list (movies & series) directly from server
       const response = await fetch(getApiUrl('/api/folders'), {
         headers: {
           'x-access-token': session.token
         }
       });
       if (!response.ok) {
-        throw new Error('Gagal mengambil daftar katalog dari server.');
+        throw new Error('Failed to fetch catalog library from server.');
       }
       const data = await response.json();
       
-      const initialSeries = data.series || [];
-      const initialMovies = data.movies || [];
+      const series = data.series || [];
+      const movies = data.movies || [];
       
-      // 2. Fetch TMDB metadata in bulk from server (aggressively resolves all items)
-      const allBulkItems = [
-        ...initialSeries.map(item => ({ type: 'tv', name: item.name })),
-        ...initialMovies.map(item => ({ type: 'movie', name: item.name }))
-      ];
-
-      if (allBulkItems.length === 0) {
-        const payload = { series: initialSeries, movies: initialMovies };
-        setContent(payload);
-        localStorage.setItem(CACHE_KEY, JSON.stringify({
-          timestamp: Date.now(),
-          data: payload
-        }));
-        setIsLoading(false);
-        return;
-      }
-
-      setIsBulkLoading(true);
-      const bulkResponse = await fetch(getApiUrl('/api/tmdb-meta/bulk'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-access-token': session.token
-        },
-        body: JSON.stringify({ items: allBulkItems })
-      });
-
-      let finalSeries = [...initialSeries];
-      let finalMovies = [...initialMovies];
-
-      if (bulkResponse.ok) {
-        const bulkData = await bulkResponse.json();
-        const results = bulkData.results || [];
-        
-        // Map resolved metadata by folder name
-        const metadataMap = {};
-        results.forEach(res => {
-          if (res.status === 200 && res.payload) {
-            const key = (res.folder_name || '').toLowerCase().trim();
-            metadataMap[key] = {
-              tmdb_title: res.payload.title || res.payload.name,
-              tmdb_poster_path: res.payload.poster_path,
-              tmdb_backdrop_path: res.payload.backdrop_path,
-              tmdb_overview: res.payload.overview,
-              tmdb_rating: res.payload.vote_average
-            };
-          }
-        });
-
-        // Merge resolved metadata
-        finalSeries = initialSeries.map(item => {
-          const key = (item.name || '').toLowerCase().trim();
-          const meta = metadataMap[key];
-          return meta ? { ...item, ...meta } : item;
-        });
-
-        finalMovies = initialMovies.map(item => {
-          const key = (item.name || '').toLowerCase().trim();
-          const meta = metadataMap[key];
-          return meta ? { ...item, ...meta } : item;
-        });
-      }
-
-      const finalPayload = { series: finalSeries, movies: finalMovies };
-      
-      // Simpan data hasil penggabungan ke dalam cache lokal
+      const payload = { series, movies };
+      setContent(payload);
       localStorage.setItem(CACHE_KEY, JSON.stringify({
         timestamp: Date.now(),
-        data: finalPayload
+        data: payload
       }));
-
-      // Store fully resolved state and turn off main loader
-      setContent(finalPayload);
       setIsLoading(false);
     } catch (err) {
       setError(err.message);
       setIsLoading(false);
-    } finally {
-      setIsBulkLoading(false);
     }
   };
 
@@ -366,7 +297,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
           setSelectedItem(item);
           handleMouseLeave();
         }}
-        className={`relative group bg-slate-900 border border-slate-850 hover:border-green-500 rounded-xl overflow-hidden shadow-lg cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-green-950/20 ${extraClasses}`}
+        className={`relative group bg-slate-900 rounded-xl overflow-hidden shadow-lg cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-green-950/20 ${extraClasses}`}
       >
         <div className="h-56 sm:h-64 bg-slate-950 flex items-center justify-center relative overflow-hidden">
           {item.tmdb_poster_path ? (
@@ -408,67 +339,15 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               </span>
             )}
           </div>
-        </div>
-
-        {/* Premium Hover Card Preview Overlay with 600ms delay */}
-        {isHovered && (
-          <div className="absolute inset-0 bg-slate-950 z-40 flex flex-col justify-between p-3 animate-fadeIn text-left">
-            <div className="relative h-28 bg-slate-900 rounded overflow-hidden mb-2">
-              {hoveredTrailerId ? (
-                <iframe
-                  src={`https://www.youtube-nocookie.com/embed/${hoveredTrailerId}?autoplay=1&mute=1&controls=0&modestbranding=1&rel=0&showinfo=0&loop=1&playlist=${hoveredTrailerId}`}
-                  className="w-full h-full object-cover"
-                  allow="autoplay; encrypted-media"
-                  title="Trailer"
-                  frameBorder="0"
-                ></iframe>
-              ) : item.tmdb_poster_path ? (
-                <img 
-                  src={getPosterUrl(item.tmdb_poster_path)} 
-                  alt={item.tmdb_title || item.name} 
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-slate-900">
-                  <span className="text-green-500 font-extrabold text-xl">{item.name.charAt(0).toUpperCase()}</span>
-                </div>
-              )}
-              {item.tmdb_rating !== undefined && (
-                <div className="absolute top-1.5 right-1.5 bg-black/80 rounded px-1.5 py-0.5 text-[9px] font-extrabold text-yellow-500">
-                  ★ {item.tmdb_rating.toFixed(1)}
-                </div>
-              )}
-            </div>
-            
-            <div className="flex-1 flex flex-col justify-between min-h-0">
-              <div>
-                <h4 className="text-xs font-bold text-white line-clamp-1 leading-tight mb-1">
-                  {item.tmdb_title || item.name}
-                </h4>
-                <p className="text-[10px] text-slate-400 line-clamp-3 leading-relaxed mb-2">
-                  {item.tmdb_overview || 'Metadata sinopsis untuk tayangan ini belum tersedia.'}
-                </p>
-              </div>
-              <div className="flex items-center justify-between border-t border-slate-900 pt-2 mt-auto">
-                <span className="text-[9px] text-slate-500 uppercase tracking-wider font-semibold">
-                  {item.type === 'series' ? 'TV Series' : 'Movie'}
-                </span>
-                <span className="text-[9px] text-green-500 font-bold uppercase tracking-wider">
-                  Click to View
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>      </div>
     );
   };
 
   return (
-    <div className="w-full pt-4 pb-6 px-4 sm:px-8 md:px-12 relative z-10 select-none animate-fadeIn">
+    <div className="w-full pt-1.5 pb-6 px-4 sm:px-8 md:px-12 relative z-10 select-none animate-fadeIn">
       
       {/* Navigation & Header */}
-      <header className="sticky top-0 bg-[#141414]/80 backdrop-blur-xl z-50 pt-1.5 pb-2 px-6 md:px-8 -mx-2 sm:-mx-4 md:-mx-6 flex flex-wrap md:flex-nowrap items-center justify-between gap-4 md:gap-6 mb-2 select-none transition-all duration-300">
+      <header className="sticky top-0 bg-transparent z-50 pt-1.5 pb-2 px-6 md:px-8 -mx-2 sm:-mx-4 md:-mx-6 flex flex-wrap md:flex-nowrap items-center justify-between gap-4 md:gap-6 mb-2 select-none transition-all duration-300">
         {/* Left: Brand Logo */}
         <div className="flex items-center gap-1.5 cursor-pointer active:scale-98 transition-all flex-shrink-0" onClick={() => setActiveCategory('all')}>
           <span className="text-2xl md:text-3xl font-extrabold tracking-tighter text-green-500">
@@ -640,23 +519,23 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
           
           {/* 1. HERO BANNER - Billboard Content */}
           {featuredItem && activeCategory === 'all' && !searchQuery && (
-            <div className="relative h-[480px] md:h-[560px] -mx-2 sm:-mx-4 md:-mx-6 rounded-2xl overflow-hidden bg-slate-950 shadow-2xl">
+            <div className="relative h-[480px] md:h-[560px] -mx-2 sm:-mx-4 md:-mx-6 rounded-2xl overflow-hidden bg-[#141414] shadow-2xl">
               
-              {/* Blurred backdrop image background */}
-              {featuredItem.tmdb_poster_path ? (
+              {/* Crisp Backdrop Image background */}
+              {(featuredItem.tmdb_backdrop_path || featuredItem.tmdb_poster_path) ? (
                 <div 
-                  className="absolute inset-0 bg-cover bg-center opacity-45 scale-100 transition-all duration-500"
-                  style={{ backgroundImage: `url(${getPosterUrl(featuredItem.tmdb_poster_path)})` }}
+                  className="absolute inset-0 bg-cover bg-center opacity-95 scale-100 transition-all duration-500"
+                  style={{ backgroundImage: `url(https://image.tmdb.org/t/p/original${featuredItem.tmdb_backdrop_path || featuredItem.tmdb_poster_path})` }}
                 ></div>
               ) : (
-                <div className="absolute inset-0 bg-slate-950"></div>
+                <div className="absolute inset-0 bg-[#141414]"></div>
               )}
 
               {/* Gradient dark overlay */}
-              <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-transparent"></div>
-              <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/40 to-transparent"></div>
+              <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/50 to-transparent"></div>
+              <div className="absolute inset-0 bg-gradient-to-r from-[#141414] via-[#141414]/20 to-transparent"></div>
 
-              <div className="absolute bottom-8 sm:bottom-16 md:bottom-20 left-0 p-8 sm:p-12 max-w-3xl space-y-5 z-10 text-left">
+              <div className="absolute bottom-6 sm:bottom-10 md:bottom-12 left-0 p-8 sm:p-12 max-w-3xl space-y-5 z-10 text-left">
                 <span className="inline-flex px-3 py-1 rounded bg-green-600/10 border border-green-500/20 text-green-400 text-sm font-semibold tracking-wider uppercase">
                   Popular Spotlight
                 </span>
