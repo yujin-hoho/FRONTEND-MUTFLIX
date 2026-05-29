@@ -135,6 +135,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
             metadataMap[key] = {
               tmdb_title: res.payload.title || res.payload.name,
               tmdb_poster_path: res.payload.poster_path,
+              tmdb_backdrop_path: res.payload.backdrop_path,
               tmdb_overview: res.payload.overview,
               tmdb_rating: res.payload.vote_average
             };
@@ -467,7 +468,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     <div className="w-full pt-4 pb-6 px-4 sm:px-8 md:px-12 relative z-10 select-none animate-fadeIn">
       
       {/* Navigation & Header */}
-      <header className="sticky top-0 bg-[#141414]/80 backdrop-blur-xl z-50 pt-2 pb-2.5 px-6 md:px-8 -mx-2 sm:-mx-4 md:-mx-6 flex flex-wrap md:flex-nowrap items-center justify-between gap-4 md:gap-6 mb-6 select-none transition-all duration-300">
+      <header className="sticky top-0 bg-[#141414]/80 backdrop-blur-xl z-50 pt-1.5 pb-2 px-6 md:px-8 -mx-2 sm:-mx-4 md:-mx-6 flex flex-wrap md:flex-nowrap items-center justify-between gap-4 md:gap-6 mb-2 select-none transition-all duration-300">
         {/* Left: Brand Logo */}
         <div className="flex items-center gap-1.5 cursor-pointer active:scale-98 transition-all flex-shrink-0" onClick={() => setActiveCategory('all')}>
           <span className="text-2xl md:text-3xl font-extrabold tracking-tighter text-green-500">
@@ -639,12 +640,12 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
           
           {/* 1. HERO BANNER - Billboard Content */}
           {featuredItem && activeCategory === 'all' && !searchQuery && (
-            <div className="relative h-[480px] md:h-[560px] -mx-4 sm:-mx-8 md:-mx-12 overflow-hidden bg-slate-950 shadow-2xl">
+            <div className="relative h-[480px] md:h-[560px] -mx-2 sm:-mx-4 md:-mx-6 rounded-2xl overflow-hidden bg-slate-950 shadow-2xl">
               
               {/* Blurred backdrop image background */}
               {featuredItem.tmdb_poster_path ? (
                 <div 
-                  className="absolute inset-0 bg-cover bg-center opacity-30 blur-sm scale-105"
+                  className="absolute inset-0 bg-cover bg-center opacity-45 scale-100 transition-all duration-500"
                   style={{ backgroundImage: `url(${getPosterUrl(featuredItem.tmdb_poster_path)})` }}
                 ></div>
               ) : (
@@ -655,37 +656,36 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-transparent"></div>
               <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/40 to-transparent"></div>
 
-              {/* Content Detail Panel */}
-              <div className="absolute bottom-0 left-0 p-8 sm:p-12 max-w-2xl space-y-4 z-10 text-left">
-                <span className="inline-flex px-2.5 py-0.5 rounded bg-green-600/10 border border-green-500/20 text-green-400 text-xs font-semibold tracking-wider uppercase">
+              <div className="absolute bottom-8 sm:bottom-16 md:bottom-20 left-0 p-8 sm:p-12 max-w-3xl space-y-5 z-10 text-left">
+                <span className="inline-flex px-3 py-1 rounded bg-green-600/10 border border-green-500/20 text-green-400 text-sm font-semibold tracking-wider uppercase">
                   Popular Spotlight
                 </span>
 
-                <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight leading-tight">
+                <h1 className="text-4xl sm:text-5xl md:text-6xl font-extrabold text-white tracking-tight leading-none drop-shadow-md">
                   {featuredItem.tmdb_title || featuredItem.name}
                 </h1>
 
                 {featuredItem.tmdb_rating !== undefined && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-yellow-500 text-sm">★</span>
-                    <span className="text-xs font-bold text-slate-300">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-yellow-500">★</span>
+                    <span className="font-bold text-slate-300">
                       {featuredItem.tmdb_rating.toFixed(1)} / 10
                     </span>
-                    <span className="text-xs text-slate-600">|</span>
-                    <span className="text-xs text-slate-400 capitalize">
+                    <span className="text-slate-600">|</span>
+                    <span className="text-slate-400 capitalize">
                       {featuredItem.type === 'series' ? 'TV Series' : 'Movie'}
                     </span>
                   </div>
                 )}
 
-                <p className="text-slate-300 text-sm sm:text-base leading-relaxed line-clamp-3">
+                <p className="text-slate-300 text-base sm:text-lg leading-relaxed line-clamp-3 max-w-2xl drop-shadow">
                   {featuredItem.tmdb_overview || 'The most complete catalog available to stream instantly with zero bandwidth throttling.'}
                 </p>
 
                 <div className="pt-2 flex flex-wrap items-center gap-3">
                   <button 
                     onClick={() => setSelectedItem(featuredItem)}
-                    className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl text-sm transition-all shadow-lg shadow-green-950/30 flex items-center gap-2 active:scale-98 cursor-pointer"
+                    className="px-6 py-2.5 bg-green-600 hover:bg-green-500 text-white font-bold rounded-full text-sm transition-all shadow-lg shadow-green-950/30 flex items-center gap-2 active:scale-98 cursor-pointer"
                   >
                     <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
                       <path d="M8 5v14l11-7z" />
@@ -694,7 +694,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                   </button>
                   <button 
                     onClick={() => toggleMyList(featuredItem)}
-                    className={`px-6 py-2.5 border rounded-xl text-sm font-bold transition-all flex items-center gap-2 active:scale-98 cursor-pointer ${
+                    className={`px-6 py-2.5 border rounded-full text-sm font-bold transition-all flex items-center gap-2 active:scale-98 cursor-pointer ${
                       myList.some(x => x.name === featuredItem.name)
                         ? 'bg-white text-black border-white shadow-lg'
                         : 'bg-white/10 hover:bg-white/20 border-white/10 hover:border-white/20 text-white'
