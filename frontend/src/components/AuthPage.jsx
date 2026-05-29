@@ -2,11 +2,17 @@ import React, { useState } from 'react';
 
 // API Helper to handle dev/prod URL matching with HuggingFace Space
 const getApiUrl = (path) => {
-  // If we are running on the actual Hugging Face Space host itself, use relative paths.
-  if (window.location.hostname.endsWith('melancholia112-mutflix.hf.space')) {
+  const { hostname, port } = window.location;
+  if (hostname.endsWith('melancholia112-mutflix.hf.space')) {
     return path;
   }
-  // Otherwise (running locally or deployed on Vercel), direct requests to the Hugging Face Space backend.
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.')) {
+    if (port === '8000') {
+      return path;
+    }
+    // Dev mode: point to hosted backend on HuggingFace Space
+    return `https://melancholia112-mutflix.hf.space${path}`;
+  }
   return `https://melancholia112-mutflix.hf.space${path}`;
 };
 

@@ -82,9 +82,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#141414] flex flex-col justify-between text-slate-100 font-sans select-none relative overflow-hidden">
-      {/* Background radial glow */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-green-500/5 rounded-full blur-[140px] pointer-events-none"></div>
+    <div className="min-h-screen bg-[#18181b] flex flex-col justify-between text-slate-100 font-sans select-none relative overflow-x-hidden">
       
       {/* Top Navigation */}
       {(!currentSession || !activeProfile) && (

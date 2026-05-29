@@ -2,8 +2,16 @@ import React, { useState, useEffect } from 'react';
 
 // API Helper to handle dev/prod URL matching with HuggingFace Space
 const getApiUrl = (path) => {
-  if (window.location.hostname.endsWith('melancholia112-mutflix.hf.space')) {
+  const { hostname, port } = window.location;
+  if (hostname.endsWith('melancholia112-mutflix.hf.space')) {
     return path;
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.')) {
+    if (port === '8000') {
+      return path;
+    }
+    // Dev mode: point to hosted backend on HuggingFace Space
+    return `https://melancholia112-mutflix.hf.space${path}`;
   }
   return `https://melancholia112-mutflix.hf.space${path}`;
 };

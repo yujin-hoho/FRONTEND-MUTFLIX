@@ -3,10 +3,73 @@ import MediaDetails from './MediaDetails';
 
 // API Helper to handle dev/prod URL matching with HuggingFace Space
 const getApiUrl = (path) => {
-  if (window.location.hostname.endsWith('melancholia112-mutflix.hf.space')) {
+  const { hostname, port } = window.location;
+  if (hostname.endsWith('melancholia112-mutflix.hf.space')) {
     return path;
   }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.')) {
+    if (port === '8000') {
+      return path;
+    }
+    // Dev mode: point to hosted backend on HuggingFace Space
+    return `https://melancholia112-mutflix.hf.space${path}`;
+  }
   return `https://melancholia112-mutflix.hf.space${path}`;
+};
+
+const DraggableRow = ({ children }) => {
+  const rowRef = useRef(null);
+  const isDown = useRef(false);
+  const startX = useRef(0);
+  const scrollLeft = useRef(0);
+  const hasDragged = useRef(false);
+
+  const handleMouseDown = (e) => {
+    isDown.current = true;
+    startX.current = e.pageX - rowRef.current.offsetLeft;
+    scrollLeft.current = rowRef.current.scrollLeft;
+    hasDragged.current = false;
+  };
+
+  const handleMouseLeave = () => {
+    isDown.current = false;
+  };
+
+  const handleMouseUp = () => {
+    isDown.current = false;
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDown.current) return;
+    const x = e.pageX - rowRef.current.offsetLeft;
+    const walk = (x - startX.current) * 1.5;
+    if (Math.abs(walk) > 5) {
+      hasDragged.current = true;
+    }
+    rowRef.current.scrollLeft = scrollLeft.current - walk;
+  };
+
+  const handleClickCapture = (e) => {
+    if (hasDragged.current) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  };
+
+  return (
+    <div
+      ref={rowRef}
+      onMouseDown={handleMouseDown}
+      onMouseLeave={handleMouseLeave}
+      onMouseUp={handleMouseUp}
+      onMouseMove={handleMouseMove}
+      onClickCapture={handleClickCapture}
+      className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide select-none active:cursor-grabbing cursor-grab"
+      style={{ scrollBehavior: 'smooth' }}
+    >
+      {children}
+    </div>
+  );
 };
 
 export default function Dashboard({ session, activeProfile, onSwitchProfile, onLogout }) {
@@ -79,7 +142,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
         }
       }
 
-      // Fetch catalog list (movies & series) directly from server
+      // 1. Fetch Google Drive and Telegram folders list from server
       const response = await fetch(getApiUrl('/api/folders'), {
         headers: {
           'x-access-token': session.token
@@ -90,19 +153,88 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
       }
       const data = await response.json();
       
-      const series = data.series || [];
-      const movies = data.movies || [];
+      const initialSeries = data.series || [];
+      const initialMovies = data.movies || [];
       
-      const payload = { series, movies };
-      setContent(payload);
+      // 2. Fetch TMDB metadata in bulk from server (aggressively resolves all items)
+      const allBulkItems = [
+        ...initialSeries.map(item => ({ type: 'tv', name: item.name })),
+        ...initialMovies.map(item => ({ type: 'movie', name: item.name }))
+      ];
+
+      if (allBulkItems.length === 0) {
+        const payload = { series: initialSeries, movies: initialMovies };
+        setContent(payload);
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          timestamp: Date.now(),
+          data: payload
+        }));
+        setIsLoading(false);
+        return;
+      }
+
+      setIsBulkLoading(true);
+      const bulkResponse = await fetch(getApiUrl('/api/tmdb-meta/bulk'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-access-token': session.token
+        },
+        body: JSON.stringify({ items: allBulkItems })
+      });
+
+      let finalSeries = [...initialSeries];
+      let finalMovies = [...initialMovies];
+
+      if (bulkResponse.ok) {
+        const bulkData = await bulkResponse.json();
+        const results = bulkData.results || [];
+        
+        // Map resolved metadata by folder name
+        const metadataMap = {};
+        results.forEach(res => {
+          if (res.status === 200 && res.payload) {
+            const key = (res.folder_name || '').toLowerCase().trim();
+            metadataMap[key] = {
+              tmdb_title: res.payload.title || res.payload.name,
+              tmdb_poster_path: res.payload.poster_path,
+              tmdb_backdrop_path: res.payload.backdrop_path,
+              tmdb_overview: res.payload.overview,
+              tmdb_rating: res.payload.vote_average
+            };
+          }
+        });
+
+        // Merge resolved metadata
+        finalSeries = initialSeries.map(item => {
+          const key = (item.name || '').toLowerCase().trim();
+          const meta = metadataMap[key];
+          return meta ? { ...item, ...meta } : item;
+        });
+
+        finalMovies = initialMovies.map(item => {
+          const key = (item.name || '').toLowerCase().trim();
+          const meta = metadataMap[key];
+          return meta ? { ...item, ...meta } : item;
+        });
+      }
+
+      const finalPayload = { series: finalSeries, movies: finalMovies };
+      
+      // Save merged catalog with resolved metadata to local storage cache
       localStorage.setItem(CACHE_KEY, JSON.stringify({
         timestamp: Date.now(),
-        data: payload
+        data: finalPayload
       }));
+
+      // Store fully resolved state and turn off loader
+      setContent(finalPayload);
       setIsLoading(false);
     } catch (err) {
       setError(err.message);
       setIsLoading(false);
+    } finally {
+      setIsBulkLoading(false);
     }
   };
 
@@ -277,17 +409,27 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     return isVariety && (name.includes(searchQuery.toLowerCase()) || title.includes(searchQuery.toLowerCase()));
   });
 
+  const topRated = [...content.series, ...content.movies]
+    .filter(item => item.tmdb_rating !== undefined)
+    .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
+
+  const telegramCollection = [...content.series, ...content.movies]
+    .filter(item => item.source && item.source.startsWith("telegram/"));
+
   // Pick a featured item for the gorgeous Hero Banner (preferably one with resolved posters)
   const allItems = [...content.movies, ...content.series];
   const featuredItem = allItems.find(item => item.tmdb_overview && item.tmdb_poster_path) || allItems[0];
 
-  const getPosterUrl = (path) => {
+  const getPosterUrl = (path, size = 'w500') => {
     if (!path) return null;
-    return `https://image.tmdb.org/t/p/w500${path}`;
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    return getApiUrl(`/api/tmdb-image/${size}/${cleanPath}`);
   };
 
-  const renderMediaCard = (item, extraClasses = "flex-shrink-0 w-[150px] sm:w-[180px] md:w-[200px] snap-start") => {
+  const renderMediaCard = (item, extraClasses = "flex-shrink-0 w-[180px] sm:w-[220px] md:w-[260px]") => {
     const isHovered = hoveredItem && hoveredItem.name === item.name;
+    const imageUrl = item.tmdb_backdrop_path ? getPosterUrl(item.tmdb_backdrop_path) : (item.tmdb_poster_path ? getPosterUrl(item.tmdb_poster_path) : null);
+    
     return (
       <div 
         key={item.name}
@@ -297,49 +439,56 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
           setSelectedItem(item);
           handleMouseLeave();
         }}
-        className={`relative group bg-slate-900 rounded-xl overflow-hidden shadow-lg cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-green-950/20 ${extraClasses}`}
+        className={`relative group bg-slate-900 rounded-lg overflow-hidden shadow-lg cursor-pointer transition-all duration-300 hover:scale-105 hover:shadow-black/50 ${extraClasses}`}
       >
-        <div className="h-56 sm:h-64 bg-slate-950 flex items-center justify-center relative overflow-hidden">
-          {item.tmdb_poster_path ? (
+        <div className="w-full aspect-[16/9] bg-slate-950 flex items-center justify-center relative overflow-hidden">
+          {/* Netflix Red "N" Logo at Top Left */}
+          <div className="absolute top-2 left-2 z-20 drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
+            <svg className="h-4 sm:h-5 w-auto" viewBox="0 0 24 36" fill="#E50914" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3.6 0h4.8v18L15.6 0h4.8v36h-4.8V18L8.4 36H3.6V0z"/>
+            </svg>
+          </div>
+
+          {imageUrl ? (
             <img 
-              src={getPosterUrl(item.tmdb_poster_path)} 
+              src={imageUrl} 
               alt={item.tmdb_title || item.name} 
               className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
               loading="lazy"
             />
           ) : (
             <div className="p-4 text-center">
-              <span className="text-green-500 text-4xl block font-extrabold mb-2">
+              <span className="text-green-500 text-2xl block font-extrabold mb-1">
                 {item.name.charAt(0).toUpperCase()}
               </span>
-              <span className="text-xs font-semibold text-slate-500 line-clamp-3 leading-tight uppercase font-mono">
+              <span className="text-[10px] font-semibold text-slate-500 line-clamp-2 leading-tight uppercase font-mono">
                 {item.name}
               </span>
             </div>
           )}
           
           {item.tmdb_rating !== undefined && (
-            <div className="absolute top-2 right-2 bg-black/75 border border-slate-800 rounded px-1.5 py-0.5 text-[10px] font-bold text-yellow-500 z-10">
+            <div className="absolute top-2 right-2 bg-black/75 border border-slate-800 rounded px-1.5 py-0.5 text-[9px] font-bold text-yellow-500 z-20">
               ★ {item.tmdb_rating.toFixed(1)}
             </div>
           )}
-        </div>
 
-        <div className="p-3 space-y-0.5 text-left">
-          <h4 className="text-xs sm:text-sm font-bold text-slate-200 truncate group-hover:text-white transition-colors">
-            {item.tmdb_title || item.name}
-          </h4>
-          <div className="flex items-center justify-between gap-1">
-            <span className="text-[10px] text-slate-500 tracking-wider font-semibold uppercase">
-              {item.type === 'series' ? 'Serial TV' : 'Film'}
-            </span>
-            {item.source && item.source.startsWith("telegram/") && (
-              <span className="text-[9px] text-sky-400 font-bold uppercase font-sans">
-                Telegram
+          {/* Dark gradient overlay at bottom for readability */}
+          <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/90 via-black/40 to-transparent z-10 pointer-events-none" />
+
+          {/* Title & Info overlay */}
+          <div className="absolute bottom-2 left-2 right-2 z-20 text-left">
+            <h4 className="text-[10px] sm:text-xs font-bold text-white line-clamp-1 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+              {item.tmdb_title || item.name}
+            </h4>
+            {item.type === 'series' && (
+              <span className="inline-block mt-0.5 text-[7px] sm:text-[8px] bg-[#E50914] text-white font-extrabold px-1 py-0.5 rounded tracking-wide uppercase">
+                New Episodes
               </span>
             )}
           </div>
-        </div>      </div>
+        </div>
+      </div>
     );
   };
 
@@ -525,7 +674,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               {(featuredItem.tmdb_backdrop_path || featuredItem.tmdb_poster_path) ? (
                 <div 
                   className="absolute inset-0 bg-cover bg-center opacity-95 scale-100 transition-all duration-500"
-                  style={{ backgroundImage: `url(https://image.tmdb.org/t/p/original${featuredItem.tmdb_backdrop_path || featuredItem.tmdb_poster_path})` }}
+                  style={{ backgroundImage: `url(${getPosterUrl(featuredItem.tmdb_backdrop_path || featuredItem.tmdb_poster_path, 'original')})` }}
                 ></div>
               ) : (
                 <div className="absolute inset-0 bg-[#141414]"></div>
@@ -653,11 +802,11 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     </h3>
                   </div>
 
-                  <div className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide snap-x snap-mandatory scroll-smooth">
-                    {filteredSeries.map((item) => (
+                  <DraggableRow>
+                    {filteredSeries.slice(0, 15).map((item) => (
                       renderMediaCard(item)
                     ))}
-                  </div>
+                  </DraggableRow>
                 </div>
               )}
 
@@ -671,15 +820,33 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     </h3>
                   </div>
 
-                  <div className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide snap-x snap-mandatory scroll-smooth">
-                    {filteredMovies.map((item) => (
+                  <DraggableRow>
+                    {filteredMovies.slice(0, 15).map((item) => (
                       renderMediaCard(item)
                     ))}
-                  </div>
+                  </DraggableRow>
                 </div>
               )}
 
-              {/* Row 3: MY LIST SECTION */}
+              {/* Row 3: TOP RATED SECTION */}
+              {activeCategory === 'all' && topRated.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Top Rated Shows
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {topRated.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row 4: MY LIST SECTION */}
               {activeCategory === 'all' && myList.length > 0 && (
                 <div className="space-y-3 text-left">
                   <div className="flex items-center justify-between px-1">
@@ -689,15 +856,33 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     </h3>
                   </div>
 
-                  <div className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide snap-x snap-mandatory scroll-smooth">
-                    {myList.map((item) => (
+                  <DraggableRow>
+                    {myList.slice(0, 15).map((item) => (
                       renderMediaCard(item)
                     ))}
-                  </div>
+                  </DraggableRow>
                 </div>
               )}
 
-              {/* Row 4: VARIETY SHOW SECTION */}
+              {/* Row 5: TELEGRAM COLLECTION SECTION */}
+              {activeCategory === 'all' && telegramCollection.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Telegram Collection
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {telegramCollection.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row 6: VARIETY SHOW SECTION */}
               {(activeCategory === 'all' || activeCategory === 'variety') && filteredVariety.length > 0 && (
                 <div className="space-y-3 text-left">
                   <div className="flex items-center justify-between px-1">
@@ -707,11 +892,11 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                     </h3>
                   </div>
 
-                  <div className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide snap-x snap-mandatory scroll-smooth">
-                    {filteredVariety.map((item) => (
+                  <DraggableRow>
+                    {filteredVariety.slice(0, 15).map((item) => (
                       renderMediaCard(item)
                     ))}
-                  </div>
+                  </DraggableRow>
                 </div>
               )}
 

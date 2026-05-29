@@ -3,8 +3,15 @@ import MediaDetails from './MediaDetails';
 
 // API Helper to handle dev/prod URL matching with HuggingFace Space
 const getApiUrl = (path) => {
-  if (window.location.hostname.endsWith('melancholia112-mutflix.hf.space')) {
+  const { hostname, port, protocol } = window.location;
+  if (hostname.endsWith('melancholia112-mutflix.hf.space')) {
     return path;
+  }
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.') || hostname.startsWith('10.')) {
+    if (port === '8000') {
+      return path;
+    }
+    return `${protocol}//${hostname}:8000${path}`;
   }
   return `https://melancholia112-mutflix.hf.space${path}`;
 };
@@ -156,9 +163,10 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile }) {
   const allItems = [...content.movies, ...content.series];
   const featuredItem = allItems.find(item => item.tmdb_overview && item.tmdb_poster_path) || allItems[0];
 
-  const getPosterUrl = (path) => {
+  const getPosterUrl = (path, size = 'w500') => {
     if (!path) return null;
-    return `https://image.tmdb.org/t/p/w500${path}`;
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    return getApiUrl(`/api/tmdb-image/${size}/${cleanPath}`);
   };
 
   return (
