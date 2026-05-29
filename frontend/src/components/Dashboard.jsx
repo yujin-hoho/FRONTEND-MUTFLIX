@@ -424,6 +424,20 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     .filter(item => item.tmdb_rating !== undefined)
     .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
 
+  const topRatedMovie = content.movies
+    .filter(item => item.tmdb_rating !== undefined)
+    .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
+
+  const topRatedVariety = [...content.series, ...content.movies]
+    .filter(item => {
+      const name = (item.name || '').toLowerCase();
+      const title = (item.tmdb_title || '').toLowerCase();
+      return name.includes('variety') || name.includes('show') || name.includes('reality') || name.includes('talk') || name.includes('korean') || name.includes('stage') ||
+             title.includes('variety') || title.includes('show') || title.includes('reality') || title.includes('talk') || title.includes('knowing bros') || title.includes('running man');
+    })
+    .filter(item => item.tmdb_rating !== undefined)
+    .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
+
   const telegramCollection = [...content.series, ...content.movies]
     .filter(item => item.source && item.source.startsWith("telegram/"));
 
@@ -498,13 +512,6 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
         className={`relative group bg-slate-900 rounded-lg overflow-hidden shadow-lg cursor-pointer transition-all duration-300 hover:scale-105 hover:shadow-black/50 ${extraClasses}`}
       >
         <div className="w-full aspect-[16/9] bg-slate-950 flex items-center justify-center relative overflow-hidden">
-          {/* Netflix Red "N" Logo at Top Left */}
-          <div className="absolute top-2 left-2 z-20 drop-shadow-[0_2px_4px_rgba(0,0,0,0.9)]">
-            <svg className="h-4 sm:h-5 w-auto" viewBox="0 0 24 36" fill="#E50914" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3.6 0h4.8v18L15.6 0h4.8v36h-4.8V18L8.4 36H3.6V0z"/>
-            </svg>
-          </div>
-
           {imageUrl ? (
             <img 
               src={imageUrl} 
@@ -585,12 +592,6 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
               </span>
             </div>
           )}
-          {/* Netflix Red "N" Logo at Top Left */}
-          <div className="absolute top-1.5 left-1.5 z-30 drop-shadow-[0_1.5px_3px_rgba(0,0,0,0.9)]">
-            <svg className="h-3 sm:h-4 w-auto" viewBox="0 0 24 36" fill="#E50914" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3.6 0h4.8v18L15.6 0h4.8v36h-4.8V18L8.4 36H3.6V0z"/>
-            </svg>
-          </div>
         </div>
       </div>
     );
@@ -986,6 +987,24 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 </div>
               )}
 
+              {/* Row: TOP 10 RATED MOVIES SECTION */}
+              {activeCategory === 'all' && topRatedMovie.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Top Rated Movie
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {topRatedMovie.slice(0, 10).map((item, index) => (
+                      renderTop10Card(item, index)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
               {/* Row: SCI-FI & FANTASY */}
               {activeCategory === 'all' && scifiFantasy.length > 0 && (
                 <div className="space-y-3 text-left">
@@ -1016,6 +1035,96 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
 
                   <DraggableRow>
                     {comedyShows.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: HORROR & THRILLER */}
+              {activeCategory === 'all' && horrorThriller.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Horror & Thriller
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {horrorThriller.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: TOP 10 RATED VARIETY SHOWS SECTION */}
+              {activeCategory === 'all' && topRatedVariety.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Top Rated Variety Show
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {topRatedVariety.slice(0, 10).map((item, index) => (
+                      renderTop10Card(item, index)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: MYSTERY & CRIME */}
+              {activeCategory === 'all' && mysteryCrime.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Mystery & Crime
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {mysteryCrime.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: ANIME & ANIMATION */}
+              {activeCategory === 'all' && animeAnimation.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Anime & Animation
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {animeAnimation.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: DOCUMENTARY & HISTORY */}
+              {activeCategory === 'all' && docHistory.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Documentaries & History
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {docHistory.slice(0, 15).map((item) => (
                       renderMediaCard(item)
                     ))}
                   </DraggableRow>
@@ -1058,23 +1167,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 </div>
               )}
 
-              {/* Row 6: VARIETY SHOW SECTION */}
-              {(activeCategory === 'all' || activeCategory === 'variety') && filteredVariety.length > 0 && (
-                <div className="space-y-3 text-left">
-                  <div className="flex items-center justify-between px-1">
-                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
-                      Popular Variety Shows
-                    </h3>
-                  </div>
 
-                  <DraggableRow>
-                    {filteredVariety.slice(0, 15).map((item) => (
-                      renderMediaCard(item)
-                    ))}
-                  </DraggableRow>
-                </div>
-              )}
 
               {/* Fallback if category has no items */}
               {activeCategory === 'variety' && filteredVariety.length === 0 && (
