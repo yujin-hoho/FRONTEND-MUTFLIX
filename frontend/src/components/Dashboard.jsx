@@ -29,24 +29,35 @@ const DraggableRow = ({ children }) => {
     startX.current = e.pageX - rowRef.current.offsetLeft;
     scrollLeft.current = rowRef.current.scrollLeft;
     hasDragged.current = false;
+    if (rowRef.current) {
+      rowRef.current.style.scrollBehavior = 'auto';
+    }
   };
 
   const handleMouseLeave = () => {
+    if (isDown.current && rowRef.current) {
+      rowRef.current.style.scrollBehavior = 'smooth';
+    }
     isDown.current = false;
   };
 
   const handleMouseUp = () => {
+    if (isDown.current && rowRef.current) {
+      rowRef.current.style.scrollBehavior = 'smooth';
+    }
     isDown.current = false;
   };
 
   const handleMouseMove = (e) => {
     if (!isDown.current) return;
     const x = e.pageX - rowRef.current.offsetLeft;
-    const walk = (x - startX.current) * 1.5;
+    const walk = (x - startX.current) * 1.8; // slightly increased multiplier for effortless feel
     if (Math.abs(walk) > 5) {
       hasDragged.current = true;
     }
-    rowRef.current.scrollLeft = scrollLeft.current - walk;
+    if (rowRef.current) {
+      rowRef.current.scrollLeft = scrollLeft.current - walk;
+    }
   };
 
   const handleClickCapture = (e) => {
@@ -64,7 +75,7 @@ const DraggableRow = ({ children }) => {
       onMouseUp={handleMouseUp}
       onMouseMove={handleMouseMove}
       onClickCapture={handleClickCapture}
-      className="flex overflow-x-auto gap-4 pb-4 pt-1 scrollbar-hide select-none active:cursor-grabbing cursor-grab"
+      className="flex overflow-x-auto overflow-y-hidden gap-4 pb-4 pt-1 scrollbar-hide select-none active:cursor-grabbing cursor-grab"
       style={{ scrollBehavior: 'smooth' }}
     >
       {children}
@@ -409,12 +420,57 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     return isVariety && (name.includes(searchQuery.toLowerCase()) || title.includes(searchQuery.toLowerCase()));
   });
 
-  const topRated = [...content.series, ...content.movies]
+  const topRatedTV = content.series
     .filter(item => item.tmdb_rating !== undefined)
     .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
 
   const telegramCollection = [...content.series, ...content.movies]
     .filter(item => item.source && item.source.startsWith("telegram/"));
+
+  // Genre Filters based on tmdb_overview keyword scanning
+  const actionAdventure = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    const name = (item.name || '').toLowerCase();
+    return overview.includes('action') || overview.includes('adventure') || overview.includes('fight') || overview.includes('war') || overview.includes('battle') || name.includes('action');
+  });
+
+  const dramaRomance = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    return overview.includes('romance') || overview.includes('love') || overview.includes('relationship') || overview.includes('drama') || overview.includes('romantic');
+  });
+
+  const scifiFantasy = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    return overview.includes('sci-fi') || overview.includes('science fiction') || overview.includes('fantasy') || overview.includes('alien') || overview.includes('space') || overview.includes('magic') || overview.includes('monster');
+  });
+
+  const comedyShows = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    return overview.includes('comedy') || overview.includes('funny') || overview.includes('humor') || overview.includes('laugh');
+  });
+
+  const horrorThriller = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    const name = (item.name || '').toLowerCase();
+    return overview.includes('horror') || overview.includes('thriller') || overview.includes('scary') || overview.includes('ghost') || overview.includes('demon') || overview.includes('killer') || overview.includes('murder') || overview.includes('mystery') || overview.includes('suspense') || name.includes('horror') || name.includes('thriller');
+  });
+
+  const mysteryCrime = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    const name = (item.name || '').toLowerCase();
+    return overview.includes('mystery') || overview.includes('crime') || overview.includes('detective') || overview.includes('police') || overview.includes('investigation') || overview.includes('prison') || overview.includes('heist') || overview.includes('thief') || name.includes('mystery') || name.includes('crime');
+  });
+
+  const animeAnimation = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    const name = (item.name || '').toLowerCase();
+    return overview.includes('anime') || overview.includes('animation') || overview.includes('cartoon') || overview.includes('animated') || overview.includes('manga') || name.includes('anime') || name.includes('animation');
+  });
+
+  const docHistory = [...content.series, ...content.movies].filter(item => {
+    const overview = (item.tmdb_overview || '').toLowerCase();
+    return overview.includes('documentary') || overview.includes('history') || overview.includes('historical') || overview.includes('biography') || overview.includes('true story') || overview.includes('factual');
+  });
 
   // Pick a featured item for the gorgeous Hero Banner (preferably one with resolved posters)
   const allItems = [...content.movies, ...content.series];
@@ -426,7 +482,7 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
     return getApiUrl(`/api/tmdb-image/${size}/${cleanPath}`);
   };
 
-  const renderMediaCard = (item, extraClasses = "flex-shrink-0 w-[180px] sm:w-[220px] md:w-[260px]") => {
+  const renderMediaCard = (item, extraClasses = "flex-shrink-0 w-[220px] sm:w-[270px] md:w-[320px]") => {
     const isHovered = hoveredItem && hoveredItem.name === item.name;
     const imageUrl = item.tmdb_backdrop_path ? getPosterUrl(item.tmdb_backdrop_path) : (item.tmdb_poster_path ? getPosterUrl(item.tmdb_poster_path) : null);
     
@@ -481,11 +537,59 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
             <h4 className="text-[10px] sm:text-xs font-bold text-white line-clamp-1 drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
               {item.tmdb_title || item.name}
             </h4>
-            {item.type === 'series' && (
-              <span className="inline-block mt-0.5 text-[7px] sm:text-[8px] bg-[#E50914] text-white font-extrabold px-1 py-0.5 rounded tracking-wide uppercase">
-                New Episodes
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTop10Card = (item, index) => {
+    const imageUrl = item.tmdb_poster_path ? getPosterUrl(item.tmdb_poster_path) : null;
+    return (
+      <div 
+        key={item.name}
+        onClick={() => setSelectedItem(item)}
+        className="flex-shrink-0 flex items-end relative select-none cursor-pointer pl-2 pr-2 h-48 sm:h-60 md:h-72 group"
+      >
+        {/* Giant outline rank number */}
+        <span 
+          className="absolute left-0 bottom-[-15px] sm:bottom-[-22px] md:bottom-[-30px] text-[130px] sm:text-[180px] md:text-[230px] font-black text-[#18181b] select-none leading-none font-sans z-10 transition-transform duration-300 group-hover:scale-105"
+          style={{ 
+            WebkitTextStroke: '4px rgba(255,255,255,0.35)',
+            textShadow: '0 0 15px rgba(0,0,0,0.6)'
+          }}
+        >
+          {index + 1}
+        </span>
+
+        {/* Vertical Poster Card with dynamic margin based on single/double digits */}
+        <div className={`w-[110px] sm:w-[150px] md:w-[190px] aspect-[2/3] rounded-md overflow-hidden bg-slate-950 relative z-20 shadow-xl border border-white/5 transition-all duration-300 group-hover:scale-105 group-hover:shadow-black/80 ${
+          index >= 9 
+            ? 'ml-[75px] sm:ml-[110px] md:ml-[145px]' 
+            : 'ml-[50px] sm:ml-[75px] md:ml-[95px]'
+        }`}>
+          {imageUrl ? (
+            <img 
+              src={imageUrl} 
+              alt={item.tmdb_title || item.name} 
+              className="w-full h-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div className="p-4 text-center h-full flex flex-col justify-center">
+              <span className="text-green-500 text-lg block font-extrabold mb-1">
+                {item.name.charAt(0).toUpperCase()}
               </span>
-            )}
+              <span className="text-[9px] font-semibold text-slate-500 line-clamp-2 uppercase font-mono">
+                {item.name}
+              </span>
+            </div>
+          )}
+          {/* Netflix Red "N" Logo at Top Left */}
+          <div className="absolute top-1.5 left-1.5 z-30 drop-shadow-[0_1.5px_3px_rgba(0,0,0,0.9)]">
+            <svg className="h-3 sm:h-4 w-auto" viewBox="0 0 24 36" fill="#E50914" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3.6 0h4.8v18L15.6 0h4.8v36h-4.8V18L8.4 36H3.6V0z"/>
+            </svg>
           </div>
         </div>
       </div>
@@ -828,18 +932,90 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
                 </div>
               )}
 
-              {/* Row 3: TOP RATED SECTION */}
-              {activeCategory === 'all' && topRated.length > 0 && (
+              {/* Row 3: TOP 10 RATED TV SHOWS SECTION */}
+              {activeCategory === 'all' && topRatedTV.length > 0 && (
                 <div className="space-y-3 text-left">
                   <div className="flex items-center justify-between px-1">
                     <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
                       <span className="w-1 h-5 bg-green-500 rounded-full"></span>
-                      Top Rated Shows
+                      Top Rated TV Show
                     </h3>
                   </div>
 
                   <DraggableRow>
-                    {topRated.slice(0, 15).map((item) => (
+                    {topRatedTV.slice(0, 10).map((item, index) => (
+                      renderTop10Card(item, index)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: ACTION & ADVENTURE */}
+              {activeCategory === 'all' && actionAdventure.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Action & Adventure
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {actionAdventure.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: DRAMA & ROMANCE */}
+              {activeCategory === 'all' && dramaRomance.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Drama & Romance
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {dramaRomance.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: SCI-FI & FANTASY */}
+              {activeCategory === 'all' && scifiFantasy.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Sci-Fi & Fantasy
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {scifiFantasy.slice(0, 15).map((item) => (
+                      renderMediaCard(item)
+                    ))}
+                  </DraggableRow>
+                </div>
+              )}
+
+              {/* Row: COMEDY SHOWS */}
+              {activeCategory === 'all' && comedyShows.length > 0 && (
+                <div className="space-y-3 text-left">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                      <span className="w-1 h-5 bg-green-500 rounded-full"></span>
+                      Comedy
+                    </h3>
+                  </div>
+
+                  <DraggableRow>
+                    {comedyShows.slice(0, 15).map((item) => (
                       renderMediaCard(item)
                     ))}
                   </DraggableRow>
