@@ -453,25 +453,7 @@ export default function MovieDetail({ session, activeProfile }) {
   return (
     <>
       <div className="min-h-screen bg-[#141414] text-slate-100 flex flex-col animate-fadeIn">
-        {/* Top Header */}
-        <div className="sticky top-0 z-30 bg-gradient-to-b from-black/90 to-black/20 backdrop-blur-sm px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={onClose}
-              className="text-slate-400 hover:text-white p-2 rounded-full hover:bg-slate-900 transition-all outline-none"
-            >
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-              </svg>
-            </button>
-            <span className="font-extrabold text-xl tracking-tight text-green-500 font-mono">MUTFLIX</span>
-          </div>
-          <div className="text-sm font-semibold text-slate-400 capitalize">
-            Movie Detail
-          </div>
-        </div>
-
-        <div className="flex-1 w-full mx-auto space-y-0">
+        <div className="flex-1 w-full space-y-0">
           {/* Large Cinematic Hero Area */}
           <div className="relative overflow-hidden bg-black min-h-[86vh] group">
             {selectedItem.tmdb_backdrop_path || selectedItem.tmdb_poster_path ? (
@@ -487,10 +469,9 @@ export default function MovieDetail({ session, activeProfile }) {
               </div>
             )}
             
-            <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/45 to-transparent"></div>
-            <div className="absolute inset-0 bg-gradient-to-r from-[#141414] via-[#141414]/30 to-transparent"></div>
-
-            <div className="absolute inset-0 bg-black/35"></div>
+            <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/35 to-transparent"></div>
+            <div className="absolute inset-0 bg-gradient-to-r from-[#141414]/90 via-[#141414]/20 to-transparent"></div>
+            <div className="absolute inset-0 bg-black/20"></div>
             <div className="absolute left-0 right-0 top-0 bottom-0 px-6 sm:px-10 py-14 flex items-center justify-between">
               <div className="max-w-3xl space-y-5">
                 <div className="text-xs tracking-widest text-slate-200 uppercase font-semibold">
