@@ -1285,13 +1285,13 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
             search_params['first_air_date_year'] = str(year)
         search_path = 'search/tv'
         detail_prefix = 'tv'
-        detail_params = {'append_to_response': 'content_ratings,videos,credits'}
+        detail_params = {'append_to_response': 'content_ratings,videos'}
     else:
         if year:
             search_params['primary_release_year'] = str(year)
         search_path = 'search/movie'
         detail_prefix = 'movie'
-        detail_params = {'append_to_response': 'videos,credits'}
+        detail_params = {'append_to_response': 'videos'}
 
     if override:
         language = (override.get('override_language') or '').strip()
@@ -2964,22 +2964,20 @@ def _normalize_folder_name(name):
     return re.sub(r'\s+', ' ', (name or '').strip()).lower()
 
 def _deduplicate_all_content(series_list, movies_list):
-    seen_keys = {}  # normalized_name -> item
-    
-    # 1. Process series first (so TV/Series takes priority over Movies)
+    seen_series_keys = set()
     deduped_series = []
     for item in series_list:
-        norm_name = _normalize_folder_name(item.get('name') or '')
-        if norm_name not in seen_keys:
-            seen_keys[norm_name] = item
+        key = _folder_dedup_key(item)
+        if key not in seen_series_keys:
+            seen_series_keys.add(key)
             deduped_series.append(item)
-            
-    # 2. Process movies next
+
+    seen_movie_keys = set()
     deduped_movies = []
     for item in movies_list:
-        norm_name = _normalize_folder_name(item.get('name') or '')
-        if norm_name not in seen_keys:
-            seen_keys[norm_name] = item
+        key = _folder_dedup_key(item)
+        if key not in seen_movie_keys:
+            seen_movie_keys.add(key)
             deduped_movies.append(item)
             
     return deduped_series, deduped_movies
