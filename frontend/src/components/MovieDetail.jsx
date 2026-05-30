@@ -452,9 +452,9 @@ export default function MovieDetail({ session, activeProfile }) {
 
   return (
     <>
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col animate-fadeIn">
+      <div className="min-h-screen bg-[#141414] text-slate-100 flex flex-col animate-fadeIn">
         {/* Top Header */}
-        <div className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-md px-6 py-4 flex items-center justify-between border-b border-slate-900">
+        <div className="sticky top-0 z-30 bg-gradient-to-b from-black/90 to-black/20 backdrop-blur-sm px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button 
               onClick={onClose}
@@ -471,9 +471,9 @@ export default function MovieDetail({ session, activeProfile }) {
           </div>
         </div>
 
-        <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-8 space-y-8">
+        <div className="flex-1 w-full mx-auto space-y-0">
           {/* Large Cinematic Hero Area */}
-          <div className="relative rounded-2xl overflow-hidden bg-slate-900 aspect-[16/9] md:aspect-[21/9] shadow-2xl group border border-slate-800">
+          <div className="relative overflow-hidden bg-black min-h-[86vh] group">
             {selectedItem.tmdb_backdrop_path || selectedItem.tmdb_poster_path ? (
               <div 
                 className="absolute inset-0 bg-cover bg-center transition-transform duration-1000 group-hover:scale-105"
@@ -487,47 +487,51 @@ export default function MovieDetail({ session, activeProfile }) {
               </div>
             )}
             
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent"></div>
-            <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/20 to-transparent"></div>
+            <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/45 to-transparent"></div>
+            <div className="absolute inset-0 bg-gradient-to-r from-[#141414] via-[#141414]/30 to-transparent"></div>
 
-            {/* Title & Info */}
-            <div className="absolute bottom-0 left-0 right-0 p-6 sm:p-10 space-y-4">
-              <h2 className="text-3xl sm:text-5xl font-black text-white tracking-tight drop-shadow-md">
-                {selectedItem.tmdb_title || selectedItem.name}
-              </h2>
-              <div className="flex flex-wrap items-center gap-3 text-xs sm:text-sm text-slate-300">
-                {selectedItem.tmdb_rating !== undefined && (
-                  <span className="flex items-center gap-1 bg-yellow-500/15 border border-yellow-500/30 text-yellow-500 px-2 py-0.5 rounded-md font-extrabold">
-                    ★ {selectedItem.tmdb_rating.toFixed(1)}
-                  </span>
-                )}
-                <span className="bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700">
-                  Movie
-                </span>
-                <span className="bg-green-500/10 border border-green-500/20 text-green-400 px-2 py-0.5 rounded font-extrabold uppercase tracking-wider">
-                  Google Drive
-                </span>
+            <div className="absolute inset-0 bg-black/35"></div>
+            <div className="absolute left-0 right-0 top-0 bottom-0 px-6 sm:px-10 py-14 flex items-center justify-between">
+              <div className="max-w-3xl space-y-5">
+                <div className="text-xs tracking-widest text-slate-200 uppercase font-semibold">
+                  {selectedItem.tmdb_rating !== undefined ? `${selectedItem.tmdb_rating.toFixed(1)} / 10` : 'N/A'} | Hollywood | English
+                </div>
+                <h2 className="text-5xl sm:text-7xl font-black text-white tracking-wide leading-none">
+                  {selectedItem.tmdb_title || selectedItem.name}
+                  <span className="text-red-600">.</span>
+                </h2>
+                <p className="text-slate-200 text-sm sm:text-base leading-relaxed max-w-2xl">
+                  {selectedItem.tmdb_overview || 'Detailed synopsis is currently unavailable. The video remains fully playable.'}
+                </p>
+                <div className="flex flex-wrap gap-3 pt-2">
+                  {selectedItemVideos.length > 0 ? (
+                    <button
+                      onClick={() => handlePlayVideo(selectedItemVideos[0])}
+                      className="py-3 px-7 bg-red-600 hover:bg-red-500 text-white font-bold rounded-full transition-all flex items-center gap-2 outline-none active:scale-95 cursor-pointer"
+                    >
+                      <span className="text-lg">▶</span>
+                      WATCH NOW
+                    </button>
+                  ) : (
+                    <button
+                      disabled
+                      className="py-3 px-7 bg-white/25 text-white/70 font-bold rounded-full flex items-center gap-2 cursor-not-allowed"
+                    >
+                      No playable files
+                    </button>
+                  )}
+                  <button className="py-3 px-7 border-2 border-white/70 text-white rounded-full font-bold">
+                    19.99$ BLURAY DISK
+                  </button>
+                </div>
               </div>
-
-              {/* Play Button or videos loading list */}
-              <div className="flex flex-wrap gap-3 pt-2">
-                {selectedItemVideos.length > 0 ? (
-                  <button
-                    onClick={() => handlePlayVideo(selectedItemVideos[0])}
-                    className="py-3 px-6 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-green-950/20 flex items-center gap-2 outline-none active:scale-95 cursor-pointer"
-                  >
-                    <svg className="w-5 h-5 fill-white" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z" />
-                    </svg>
-                    Play Now
-                  </button>
-                ) : (
-                  <button
-                    disabled
-                    className="py-3 px-6 bg-slate-800 text-slate-500 font-bold rounded-xl flex items-center gap-2 cursor-not-allowed"
-                  >
-                    No playable files
-                  </button>
+              <div className="hidden md:block w-[300px] h-[450px] border border-white/40 shadow-2xl overflow-hidden">
+                {(selectedItem.tmdb_poster_path || selectedItem.tmdb_backdrop_path) && (
+                  <img
+                    src={getPosterUrl(selectedItem.tmdb_poster_path || selectedItem.tmdb_backdrop_path, 'w500')}
+                    alt={selectedItem.tmdb_title || selectedItem.name}
+                    className="w-full h-full object-cover"
+                  />
                 )}
               </div>
             </div>
@@ -537,7 +541,7 @@ export default function MovieDetail({ session, activeProfile }) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Left Column: Synopsis */}
             <div className="lg:col-span-1 space-y-6">
-              <div className="bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-4">
+              <div className="bg-[#181818] border border-white/10 p-6 rounded-lg space-y-4">
                 <h3 className="text-lg font-bold text-white border-b border-slate-800 pb-2">Synopsis</h3>
                 <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
                   {selectedItem.tmdb_overview || 'Detailed synopsis is currently unavailable. The video remains fully playable.'}
@@ -547,7 +551,7 @@ export default function MovieDetail({ session, activeProfile }) {
 
             {/* Right Column: Files / Videos List */}
             <div className="lg:col-span-2 space-y-6">
-              <div className="bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6">
+              <div className="bg-[#181818] border border-white/10 p-6 rounded-lg space-y-6">
                 <h3 className="text-lg font-bold text-white border-b border-slate-800 pb-2">Playable Video Source</h3>
                 {isVideosLoading ? (
                   <div className="flex flex-col items-center justify-center py-10 space-y-4">

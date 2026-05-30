@@ -314,6 +314,8 @@ export default function SeriesDetail({ session, activeProfile }) {
   const [videoStreamDetails, setVideoStreamDetails] = useState(null);
   const [continueWatching, setContinueWatching] = useState([]);
   const [activeSeason, setActiveSeason] = useState(1);
+  const [tmdbId, setTmdbId] = useState(null);
+  const [tmdbEpisodeMap, setTmdbEpisodeMap] = useState({});
 
   useEffect(() => {
     if (!selectedItem && id) {
@@ -382,6 +384,54 @@ export default function SeriesDetail({ session, activeProfile }) {
     };
     fetchVideos();
   }, [selectedItem, session.token]);
+
+  useEffect(() => {
+    const fetchTmdbId = async () => {
+      if (!selectedItem) return;
+      try {
+        const queryName = selectedItem.name || selectedItem.tmdb_title;
+        const res = await fetch(getApiUrl(`/api/tmdb-meta/tv?name=${encodeURIComponent(queryName)}`), {
+          headers: { 'x-access-token': session.token }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const id = data?.tmdb_id || data?.payload?.tmdb_id || null;
+        setTmdbId(id);
+      } catch (_) {}
+    };
+    fetchTmdbId();
+  }, [selectedItem, session.token]);
+
+  useEffect(() => {
+    const fetchSeasonEpisodes = async () => {
+      const seasonNums = Array.from(
+        new Set(
+          selectedItemVideos
+            .map((v) => v.season)
+            .filter((s) => s !== undefined && s !== null)
+        )
+      ).sort((a, b) => a - b);
+      if (!tmdbId || !seasonNums.length) return;
+      const nextMap = {};
+      await Promise.all(
+        seasonNums.map(async (seasonNum) => {
+          try {
+            const res = await fetch(getApiUrl(`/api/tmdb/tv/${tmdbId}/season/${seasonNum}`), {
+              headers: { 'x-access-token': session.token }
+            });
+            if (!res.ok) return;
+            const data = await res.json();
+            const eps = Array.isArray(data?.episodes) ? data.episodes : [];
+            eps.forEach((ep) => {
+              nextMap[`${seasonNum}-${ep.episode_number}`] = ep.name;
+            });
+          } catch (_) {}
+        })
+      );
+      setTmdbEpisodeMap(nextMap);
+    };
+    fetchSeasonEpisodes();
+  }, [tmdbId, selectedItemVideos, session.token]);
 
   const handlePlayVideo = async (video) => {
     setPlayingVideo(video);
@@ -475,9 +525,9 @@ export default function SeriesDetail({ session, activeProfile }) {
 
   return (
     <>
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col animate-fadeIn">
+      <div className="min-h-screen bg-[#141414] text-slate-100 flex flex-col animate-fadeIn">
         {/* Top Header */}
-        <div className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-md px-6 py-4 flex items-center justify-between border-b border-slate-900">
+        <div className="sticky top-0 z-30 bg-gradient-to-b from-black/90 to-black/20 backdrop-blur-sm px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button 
               onClick={onClose}
@@ -494,9 +544,9 @@ export default function SeriesDetail({ session, activeProfile }) {
           </div>
         </div>
 
-        <div className="flex-1 max-w-5xl w-full mx-auto p-4 sm:p-8 space-y-8">
+        <div className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-8 space-y-10">
           {/* Scaled-down Cinematic Hero Area */}
-          <div className="relative rounded-2xl overflow-hidden bg-slate-900 h-[220px] sm:h-[280px] md:h-[350px] shadow-2xl group border border-slate-800">
+          <div className="relative overflow-hidden bg-black h-[58vh] min-h-[420px] max-h-[700px] rounded-lg shadow-2xl group">
             {selectedItem.tmdb_backdrop_path || selectedItem.tmdb_poster_path ? (
               <div 
                 className="absolute inset-0 bg-cover bg-center transition-transform duration-1000 group-hover:scale-105"
@@ -510,8 +560,8 @@ export default function SeriesDetail({ session, activeProfile }) {
               </div>
             )}
             
-            <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent"></div>
-            <div className="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-950/20 to-transparent"></div>
+            <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/45 to-transparent"></div>
+            <div className="absolute inset-0 bg-gradient-to-r from-[#141414] via-[#141414]/30 to-transparent"></div>
 
             {/* Title & Info */}
             <div className="absolute bottom-0 left-0 right-0 p-4 sm:p-8 space-y-3">
@@ -536,7 +586,7 @@ export default function SeriesDetail({ session, activeProfile }) {
                 {selectedItemVideos.length > 0 ? (
                   <button
                     onClick={() => handlePlayVideo(selectedItemVideos[0])}
-                    className="py-2.5 px-5 bg-green-600 hover:bg-green-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-green-950/20 flex items-center gap-2 outline-none active:scale-95 cursor-pointer text-sm"
+                    className="py-2.5 px-5 bg-white hover:bg-white/90 text-black font-bold rounded-md transition-all flex items-center gap-2 outline-none active:scale-95 cursor-pointer text-sm"
                   >
                     <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
                       <path d="M8 5v14l11-7z" />
@@ -546,7 +596,7 @@ export default function SeriesDetail({ session, activeProfile }) {
                 ) : (
                   <button
                     disabled
-                    className="py-2.5 px-5 bg-slate-800 text-slate-500 font-bold rounded-xl flex items-center gap-2 cursor-not-allowed text-sm"
+                    className="py-2.5 px-5 bg-white/25 text-white/70 font-bold rounded-md flex items-center gap-2 cursor-not-allowed text-sm"
                   >
                     No playable files
                   </button>
@@ -559,7 +609,7 @@ export default function SeriesDetail({ session, activeProfile }) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Left Column: Synopsis */}
             <div className="lg:col-span-1 space-y-6">
-              <div className="bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-4">
+              <div className="bg-[#181818] border border-white/10 p-6 rounded-lg space-y-4">
                 <h3 className="text-lg font-bold text-white border-b border-slate-800 pb-2">Synopsis</h3>
                 <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
                   {selectedItem.tmdb_overview || 'Detailed synopsis is currently unavailable. The video remains fully playable.'}
@@ -569,7 +619,7 @@ export default function SeriesDetail({ session, activeProfile }) {
 
             {/* Right Column: Episode Selector (Occupying the Cast & Crew equivalent column in layout) */}
             <div className="lg:col-span-2 space-y-6">
-              <div className="bg-slate-900/40 border border-slate-900 p-6 rounded-2xl space-y-6">
+              <div className="bg-[#181818] border border-white/10 p-6 rounded-lg space-y-6">
                 <h3 className="text-lg font-bold text-white border-b border-slate-800 pb-2">Episodes</h3>
                 {isVideosLoading ? (
                   <div className="flex flex-col items-center justify-center py-10 space-y-4">
@@ -617,7 +667,7 @@ export default function SeriesDetail({ session, activeProfile }) {
                               </div>
                               <div className="space-y-1 text-left">
                                 <h4 className="text-sm font-bold text-slate-200 group-hover:text-white transition-colors line-clamp-1">
-                                  {video.name}
+                                  {tmdbEpisodeMap[`${activeSeason}-${video.episode || (idx + 1)}`] || video.name}
                                 </h4>
                                 <span className="text-[11px] text-slate-500 font-medium font-mono">
                                   Google Drive Source

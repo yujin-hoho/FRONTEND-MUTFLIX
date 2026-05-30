@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 // API Helper to handle dev/prod URL matching with HuggingFace Space
@@ -318,73 +318,76 @@ export default function Dashboard({ session, activeProfile, onSwitchProfile, onL
            title.includes('variety') || title.includes('show') || title.includes('reality') || title.includes('talk') || title.includes('knowing bros') || title.includes('running man');
   };
 
+  const normalizedSearchQuery = useMemo(() => searchQuery.toLowerCase(), [searchQuery]);
+  const allMedia = useMemo(() => [...content.series, ...content.movies], [content.series, content.movies]);
+
   // Filters logic (Prioritizes showing the clean TMDB title over plain folder names)
-  const filteredSeries = content.series.filter(item => {
+  const filteredSeries = useMemo(() => content.series.filter(item => {
     const title = (item.tmdb_title || item.name || '').toLowerCase();
-    return item.type === 'series' && title.includes(searchQuery.toLowerCase());
-  });
+    return item.type === 'series' && title.includes(normalizedSearchQuery);
+  }), [content.series, normalizedSearchQuery]);
 
-  const filteredMovies = content.movies.filter(item => {
+  const filteredMovies = useMemo(() => content.movies.filter(item => {
     const title = (item.tmdb_title || item.name || '').toLowerCase();
-    return item.type === 'movie' && title.includes(searchQuery.toLowerCase());
-  });
+    return item.type === 'movie' && title.includes(normalizedSearchQuery);
+  }), [content.movies, normalizedSearchQuery]);
 
-  const filteredVariety = content.series.filter(item => {
+  const filteredVariety = useMemo(() => content.series.filter(item => {
     const title = (item.tmdb_title || item.name || '').toLowerCase();
-    return item.type === 'series' && isVarietyShow(item) && title.includes(searchQuery.toLowerCase());
-  });
+    return item.type === 'series' && isVarietyShow(item) && title.includes(normalizedSearchQuery);
+  }), [content.series, normalizedSearchQuery]);
 
-  const topRatedTV = content.series
+  const topRatedTV = useMemo(() => [...content.series]
     .filter(item => item.type === 'series' && item.tmdb_rating !== undefined)
-    .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
+    .sort((a, b) => b.tmdb_rating - a.tmdb_rating), [content.series]);
 
-  const topRatedMovie = content.movies
+  const topRatedMovie = useMemo(() => [...content.movies]
     .filter(item => item.type === 'movie' && item.tmdb_rating !== undefined)
-    .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
+    .sort((a, b) => b.tmdb_rating - a.tmdb_rating), [content.movies]);
 
-  const topRatedVariety = content.series
+  const topRatedVariety = useMemo(() => [...content.series]
     .filter(item => item.type === 'series' && isVarietyShow(item) && item.tmdb_rating !== undefined)
-    .sort((a, b) => b.tmdb_rating - a.tmdb_rating);
+    .sort((a, b) => b.tmdb_rating - a.tmdb_rating), [content.series]);
 
-  const telegramCollection = [...content.series, ...content.movies]
-    .filter(item => item.source && item.source.startsWith("telegram/"));
+  const telegramCollection = useMemo(() => allMedia
+    .filter(item => item.source && item.source.startsWith("telegram/")), [allMedia]);
 
   // Genre Filters based on TMDB genres & tmdb_overview fallback
-  const actionAdventure = [...content.series, ...content.movies].filter(item => 
+  const actionAdventure = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['action', 'adventure', 'fight', 'war', 'battle'], [28, 12, 10759])
-  );
+  ), [allMedia]);
 
-  const dramaRomance = [...content.series, ...content.movies].filter(item => 
+  const dramaRomance = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['romance', 'love', 'relationship', 'drama', 'romantic'], [18, 10749])
-  );
+  ), [allMedia]);
 
-  const scifiFantasy = [...content.series, ...content.movies].filter(item => 
+  const scifiFantasy = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['sci-fi', 'science fiction', 'fantasy', 'alien', 'space', 'magic', 'monster'], [878, 14, 10765])
-  );
+  ), [allMedia]);
 
-  const comedyShows = [...content.series, ...content.movies].filter(item => 
+  const comedyShows = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['comedy', 'funny', 'humor', 'laugh'], [35])
-  );
+  ), [allMedia]);
 
-  const horrorThriller = [...content.series, ...content.movies].filter(item => 
+  const horrorThriller = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['horror', 'thriller', 'scary', 'ghost', 'demon', 'killer', 'murder', 'suspense'], [27, 53])
-  );
+  ), [allMedia]);
 
-  const mysteryCrime = [...content.series, ...content.movies].filter(item => 
+  const mysteryCrime = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['mystery', 'crime', 'detective', 'police', 'investigation', 'prison', 'heist', 'thief'], [9648, 80])
-  );
+  ), [allMedia]);
 
-  const animeAnimation = [...content.series, ...content.movies].filter(item => 
+  const animeAnimation = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['anime', 'animation', 'cartoon', 'animated', 'manga'], [16])
-  );
+  ), [allMedia]);
 
-  const docHistory = [...content.series, ...content.movies].filter(item => 
+  const docHistory = useMemo(() => allMedia.filter(item =>
     hasGenre(item, ['documentary', 'history', 'historical', 'biography', 'true story', 'factual'], [99, 36])
-  );
+  ), [allMedia]);
 
   // Pick a featured item for the gorgeous Hero Banner (preferably one with resolved posters)
-  const allItems = [...content.movies, ...content.series];
-  const featuredItem = allItems.find(item => item.tmdb_overview && item.tmdb_poster_path) || allItems[0];
+  const allItems = useMemo(() => [...content.movies, ...content.series], [content.movies, content.series]);
+  const featuredItem = useMemo(() => allItems.find(item => item.tmdb_overview && item.tmdb_poster_path) || allItems[0], [allItems]);
 
   const getPosterUrl = (path, size = 'w500') => {
     if (!path) return null;
