@@ -3,6 +3,11 @@ import { AlertCircle, CheckCircle2, ChevronDown, Eye, EyeOff, KeyRound, Loader2,
 import './App.css'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space').replace(/\/$/, '')
+const DASHBOARD_CACHE_KEY = 'mutflix_dashboard_cache_v1'
+const PROFILES_CACHE_KEY = 'mutflix_profiles_cache_v1'
+const DASHBOARD_CACHE_TTL = 6 * 60 * 60 * 1000
+const MAX_CACHED_PROFILES = 3
+const MAX_CACHED_ITEMS_PER_TYPE = 80
 
 function createProfileId() {
   if (crypto.randomUUID) return crypto.randomUUID()
@@ -36,6 +41,15 @@ function getItemKey(item) {
   return `${item.type || item.media_type || 'item'}-${item.source || ''}-${item.folder_name || item.name || getTitle(item)}`
 }
 
+function getItemPath(item) {
+  return item.source || item.folder_name || item.name || ''
+}
+
+function getMediaType(item) {
+  const mediaType = String(item.media_type || item.type || '').toLowerCase()
+  return mediaType === 'movie' ? 'movie' : 'series'
+}
+
 function getGenres(item) {
   return (item.tmdb_genres || item.genres || [])
     .map((genre) => typeof genre === 'string' ? genre : genre.name)
@@ -44,6 +58,100 @@ function getGenres(item) {
 
 function getRating(item) {
   return Number(item.tmdb_rating || item.vote_average || 0)
+}
+
+function getWatchProgress(item) {
+  const position = Number(item.position_ms || 0)
+  const duration = Number(item.duration_ms || 0)
+  if (duration <= 0) return 0
+  return Math.min(100, Math.max(0, (position / duration) * 100))
+}
+
+function hashString(value) {
+  return [...value].reduce((hash, character) => ((hash << 5) - hash + character.charCodeAt(0)) | 0, 0)
+}
+
+function getRotationKey(profileId) {
+  const sixHours = 6 * 60 * 60 * 1000
+  return `${profileId}-${Math.floor(Date.now() / sixHours)}`
+}
+
+function rotateItems(items, seed) {
+  if (items.length < 2) return items
+  const offset = Math.abs(hashString(seed)) % items.length
+  return [...items.slice(offset), ...items.slice(0, offset)]
+}
+
+function preloadImage(url) {
+  if (!url) return Promise.resolve()
+
+  return new Promise((resolve) => {
+    const image = new Image()
+    const timeout = window.setTimeout(resolve, 8000)
+    const finish = () => {
+      window.clearTimeout(timeout)
+      resolve()
+    }
+    image.onload = finish
+    image.onerror = finish
+    image.src = url
+  })
+}
+
+function readDashboardCache(profileId) {
+  try {
+    const cache = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || '{}')
+    const entry = cache[profileId]
+    if (!entry) return null
+    if (!Array.isArray(entry.movies) || !Array.isArray(entry.series)) return null
+    return {
+      ...entry,
+      movies: entry.movies.map((item) => ({ ...item, media_type: 'movie', type: 'movie' })),
+      series: entry.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' })),
+    }
+  } catch {
+    localStorage.removeItem(DASHBOARD_CACHE_KEY)
+    return null
+  }
+}
+
+function writeDashboardCache(profileId, { history, movies, series }) {
+  try {
+    const cache = JSON.parse(localStorage.getItem(DASHBOARD_CACHE_KEY) || '{}')
+    const entries = Object.entries(cache)
+      .filter(([, entry]) => entry && Date.now() - entry.cachedAt <= DASHBOARD_CACHE_TTL)
+      .sort(([, a], [, b]) => b.cachedAt - a.cachedAt)
+      .slice(0, MAX_CACHED_PROFILES - 1)
+
+    const nextCache = Object.fromEntries(entries)
+    nextCache[profileId] = {
+      cachedAt: Date.now(),
+      history: Array.isArray(history) ? history.slice(0, 20) : [],
+      movies: movies.slice(0, MAX_CACHED_ITEMS_PER_TYPE),
+      series: series.slice(0, MAX_CACHED_ITEMS_PER_TYPE),
+    }
+    localStorage.setItem(DASHBOARD_CACHE_KEY, JSON.stringify(nextCache))
+  } catch {
+    localStorage.removeItem(DASHBOARD_CACHE_KEY)
+  }
+}
+
+function readProfilesCache() {
+  try {
+    const profiles = JSON.parse(localStorage.getItem(PROFILES_CACHE_KEY) || '[]')
+    return Array.isArray(profiles) ? profiles.slice(0, 12) : []
+  } catch {
+    localStorage.removeItem(PROFILES_CACHE_KEY)
+    return []
+  }
+}
+
+function writeProfilesCache(profiles) {
+  try {
+    localStorage.setItem(PROFILES_CACHE_KEY, JSON.stringify(profiles.slice(0, 12)))
+  } catch {
+    localStorage.removeItem(PROFILES_CACHE_KEY)
+  }
 }
 
 function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
@@ -105,6 +213,12 @@ function App() {
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [activeNav, setActiveNav] = useState('home')
+  const [detailData, setDetailData] = useState({
+    item: null,
+    videos: [],
+    isLoading: false,
+    error: null,
+  })
   const [newProfileName, setNewProfileName] = useState('')
   const [profileData, setProfileData] = useState({
     watchHistory: [],
@@ -150,11 +264,18 @@ function App() {
         }
 
         if (!ignore) {
-          setProfiles(Array.isArray(data) ? data : [])
+          const nextProfiles = Array.isArray(data) ? data : []
+          setProfiles(nextProfiles)
+          writeProfilesCache(nextProfiles)
         }
       } catch (error) {
         if (!ignore) {
-          setProfileMessage(error.message)
+          const cachedProfiles = readProfilesCache()
+          if (cachedProfiles.length) {
+            setProfiles(cachedProfiles)
+          } else {
+            setProfileMessage(error.message)
+          }
         }
       } finally {
         if (!ignore) {
@@ -176,6 +297,8 @@ function App() {
     let ignore = false
 
     async function loadDashboardData() {
+      const cachedDashboard = readDashboardCache(selectedProfile.id)
+
       setProfileData((currentData) => ({
         ...currentData,
         isLoading: true,
@@ -186,6 +309,28 @@ function App() {
         isLoading: true,
         error: null,
       }))
+
+      if (cachedDashboard) {
+        const rotationKey = getRotationKey(selectedProfile.id)
+        const heroCandidates = [...cachedDashboard.movies, ...cachedDashboard.series]
+          .filter((item) => getBackdropUrl(item))
+        const heroItem = rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
+        await preloadImage(heroItem ? getBackdropUrl(heroItem) : '')
+
+        if (!ignore) {
+          setProfileData({
+            watchHistory: cachedDashboard.history || [],
+            isLoading: false,
+            error: null,
+          })
+          setCatalogData({
+            movies: cachedDashboard.movies,
+            series: cachedDashboard.series,
+            isLoading: false,
+            error: null,
+          })
+        }
+      }
 
       try {
         const headers = { 'x-access-token': authToken }
@@ -204,22 +349,12 @@ function App() {
           throw new Error(catalog.message || catalog.error || 'Failed to load catalog.')
         }
 
-        let movies = Array.isArray(catalog.movies) ? catalog.movies : []
-        let series = Array.isArray(catalog.series) ? catalog.series : []
-
-        if (!ignore) {
-          setProfileData({
-            watchHistory: Array.isArray(historyData) ? historyData : [],
-            isLoading: false,
-            error: null,
-          })
-          setCatalogData({
-            movies,
-            series,
-            isLoading: false,
-            error: null,
-          })
-        }
+        let movies = Array.isArray(catalog.movies)
+          ? catalog.movies.map((item) => ({ ...item, media_type: 'movie', type: 'movie' }))
+          : []
+        let series = Array.isArray(catalog.series)
+          ? catalog.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' }))
+          : []
 
         const itemsNeedingMetadata = [
           ...movies
@@ -259,6 +394,16 @@ function App() {
           // Keep the base catalog visible when optional TMDB enrichment is unavailable.
         }
 
+        const rotationKey = getRotationKey(selectedProfile.id)
+        const heroCandidates = [...movies, ...series].filter((item) => getBackdropUrl(item))
+        const heroItem = rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
+        await preloadImage(heroItem ? getBackdropUrl(heroItem) : '')
+        writeDashboardCache(selectedProfile.id, {
+          history: historyData,
+          movies,
+          series,
+        })
+
         if (!ignore) {
           setProfileData({
             watchHistory: Array.isArray(historyData) ? historyData : [],
@@ -273,7 +418,7 @@ function App() {
           })
         }
       } catch (error) {
-        if (!ignore) {
+        if (!ignore && !cachedDashboard) {
           setProfileData({
             watchHistory: [],
             isLoading: false,
@@ -313,6 +458,8 @@ function App() {
     localStorage.removeItem('mutflix_token')
     localStorage.removeItem('mutflix_user')
     localStorage.removeItem('mutflix_profile')
+    localStorage.removeItem(DASHBOARD_CACHE_KEY)
+    localStorage.removeItem(PROFILES_CACHE_KEY)
     sessionStorage.removeItem('mutflix_token')
     sessionStorage.removeItem('mutflix_user')
     sessionStorage.removeItem('mutflix_profile')
@@ -321,6 +468,47 @@ function App() {
     setCurrentUser(null)
     setSelectedProfile(null)
     setProfiles([])
+  }
+
+  async function handleOpenDetail(item) {
+    const detailItem = { ...item, media_type: getMediaType(item) }
+    const itemPath = getItemPath(detailItem)
+    setDetailData({
+      item: detailItem,
+      videos: [],
+      isLoading: true,
+      error: null,
+    })
+
+    if (!itemPath || !navigator.onLine) {
+      setDetailData((currentData) => ({ ...currentData, isLoading: false }))
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, {
+        headers: { 'x-access-token': authToken },
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.message || data.error || 'Failed to load title details.')
+
+      setDetailData((currentData) => ({
+        item: {
+          ...currentData.item,
+          ...(data.catalog_item || {}),
+          media_type: currentData.item.media_type,
+        },
+        videos: Array.isArray(data.videos) ? data.videos : [],
+        isLoading: false,
+        error: null,
+      }))
+    } catch (error) {
+      setDetailData((currentData) => ({
+        ...currentData,
+        isLoading: false,
+        error: error.message,
+      }))
+    }
   }
 
   async function handleAddProfile(event) {
@@ -352,7 +540,11 @@ function App() {
         throw new Error(data.message || data.error || 'Failed to add profile.')
       }
 
-      setProfiles((currentProfiles) => [...currentProfiles, nextProfile])
+      setProfiles((currentProfiles) => {
+        const nextProfiles = [...currentProfiles, nextProfile]
+        writeProfilesCache(nextProfiles)
+        return nextProfiles
+      })
       setNewProfileName('')
       setShowAddProfile(false)
     } catch (error) {
@@ -525,14 +717,14 @@ function App() {
       )
     }
 
-    const featuredItem = catalogData.movies.find((item) => getPosterUrl(item, 'w780'))
-      || catalogData.series.find((item) => getPosterUrl(item, 'w780'))
-      || catalogData.movies[0]
-      || catalogData.series[0]
-    const featuredBackdrop = featuredItem
-      ? getBackdropUrl(featuredItem) || getPosterUrl(featuredItem, 'original')
-      : ''
+    const rotationKey = getRotationKey(selectedProfile.id)
     const catalogItems = [...catalogData.movies, ...catalogData.series]
+    const featuredCandidates = catalogItems.filter((item) => getBackdropUrl(item))
+    const featuredItem = rotateItems(featuredCandidates, `${rotationKey}-hero`)[0]
+      || catalogItems[0]
+    const featuredBackdrop = featuredItem
+      ? getBackdropUrl(featuredItem)
+      : ''
     const normalizedQuery = searchQuery.trim().toLowerCase()
     const searchResults = normalizedQuery
       ? catalogItems.filter((item) => getTitle(item).toLowerCase().includes(normalizedQuery))
@@ -540,7 +732,10 @@ function App() {
     const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance']
       .map((genre) => ({
         genre,
-        items: catalogItems.filter((item) => getGenres(item).includes(genre)),
+        items: rotateItems(
+          catalogItems.filter((item) => getGenres(item).includes(genre)),
+          `${rotationKey}-${genre}`,
+        ),
       }))
       .filter((row) => row.items.length)
     const topRatedMovies = [...catalogData.movies]
@@ -549,14 +744,23 @@ function App() {
     const topRatedSeries = [...catalogData.series]
       .filter((item) => getRating(item) > 0)
       .sort((a, b) => getRating(b) - getRating(a))
-    const catalogRows = [
+    const catalogRows = rotateItems([
       genreRows[0],
-      topRatedSeries.length ? { genre: 'Top Rated TV Shows', items: topRatedSeries } : null,
+      topRatedSeries.length ? { genre: 'Top Rated TV Shows', items: topRatedSeries, ranked: true } : null,
       genreRows[1],
       genreRows[2],
-      topRatedMovies.length ? { genre: 'Top Rated Movies', items: topRatedMovies } : null,
+      topRatedMovies.length ? { genre: 'Top Rated Movies', items: topRatedMovies, ranked: true } : null,
       ...genreRows.slice(3),
-    ].filter(Boolean)
+    ].filter(Boolean), `${rotationKey}-rows`)
+
+    if (detailData.item) {
+      return (
+        <DetailPage
+          detailData={detailData}
+          onBack={() => setDetailData({ item: null, videos: [], isLoading: false, error: null })}
+        />
+      )
+    }
 
     return (
       <main className="dashboard-page">
@@ -615,7 +819,7 @@ function App() {
               {featuredItem?.tmdb_overview
                 || 'Explore movies and series from your Mutflix catalog.'}
             </p>
-            <button className="play-button" type="button">
+            <button className="play-button" onClick={() => featuredItem && handleOpenDetail(featuredItem)} type="button">
               <Play size={22} fill="currentColor" />
               <span>Play</span>
             </button>
@@ -636,12 +840,13 @@ function App() {
                 <CatalogRow
                   emptyMessage="No titles found."
                   items={searchResults}
+                  onOpenDetail={handleOpenDetail}
                   title={`Search results for "${searchQuery.trim()}"`}
                 />
               )}
               <HistoryRow items={profileData.watchHistory} />
               {catalogRows.map((row) => (
-                <CatalogRow items={row.items} key={row.genre} title={row.genre} />
+                <CatalogRow items={row.items} key={row.genre} onOpenDetail={handleOpenDetail} ranked={row.ranked} title={row.genre} />
               ))}
             </>
           )}
@@ -777,7 +982,67 @@ function App() {
   )
 }
 
-function CatalogRow({ emptyMessage, items, title }) {
+function DetailPage({ detailData, onBack }) {
+  const { error, isLoading, item, videos } = detailData
+  const isMovie = getMediaType(item) === 'movie'
+  const backdrop = getBackdropUrl(item)
+  const genres = getGenres(item)
+  const firstVideo = videos[0]
+
+  return (
+    <main className="detail-page">
+      <button className="detail-back" onClick={onBack} type="button">
+        <span aria-hidden="true">←</span>
+        <span>Back</span>
+      </button>
+
+      <section className="detail-hero">
+        {backdrop && <img alt="" className="detail-backdrop" src={backdrop} />}
+        <div className="detail-shade" />
+        <div className="detail-copy">
+          <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
+          <h1>{getTitle(item)}</h1>
+          <div className="detail-meta">
+            {getRating(item) > 0 && <span className="detail-rating">TMDB {getRating(item).toFixed(1)}</span>}
+            {genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
+          </div>
+          <p className="detail-overview">{item.tmdb_overview || item.overview || 'No description is available for this title yet.'}</p>
+          <button className="play-button" disabled={!firstVideo || isLoading} type="button">
+            <Play fill="currentColor" size={20} />
+            <span>{isLoading ? 'Loading...' : firstVideo ? 'Play' : 'Unavailable offline'}</span>
+          </button>
+        </div>
+      </section>
+
+      <section className="detail-body">
+        {error && <p className="detail-error">{error}</p>}
+        {!isMovie && (
+          <>
+            <h2>Episodes</h2>
+            {isLoading && <p className="detail-muted">Loading episodes...</p>}
+            {!isLoading && !videos.length && <p className="detail-muted">Episodes are unavailable offline.</p>}
+            <div className="episode-list">
+              {videos.map((video, index) => (
+                <article className="episode-card" key={`${video.path || video.name}-${index}`}>
+                  <span className="episode-number">{video.episode || index + 1}</span>
+                  <div>
+                    <h3>{video.name || `Episode ${index + 1}`}</h3>
+                    <p>Season {video.season || 1} · Episode {video.episode || index + 1}</p>
+                  </div>
+                  <button aria-label={`Play ${video.name || `episode ${index + 1}`}`} type="button">
+                    <Play fill="currentColor" size={16} />
+                  </button>
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+    </main>
+  )
+}
+
+function CatalogRow({ emptyMessage, items, onOpenDetail, ranked = false, title }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return emptyMessage ? <p className="empty-catalog">{emptyMessage}</p> : null
@@ -790,13 +1055,18 @@ function CatalogRow({ emptyMessage, items, title }) {
           {showAll ? 'Show less' : 'See more'}
         </button>
       </div>
-      <div className="catalog-scroller">
+      <div className={`catalog-scroller ${ranked ? 'ranked-scroller' : ''}`}>
         {(showAll ? items : items.slice(0, 15)).map((item, index) => (
-          <article className="catalog-card" key={`${getItemKey(item)}-${index}`}>
-            <div className="poster-frame">
+          <button className={`catalog-card ${ranked ? 'ranked-card' : ''}`} key={`${getItemKey(item)}-${index}`} onClick={() => onOpenDetail(item)} type="button">
+            {ranked && <span className="ranked-number">{index + 1}</span>}
+            <div className={ranked ? 'ranked-frame' : 'poster-frame'}>
               {getRating(item) > 0 && <span className="rating-badge">{getRating(item).toFixed(1)}</span>}
               {getPosterUrl(item) ? (
-                <img alt={getTitle(item)} loading="lazy" src={getPosterUrl(item)} />
+                <img
+                  alt={getTitle(item)}
+                  loading="lazy"
+                  src={getPosterUrl(item)}
+                />
               ) : (
                 <div className="poster-fallback">
                   <span>{getTitle(item).slice(0, 1).toUpperCase()}</span>
@@ -804,7 +1074,7 @@ function CatalogRow({ emptyMessage, items, title }) {
               )}
             </div>
             <h3>{getTitle(item)}</h3>
-          </article>
+          </button>
         ))}
       </div>
     </section>
@@ -835,6 +1105,10 @@ function HistoryRow({ items }) {
                   <span>{(item.media_title || item.series_title || 'M').slice(0, 1).toUpperCase()}</span>
                 </div>
               )}
+              <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
+              <span className="history-progress-track">
+                <span style={{ width: `${getWatchProgress(item)}%` }} />
+              </span>
             </div>
             <h3>{item.media_title || item.series_title || 'Continue Watching'}</h3>
           </article>
