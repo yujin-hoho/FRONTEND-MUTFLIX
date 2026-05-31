@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { AlertCircle, CheckCircle2, ChevronDown, Eye, EyeOff, KeyRound, Loader2, LockKeyhole, LogOut, Play, Plus, Search, User, UsersRound } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, KeyRound, Loader2, LockKeyhole, LogOut, Play, Plus, Search, User, UsersRound } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space').replace(/\/$/, '')
@@ -8,6 +9,7 @@ const PROFILES_CACHE_KEY = 'mutflix_profiles_cache_v1'
 const DASHBOARD_CACHE_TTL = 6 * 60 * 60 * 1000
 const MAX_CACHED_PROFILES = 3
 const MAX_CACHED_ITEMS_PER_TYPE = 80
+const EPISODES_PER_PAGE = 12
 
 function createProfileId() {
   if (crypto.randomUUID) return crypto.randomUUID()
@@ -31,7 +33,7 @@ function getBackdropUrl(item, size = 'original') {
 }
 
 function getStillUrl(item) {
-  const stillPath = item.still_path
+  const stillPath = item.still_path || item.poster_path || item.thumbnail_path || item.profile_path
   if (!stillPath) return ''
   if (stillPath.startsWith('http')) return stillPath
   return `${API_BASE_URL}/api/tmdb-image/w500/${stillPath.replace(/^\//, '')}`
@@ -42,7 +44,19 @@ function getItemKey(item) {
 }
 
 function getItemPath(item) {
-  return item.source || item.folder_name || item.name || ''
+  const source = item.source || ''
+  if (/^(?:gdrive|gdrive_folder|telegram)\//.test(source)) return source
+  return item.folder_name || item.name || source
+}
+
+function getProfileAvatarUrl(profile) {
+  const avatarUrl = profile.avatar_url || profile.avatar || profile.image_url
+  if (avatarUrl) return avatarUrl
+
+  const seed = hashString(profile.avatar_seed || profile.id || profile.name || 'M')
+  const hue = Math.abs(seed) % 360
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="hsl(${hue} 72% 48%)"/><circle cx="32" cy="25" r="13" fill="hsl(${hue} 58% 82%)"/><path d="M8 64c2-16 11-24 24-24s22 8 24 24" fill="hsl(${hue} 62% 30%)"/></svg>`
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
 function getMediaType(item) {
@@ -65,6 +79,99 @@ function getWatchProgress(item) {
   const duration = Number(item.duration_ms || 0)
   if (duration <= 0) return 0
   return Math.min(100, Math.max(0, (position / duration) * 100))
+}
+
+function formatDuration(video) {
+  const durationMs = Number(video.duration_ms || 0)
+  if (durationMs <= 0) return ''
+  return `${Math.max(1, Math.round(durationMs / 60000))}m`
+}
+
+async function enrichEpisodesFromServer(item, videos, headers) {
+  if (getMediaType(item) === 'movie' || !videos.length) return videos
+
+  const folderName = item.folder_name || item.name || getItemPath(item)
+  if (!folderName) return videos
+
+  try {
+    const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/tv?folder_name=${encodeURIComponent(folderName)}`, { headers })
+    const meta = await metaResponse.json().catch(() => ({}))
+    const tmdbId = metaResponse.ok ? meta.id : null
+    if (!tmdbId) return videos
+
+    const seasons = [...new Set(videos.map((video) => Number(video.season || 1)))]
+    const seasonResponses = await Promise.all(seasons.map(async (season) => {
+      const response = await fetch(`${API_BASE_URL}/api/tmdb/tv/${tmdbId}/season/${season}`, { headers })
+      const data = await response.json().catch(() => ({}))
+      return response.ok && Array.isArray(data.episodes) ? data.episodes : []
+    }))
+    const episodeMap = new Map()
+    seasonResponses.flat().forEach((episode) => {
+      episodeMap.set(`${episode.season_number}:${episode.episode_number}`, episode)
+    })
+
+    return videos.map((video) => {
+      const episode = episodeMap.get(`${Number(video.season || 1)}:${Number(video.episode || 0)}`)
+      if (!episode) return video
+      return {
+        ...video,
+        name: episode.name || video.name,
+        overview: episode.overview || '',
+        still_path: episode.still_path || '',
+      }
+    })
+  } catch {
+    return videos
+  }
+}
+
+async function getCreditsFromServer(item, headers) {
+  const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
+  const folderName = item.folder_name || item.name || getItemPath(item)
+  if (!folderName) return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
+
+  try {
+    const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/${mediaType}?folder_name=${encodeURIComponent(folderName)}`, { headers })
+    const meta = await metaResponse.json().catch(() => ({}))
+    if (!metaResponse.ok || !meta.id) return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
+
+    const [creditsResponse, recommendationsResponse, videosResponse] = await Promise.all([
+      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${meta.id}/credits`, { headers }),
+      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${meta.id}/recommendations`, { headers }),
+      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${meta.id}/videos`, { headers }),
+    ])
+    const [credits, recommendations, videos] = await Promise.all([
+      creditsResponse.json().catch(() => ({})),
+      recommendationsResponse.json().catch(() => ({})),
+      videosResponse.json().catch(() => ({})),
+    ])
+    const trailers = videosResponse.ok && Array.isArray(videos.results)
+      ? videos.results.filter((video) => video.site === 'YouTube' && video.type === 'Trailer')
+      : []
+    const trailer = trailers.find((video) => video.official) || trailers[0]
+
+    const crewJobs = new Set(['Director', 'Producer', 'Writer', 'Screenplay'])
+    const crew = Array.isArray(credits.crew)
+      ? credits.crew
+        .filter((person) => crewJobs.has(person.job))
+        .filter((person, index, people) => people.findIndex((candidate) => (
+          candidate.id === person.id && candidate.job === person.job
+        )) === index)
+        .slice(0, 8)
+      : []
+
+    return {
+      cast: Array.isArray(credits.cast) ? credits.cast.slice(0, 5) : [],
+      crew,
+      meta,
+      recommendations: recommendationsResponse.ok && Array.isArray(recommendations.results)
+        ? recommendations.results.slice(0, 4)
+        : [],
+      trailerId: trailer?.key || '',
+    }
+  } catch {
+    return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
+  }
 }
 
 function hashString(value) {
@@ -96,6 +203,27 @@ function preloadImage(url) {
     image.onerror = finish
     image.src = url
   })
+}
+
+function LoadableImage({ alt = '', className = '', loading = 'lazy', src }) {
+  const [isLoaded, setIsLoaded] = useState(false)
+  const [hasError, setHasError] = useState(false)
+
+  if (!src || hasError) return null
+
+  return (
+    <>
+      {!isLoaded && <span className="image-shimmer" aria-hidden="true" />}
+      <img
+        alt={alt}
+        className={`${className} ${isLoaded ? 'image-loaded' : 'image-loading'}`.trim()}
+        loading={loading}
+        onError={() => setHasError(true)}
+        onLoad={() => setIsLoaded(true)}
+        src={src}
+      />
+    </>
+  )
 }
 
 function readDashboardCache(profileId) {
@@ -174,6 +302,9 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
 }
 
 function App() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  const isDetailRoute = location.pathname.startsWith('/detail/')
   const [mode, setMode] = useState('login')
   const [authToken, setAuthToken] = useState(() => (
     localStorage.getItem('mutflix_token') || sessionStorage.getItem('mutflix_token') || ''
@@ -216,6 +347,7 @@ function App() {
   const [detailData, setDetailData] = useState({
     item: null,
     videos: [],
+    credits: { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' },
     isLoading: false,
     error: null,
   })
@@ -237,6 +369,12 @@ function App() {
     && password.length > 0
     && (!isRegister || accessToken.trim().length > 0)
     && !isLoading
+
+  useEffect(() => {
+    if (location.pathname === '/') {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [location.pathname, navigate])
 
   function switchMode(nextMode) {
     setMode(nextMode)
@@ -470,12 +608,13 @@ function App() {
     setProfiles([])
   }
 
-  async function handleOpenDetail(item) {
+  const loadDetail = useCallback(async (item) => {
     const detailItem = { ...item, media_type: getMediaType(item) }
     const itemPath = getItemPath(detailItem)
     setDetailData({
       item: detailItem,
       videos: [],
+      credits: { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' },
       isLoading: true,
       error: null,
     })
@@ -492,13 +631,20 @@ function App() {
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.message || data.error || 'Failed to load title details.')
 
+      const headers = { 'x-access-token': authToken }
+      const [videos, credits] = await Promise.all([
+        enrichEpisodesFromServer(detailItem, Array.isArray(data.videos) ? data.videos : [], headers),
+        getCreditsFromServer(detailItem, headers),
+      ])
+
       setDetailData((currentData) => ({
         item: {
           ...currentData.item,
           ...(data.catalog_item || {}),
           media_type: currentData.item.media_type,
         },
-        videos: Array.isArray(data.videos) ? data.videos : [],
+        videos,
+        credits,
         isLoading: false,
         error: null,
       }))
@@ -509,7 +655,27 @@ function App() {
         error: error.message,
       }))
     }
+  }, [authToken])
+
+  function handleOpenDetail(item) {
+    const itemPath = getItemPath(item)
+    if (!itemPath) return
+    navigate(`/detail/${encodeURIComponent(itemPath)}`, { state: { item } })
+    loadDetail(item)
   }
+
+  useEffect(() => {
+    if (!currentUser || !selectedProfile || !isDetailRoute) return
+
+    const itemPath = decodeURIComponent(location.pathname.slice('/detail/'.length))
+    if (!itemPath || getItemPath(detailData.item || {}) === itemPath) return
+
+    loadDetail(location.state?.item || {
+      folder_name: itemPath,
+      name: itemPath,
+      media_type: 'tv',
+    })
+  }, [currentUser, detailData.item, isDetailRoute, loadDetail, location.pathname, location.state, selectedProfile])
 
   async function handleAddProfile(event) {
     event.preventDefault()
@@ -753,11 +919,14 @@ function App() {
       ...genreRows.slice(3),
     ].filter(Boolean), `${rotationKey}-rows`)
 
-    if (detailData.item) {
+    if (isDetailRoute && detailData.item) {
       return (
         <DetailPage
           detailData={detailData}
-          onBack={() => setDetailData({ item: null, videos: [], isLoading: false, error: null })}
+          onBack={() => {
+            setDetailData({ item: null, videos: [], credits: { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }, isLoading: false, error: null })
+            navigate('/dashboard')
+          }}
         />
       )
     }
@@ -765,7 +934,7 @@ function App() {
     return (
       <main className="dashboard-page">
         <nav className="dashboard-topbar" aria-label="Dashboard">
-          <a className="brand-mark dashboard-brand" href="/" aria-label="Mutflix dashboard">
+          <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
             MUTFLIX
           </a>
           <div className="dashboard-nav">
@@ -791,7 +960,9 @@ function App() {
                 onClick={() => setShowProfileMenu((isOpen) => !isOpen)}
                 type="button"
               >
-                <span>{selectedProfile.name}</span>
+                <span className="profile-menu-avatar" aria-hidden="true">
+                  <img alt="" src={getProfileAvatarUrl(selectedProfile)} />
+                </span>
                 <ChevronDown size={16} />
               </button>
               {showProfileMenu && (
@@ -811,7 +982,7 @@ function App() {
         </nav>
 
         <section className="dashboard-hero" aria-label="Featured title">
-          {featuredBackdrop && <img alt="" className="dashboard-hero-poster" src={featuredBackdrop} />}
+          {featuredBackdrop && <LoadableImage className="dashboard-hero-poster" key={featuredBackdrop} loading="eager" src={featuredBackdrop} />}
           <div className="dashboard-hero-shade" />
           <div className="dashboard-hero-content">
             <h1>{featuredItem ? getTitle(featuredItem) : 'Mutflix'}</h1>
@@ -983,11 +1154,19 @@ function App() {
 }
 
 function DetailPage({ detailData, onBack }) {
-  const { error, isLoading, item, videos } = detailData
+  const { credits, error, isLoading, item, videos } = detailData
+  const seasons = [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b)
+  const [activeSeason, setActiveSeason] = useState(seasons[0] || 1)
+  const [visibleEpisodeCount, setVisibleEpisodeCount] = useState(EPISODES_PER_PAGE)
+  const selectedSeason = seasons.includes(activeSeason) ? activeSeason : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
   const backdrop = getBackdropUrl(item)
   const genres = getGenres(item)
   const firstVideo = videos[0]
+  const visibleVideos = videos.filter((video) => Number(video.season || 1) === selectedSeason)
+  const renderedVideos = visibleVideos.slice(0, visibleEpisodeCount)
+  const hasMoreEpisodes = visibleEpisodeCount < visibleVideos.length
+  const canShowLessEpisodes = visibleEpisodeCount > EPISODES_PER_PAGE
 
   return (
     <main className="detail-page">
@@ -997,7 +1176,7 @@ function DetailPage({ detailData, onBack }) {
       </button>
 
       <section className="detail-hero">
-        {backdrop && <img alt="" className="detail-backdrop" src={backdrop} />}
+        {backdrop && <LoadableImage className="detail-backdrop" key={backdrop} loading="eager" src={backdrop} />}
         <div className="detail-shade" />
         <div className="detail-copy">
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
@@ -1018,27 +1197,210 @@ function DetailPage({ detailData, onBack }) {
         {error && <p className="detail-error">{error}</p>}
         {!isMovie && (
           <>
-            <h2>Episodes</h2>
-            {isLoading && <p className="detail-muted">Loading episodes...</p>}
-            {!isLoading && !videos.length && <p className="detail-muted">Episodes are unavailable offline.</p>}
-            <div className="episode-list">
-              {videos.map((video, index) => (
-                <article className="episode-card" key={`${video.path || video.name}-${index}`}>
-                  <span className="episode-number">{video.episode || index + 1}</span>
-                  <div>
-                    <h3>{video.name || `Episode ${index + 1}`}</h3>
-                    <p>Season {video.season || 1} · Episode {video.episode || index + 1}</p>
-                  </div>
-                  <button aria-label={`Play ${video.name || `episode ${index + 1}`}`} type="button">
-                    <Play fill="currentColor" size={16} />
+            <div className="episode-heading">
+              <h2>Episodes</h2>
+              <span>{visibleVideos.length ? `${visibleVideos.length} episodes` : 'Series'}</span>
+            </div>
+            {seasons.length > 1 && (
+              <div className="season-nav" aria-label="Choose season">
+                {seasons.map((season) => (
+                  <button
+                    className={selectedSeason === season ? 'active' : ''}
+                    key={season}
+                    onClick={() => {
+                      setActiveSeason(season)
+                      setVisibleEpisodeCount(EPISODES_PER_PAGE)
+                    }}
+                    type="button"
+                  >
+                    Season {season}
                   </button>
-                </article>
-              ))}
+                ))}
+              </div>
+            )}
+            {isLoading && (
+              <div className="episode-list episode-skeleton-list" aria-label="Loading episodes">
+                {Array.from({ length: 4 }, (_, index) => (
+                  <article className="episode-card episode-skeleton-card" key={index}>
+                    <span className="skeleton-block skeleton-number" />
+                    <span className="skeleton-block skeleton-thumbnail" />
+                    <span className="skeleton-copy">
+                      <span className="skeleton-block skeleton-title" />
+                      <span className="skeleton-block skeleton-meta" />
+                      <span className="skeleton-block skeleton-line" />
+                    </span>
+                  </article>
+                ))}
+              </div>
+            )}
+            {!isLoading && !videos.length && <p className="detail-muted">Episodes are unavailable offline.</p>}
+            <div className="detail-content-grid">
+              <div className="episode-list">
+                {renderedVideos.map((video, index) => {
+                const episodeNumber = video.episode || index + 1
+                const thumbnail = getStillUrl(video)
+                const duration = formatDuration(video)
+
+                return (
+                  <article className="episode-card" key={`${video.path || video.name}-${index}`}>
+                    <span className="episode-number">{episodeNumber}</span>
+                    <div className="episode-thumbnail">
+                      <LoadableImage key={thumbnail} src={thumbnail} />
+                      <button aria-label={`Play ${video.name || `episode ${episodeNumber}`}`} type="button">
+                        <Play fill="currentColor" size={20} />
+                      </button>
+                    </div>
+                    <div className="episode-copy">
+                      <div className="episode-title-row">
+                        <h3>{video.name}</h3>
+                        {duration && <span>{duration}</span>}
+                      </div>
+                      <p className="episode-meta">Season {video.season || 1} · Episode {episodeNumber}</p>
+                      {video.overview && <p className="episode-description">{video.overview}</p>}
+                    </div>
+                  </article>
+                )
+                })}
+                {(hasMoreEpisodes || canShowLessEpisodes) && (
+                  <div className="episode-pagination">
+                    {canShowLessEpisodes && (
+                      <button onClick={() => setVisibleEpisodeCount((count) => Math.max(EPISODES_PER_PAGE, count - EPISODES_PER_PAGE))} type="button">
+                        <ChevronUp size={18} />
+                        <span>View less</span>
+                      </button>
+                    )}
+                    {hasMoreEpisodes && (
+                      <button onClick={() => setVisibleEpisodeCount((count) => count + EPISODES_PER_PAGE)} type="button">
+                        <span>View more</span>
+                        <ChevronDown size={18} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+              <CreditsPanel credits={credits} />
             </div>
           </>
         )}
       </section>
     </main>
+  )
+}
+
+function CreditsPanel({ credits }) {
+  const cast = credits?.cast || []
+  const crew = credits?.crew || []
+  const meta = credits?.meta
+  const recommendations = credits?.recommendations || []
+  const trailerId = credits?.trailerId || ''
+  const genres = Array.isArray(meta?.genres) ? meta.genres.map((genre) => genre.name).filter(Boolean) : []
+  const networks = Array.isArray(meta?.networks) ? meta.networks.map((network) => network.name).filter(Boolean) : []
+  const type = meta?.type || (meta?.number_of_seasons ? 'TV Show' : '')
+  const status = meta?.status || ''
+  const episodeRuntime = Array.isArray(meta?.episode_run_time) ? meta.episode_run_time.filter(Boolean)[0] : null
+  if (!cast.length && !crew.length && !meta) return null
+
+  return (
+    <aside className="credits-panel">
+      {meta && (
+        <section className="title-facts">
+          <h2>Details</h2>
+          <dl>
+            {status && (
+              <div>
+                <dt>Status</dt>
+                <dd>{status}</dd>
+              </div>
+            )}
+            {type && (
+              <div>
+                <dt>Type</dt>
+                <dd>{type}</dd>
+              </div>
+            )}
+            {genres.length > 0 && (
+              <div>
+                <dt>Genres</dt>
+                <dd>{genres.join(', ')}</dd>
+              </div>
+            )}
+            {networks.length > 0 && (
+              <div>
+                <dt>Network</dt>
+                <dd>{networks.join(', ')}</dd>
+              </div>
+            )}
+          </dl>
+        </section>
+      )}
+      {meta && (
+        <section className="season-facts">
+          <h2>Season Info</h2>
+          <div>
+            {meta.number_of_seasons > 0 && <span><strong>{meta.number_of_seasons}</strong> seasons</span>}
+            {meta.number_of_episodes > 0 && <span><strong>{meta.number_of_episodes}</strong> episodes</span>}
+            {episodeRuntime > 0 && <span><strong>{episodeRuntime}</strong> min</span>}
+            {meta.first_air_date && <span><strong>{meta.first_air_date.slice(0, 4)}</strong> first aired</span>}
+          </div>
+          {trailerId && (
+            <div className="trailer-embed">
+              <iframe
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+                src={`https://www.youtube.com/embed/${encodeURIComponent(trailerId)}?autoplay=1&mute=1&controls=1&playsinline=1&rel=0`}
+                title="Trailer"
+              />
+            </div>
+          )}
+        </section>
+      )}
+      {cast.length > 0 && (
+        <section>
+          <h2>Cast</h2>
+          <div className="cast-list">
+            {cast.map((person) => (
+              <article className="cast-card" key={`${person.id}-${person.character}`}>
+                <div className="cast-avatar">
+                  <LoadableImage alt={person.name} key={person.profile_path} src={getStillUrl(person)} />
+                </div>
+                <div>
+                  <h3>{person.name}</h3>
+                  {person.character && <p>{person.character}</p>}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      {crew.length > 0 && (
+        <section>
+          <h2>Crew</h2>
+          <div className="crew-list">
+            {crew.map((person, index) => (
+              <article key={`${person.id}-${person.job}-${index}`}>
+                <h3>{person.name}</h3>
+                <p>{person.job || person.department}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      {recommendations.length > 0 && (
+        <section className="recommendations">
+          <h2>More Like This</h2>
+          <div>
+            {recommendations.map((recommendation) => (
+              <article key={recommendation.id}>
+                <div className="recommendation-poster">
+                  <LoadableImage alt={recommendation.name || recommendation.title} key={recommendation.poster_path} src={getPosterUrl(recommendation)} />
+                </div>
+                <h3>{recommendation.name || recommendation.title}</h3>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+    </aside>
   )
 }
 
@@ -1061,17 +1423,7 @@ function CatalogRow({ emptyMessage, items, onOpenDetail, ranked = false, title }
             {ranked && <span className="ranked-number">{index + 1}</span>}
             <div className={ranked ? 'ranked-frame' : 'poster-frame'}>
               {getRating(item) > 0 && <span className="rating-badge">{getRating(item).toFixed(1)}</span>}
-              {getPosterUrl(item) ? (
-                <img
-                  alt={getTitle(item)}
-                  loading="lazy"
-                  src={getPosterUrl(item)}
-                />
-              ) : (
-                <div className="poster-fallback">
-                  <span>{getTitle(item).slice(0, 1).toUpperCase()}</span>
-                </div>
-              )}
+              <LoadableImage alt={getTitle(item)} key={getPosterUrl(item)} src={getPosterUrl(item)} />
             </div>
             <h3>{getTitle(item)}</h3>
           </button>
@@ -1098,13 +1450,7 @@ function HistoryRow({ items }) {
         {(showAll ? items : items.slice(0, 15)).map((item) => (
           <article className="catalog-card history-card" key={item.media_path}>
             <div className="history-frame">
-              {getStillUrl(item) ? (
-                <img alt={item.media_title || item.series_title || 'Continue watching'} loading="lazy" src={getStillUrl(item)} />
-              ) : (
-                <div className="poster-fallback">
-                  <span>{(item.media_title || item.series_title || 'M').slice(0, 1).toUpperCase()}</span>
-                </div>
-              )}
+              <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} key={getStillUrl(item)} src={getStillUrl(item)} />
               <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
               <span className="history-progress-track">
                 <span style={{ width: `${getWatchProgress(item)}%` }} />
