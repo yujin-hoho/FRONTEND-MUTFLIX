@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Eye, EyeOff, KeyRound, Loader2, LockKeyhole, LogOut, Play, Plus, Search, User, UsersRound } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
@@ -49,6 +49,10 @@ function getItemPath(item) {
   return item.folder_name || item.name || source
 }
 
+function getDetailUrl(item) {
+  return `/detail/${encodeURIComponent(getTitle(item))}`
+}
+
 function getProfileAvatarUrl(profile) {
   const avatarUrl = profile.avatar_url || profile.avatar || profile.image_url
   if (avatarUrl) return avatarUrl
@@ -56,6 +60,13 @@ function getProfileAvatarUrl(profile) {
   const seed = hashString(profile.avatar_seed || profile.id || profile.name || 'M')
   const hue = Math.abs(seed) % 360
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" fill="hsl(${hue} 72% 48%)"/><circle cx="32" cy="25" r="13" fill="hsl(${hue} 58% 82%)"/><path d="M8 64c2-16 11-24 24-24s22 8 24 24" fill="hsl(${hue} 62% 30%)"/></svg>`
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`
+}
+
+function getPersonFallbackUrl(person = {}) {
+  const seed = hashString(person.id || person.name || 'Cast')
+  const hue = Math.abs(seed) % 360
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" fill="hsl(${hue} 24% 18%)"/><circle cx="60" cy="44" r="25" fill="hsl(${hue} 18% 68%)"/><path d="M12 120c4-32 20-48 48-48s44 16 48 48" fill="hsl(${hue} 22% 42%)"/></svg>`
   return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
@@ -165,7 +176,7 @@ async function getCreditsFromServer(item, headers) {
       crew,
       meta,
       recommendations: recommendationsResponse.ok && Array.isArray(recommendations.results)
-        ? recommendations.results.slice(0, 4)
+        ? recommendations.results.slice(0, 16)
         : [],
       trailerId: trailer?.key || '',
     }
@@ -175,7 +186,7 @@ async function getCreditsFromServer(item, headers) {
 }
 
 function hashString(value) {
-  return [...value].reduce((hash, character) => ((hash << 5) - hash + character.charCodeAt(0)) | 0, 0)
+  return [...String(value)].reduce((hash, character) => ((hash << 5) - hash + character.charCodeAt(0)) | 0, 0)
 }
 
 function getRotationKey(profileId) {
@@ -185,8 +196,16 @@ function getRotationKey(profileId) {
 
 function rotateItems(items, seed) {
   if (items.length < 2) return items
-  const offset = Math.abs(hashString(seed)) % items.length
-  return [...items.slice(offset), ...items.slice(0, offset)]
+  const shuffledItems = [...items]
+  let state = Math.abs(hashString(seed)) || 1
+
+  for (let index = shuffledItems.length - 1; index > 0; index -= 1) {
+    state = (state * 1664525 + 1013904223) >>> 0
+    const swapIndex = state % (index + 1)
+    ;[shuffledItems[index], shuffledItems[swapIndex]] = [shuffledItems[swapIndex], shuffledItems[index]]
+  }
+
+  return shuffledItems
 }
 
 function preloadImage(url) {
@@ -205,11 +224,12 @@ function preloadImage(url) {
   })
 }
 
-function LoadableImage({ alt = '', className = '', loading = 'lazy', src }) {
+function LoadableImage({ alt = '', className = '', fallbackSrc = '', loading = 'lazy', shimmerOnError = true, src }) {
   const [isLoaded, setIsLoaded] = useState(false)
   const [hasError, setHasError] = useState(false)
+  const resolvedSrc = hasError ? fallbackSrc : src
 
-  if (!src || hasError) return null
+  if (!resolvedSrc) return shimmerOnError ? <span className="image-shimmer" aria-hidden="true" /> : null
 
   return (
     <>
@@ -218,11 +238,35 @@ function LoadableImage({ alt = '', className = '', loading = 'lazy', src }) {
         alt={alt}
         className={`${className} ${isLoaded ? 'image-loaded' : 'image-loading'}`.trim()}
         loading={loading}
-        onError={() => setHasError(true)}
+        onError={() => {
+          if (fallbackSrc && resolvedSrc !== fallbackSrc) setHasError(true)
+        }}
         onLoad={() => setIsLoaded(true)}
-        src={src}
+        src={resolvedSrc}
       />
     </>
+  )
+}
+
+function DashboardSkeleton() {
+  return (
+    <main className="dashboard-page dashboard-skeleton-page" aria-label="Loading catalog">
+      <section className="dashboard-skeleton-hero">
+        <span className="image-shimmer" />
+      </section>
+      <section className="dashboard-skeleton-shell">
+        {Array.from({ length: 4 }, (_, rowIndex) => (
+          <section className="dashboard-skeleton-row" key={rowIndex}>
+            <span className="skeleton-block dashboard-skeleton-title" />
+            <div>
+              {Array.from({ length: 7 }, (_, cardIndex) => (
+                <span className="skeleton-block dashboard-skeleton-poster" key={cardIndex} />
+              ))}
+            </div>
+          </section>
+        ))}
+      </section>
+    </main>
   )
 }
 
@@ -363,6 +407,7 @@ function App() {
     isLoading: true,
     error: null,
   })
+  const curatedRowsCache = useRef(null)
 
   const isRegister = mode === 'register'
   const canSubmit = username.trim().length > 0
@@ -660,22 +705,25 @@ function App() {
   function handleOpenDetail(item) {
     const itemPath = getItemPath(item)
     if (!itemPath) return
-    navigate(`/detail/${encodeURIComponent(itemPath)}`, { state: { item } })
+    navigate(getDetailUrl(item), { state: { item } })
     loadDetail(item)
   }
 
   useEffect(() => {
     if (!currentUser || !selectedProfile || !isDetailRoute) return
 
-    const itemPath = decodeURIComponent(location.pathname.slice('/detail/'.length))
+    const routeTitle = decodeURIComponent(location.pathname.slice('/detail/'.length))
+    const routeItem = location.state?.item || [...catalogData.movies, ...catalogData.series]
+      .find((item) => getTitle(item).toLowerCase() === routeTitle.toLowerCase())
+    const itemPath = getItemPath(routeItem || {}) || routeTitle
     if (!itemPath || getItemPath(detailData.item || {}) === itemPath) return
 
-    loadDetail(location.state?.item || {
+    loadDetail(routeItem || {
       folder_name: itemPath,
-      name: itemPath,
+      name: routeTitle,
       media_type: 'tv',
     })
-  }, [currentUser, detailData.item, isDetailRoute, loadDetail, location.pathname, location.state, selectedProfile])
+  }, [catalogData.movies, catalogData.series, currentUser, detailData.item, isDetailRoute, loadDetail, location.pathname, location.state, selectedProfile])
 
   async function handleAddProfile(event) {
     event.preventDefault()
@@ -875,12 +923,7 @@ function App() {
 
   if (currentUser && selectedProfile) {
     if (catalogData.isLoading) {
-      return (
-        <main className="dashboard-loading-page">
-          <Loader2 className="spinner" size={34} />
-          <span>Loading catalog...</span>
-        </main>
-      )
+      return <DashboardSkeleton />
     }
 
     const rotationKey = getRotationKey(selectedProfile.id)
@@ -895,7 +938,7 @@ function App() {
     const searchResults = normalizedQuery
       ? catalogItems.filter((item) => getTitle(item).toLowerCase().includes(normalizedQuery))
       : []
-    const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance']
+    const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Animation', 'Documentary']
       .map((genre) => ({
         genre,
         items: rotateItems(
@@ -904,20 +947,47 @@ function App() {
         ),
       }))
       .filter((row) => row.items.length)
+    const rotatedGenreRows = rotateItems(genreRows, `${rotationKey}-genre-rows`)
+    const mysteryRow = {
+      genre: 'Mystery',
+      items: rotateItems(
+        catalogItems.filter((item) => getGenres(item).includes('Mystery')),
+        `${rotationKey}-Mystery`,
+      ),
+    }
     const topRatedMovies = [...catalogData.movies]
       .filter((item) => getRating(item) > 0)
       .sort((a, b) => getRating(b) - getRating(a))
     const topRatedSeries = [...catalogData.series]
       .filter((item) => getRating(item) > 0)
       .sort((a, b) => getRating(b) - getRating(a))
-    const catalogRows = rotateItems([
-      genreRows[0],
+    const freshPicks = rotateItems(
+      catalogItems.filter((item) => getPosterUrl(item)),
+      `${rotationKey}-fresh-picks`,
+    ).slice(0, 24)
+    const hiddenGems = rotateItems(
+      catalogItems.filter((item) => {
+        const rating = getRating(item)
+        return rating > 0 && rating < 7.5
+      }),
+      `${rotationKey}-hidden-gems`,
+    ).slice(0, 24)
+    const nextCuratedRows = [
+      freshPicks.length ? { genre: 'Fresh Picks', items: freshPicks } : null,
+      hiddenGems.length ? { genre: 'Hidden Gems', items: hiddenGems } : null,
+    ].filter(Boolean)
+    if (curatedRowsCache.current?.key !== rotationKey && nextCuratedRows.length) {
+      curatedRowsCache.current = { key: rotationKey, rows: nextCuratedRows }
+    }
+    const curatedRows = curatedRowsCache.current?.key === rotationKey
+      ? curatedRowsCache.current.rows
+      : nextCuratedRows
+    const catalogRows = [
       topRatedSeries.length ? { genre: 'Top Rated TV Shows', items: topRatedSeries, ranked: true } : null,
-      genreRows[1],
-      genreRows[2],
+      ...rotatedGenreRows,
       topRatedMovies.length ? { genre: 'Top Rated Movies', items: topRatedMovies, ranked: true } : null,
-      ...genreRows.slice(3),
-    ].filter(Boolean), `${rotationKey}-rows`)
+      mysteryRow.items.length ? mysteryRow : null,
+    ].filter(Boolean)
 
     if (isDetailRoute && detailData.item) {
       return (
@@ -982,7 +1052,7 @@ function App() {
         </nav>
 
         <section className="dashboard-hero" aria-label="Featured title">
-          {featuredBackdrop && <LoadableImage className="dashboard-hero-poster" key={featuredBackdrop} loading="eager" src={featuredBackdrop} />}
+          {featuredBackdrop && <LoadableImage className="dashboard-hero-poster" key={featuredBackdrop} loading="eager" shimmerOnError={false} src={featuredBackdrop} />}
           <div className="dashboard-hero-shade" />
           <div className="dashboard-hero-content">
             <h1>{featuredItem ? getTitle(featuredItem) : 'Mutflix'}</h1>
@@ -1016,6 +1086,9 @@ function App() {
                 />
               )}
               <HistoryRow items={profileData.watchHistory} />
+              {curatedRows.map((row) => (
+                <CatalogRow items={row.items} key={row.genre} onOpenDetail={handleOpenDetail} title={row.genre} />
+              ))}
               {catalogRows.map((row) => (
                 <CatalogRow items={row.items} key={row.genre} onOpenDetail={handleOpenDetail} ranked={row.ranked} title={row.genre} />
               ))}
@@ -1169,14 +1242,14 @@ function DetailPage({ detailData, onBack }) {
   const canShowLessEpisodes = visibleEpisodeCount > EPISODES_PER_PAGE
 
   return (
-    <main className="detail-page">
+    <main className={`detail-page ${isMovie ? 'movie-detail-page' : ''}`}>
       <button className="detail-back" onClick={onBack} type="button">
         <span aria-hidden="true">←</span>
         <span>Back</span>
       </button>
 
-      <section className="detail-hero">
-        {backdrop && <LoadableImage className="detail-backdrop" key={backdrop} loading="eager" src={backdrop} />}
+      <section className={`detail-hero ${isMovie ? 'movie-detail-hero' : ''}`}>
+        {backdrop && <LoadableImage className="detail-backdrop" key={backdrop} loading="eager" shimmerOnError={false} src={backdrop} />}
         <div className="detail-shade" />
         <div className="detail-copy">
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
@@ -1192,6 +1265,8 @@ function DetailPage({ detailData, onBack }) {
           </button>
         </div>
       </section>
+
+      {isMovie && <MovieRecommendations credits={credits} />}
 
       <section className="detail-body">
         {error && <p className="detail-error">{error}</p>}
@@ -1287,6 +1362,73 @@ function DetailPage({ detailData, onBack }) {
   )
 }
 
+function MovieRecommendations({ credits }) {
+  const cast = credits?.cast || []
+  const crew = credits?.crew || []
+  const recommendations = credits?.recommendations || []
+  if (!cast.length && !crew.length && !recommendations.length) return null
+
+  return (
+    <section className="movie-recommendations" aria-label="Cast, crew, and recommendations">
+      <div className="movie-credits-grid">
+        <div className="movie-credits-stack">
+          {cast.length > 0 && (
+            <section>
+              <h2>Cast</h2>
+              <div className="movie-credit-list">
+                {cast.slice(0, 5).map((person) => (
+                  <article key={`${person.id}-${person.character}`}>
+                    <div className="movie-credit-avatar">
+                      <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
+                    </div>
+                    <div>
+                      <h3>{person.name}</h3>
+                      {person.character && <p>{person.character}</p>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+          {crew.length > 0 && (
+            <section>
+              <h2>Crew</h2>
+              <div className="movie-credit-list">
+                {crew.slice(0, 6).map((person, index) => (
+                  <article key={`${person.id}-${person.job}-${index}`}>
+                    <div className="movie-credit-avatar">
+                      <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
+                    </div>
+                    <div>
+                      <h3>{person.name}</h3>
+                      <p>{person.job || person.department}</p>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+        {recommendations.length > 0 && (
+          <section className="movie-more-like-this">
+            <h2>More Like This</h2>
+            <div>
+              {recommendations.slice(0, 8).map((recommendation) => (
+                <article key={recommendation.id}>
+                  <div className="recommendation-poster">
+                    <LoadableImage alt={recommendation.name || recommendation.title} key={recommendation.poster_path} src={getPosterUrl(recommendation)} />
+                  </div>
+                  <h3>{recommendation.name || recommendation.title}</h3>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function CreditsPanel({ credits }) {
   const cast = credits?.cast || []
   const crew = credits?.crew || []
@@ -1361,7 +1503,7 @@ function CreditsPanel({ credits }) {
             {cast.map((person) => (
               <article className="cast-card" key={`${person.id}-${person.character}`}>
                 <div className="cast-avatar">
-                  <LoadableImage alt={person.name} key={person.profile_path} src={getStillUrl(person)} />
+                  <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
                 </div>
                 <div>
                   <h3>{person.name}</h3>
@@ -1423,7 +1565,7 @@ function CatalogRow({ emptyMessage, items, onOpenDetail, ranked = false, title }
             {ranked && <span className="ranked-number">{index + 1}</span>}
             <div className={ranked ? 'ranked-frame' : 'poster-frame'}>
               {getRating(item) > 0 && <span className="rating-badge">{getRating(item).toFixed(1)}</span>}
-              <LoadableImage alt={getTitle(item)} key={getPosterUrl(item)} src={getPosterUrl(item)} />
+              <LoadableImage alt={getTitle(item)} key={getPosterUrl(item)} loading="eager" src={getPosterUrl(item)} />
             </div>
             <h3>{getTitle(item)}</h3>
           </button>
