@@ -1,0 +1,249 @@
+.watch-page {
+  position: relative;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  background: #000;
+  color: #f8fafc;
+}
+
+.watch-page button,
+.watch-page input,
+.watch-page select {
+  cursor: pointer;
+}
+
+.watch-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+  object-fit: contain;
+}
+
+.watch-topbar,
+.watch-controls {
+  position: absolute;
+  right: 0;
+  left: 0;
+  z-index: 3;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.controls-visible .watch-topbar,
+.controls-visible .watch-controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.watch-topbar {
+  top: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: clamp(18px, 4vw, 42px);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent);
+}
+
+.watch-topbar h1,
+.watch-topbar p,
+.watch-topbar span {
+  margin: 0;
+}
+
+.watch-topbar p {
+  margin-bottom: 3px;
+  color: #7cf2ad;
+  font-size: 0.76rem;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.watch-topbar h1 {
+  font-size: clamp(1.15rem, 2.4vw, 1.8rem);
+}
+
+.watch-topbar span {
+  display: block;
+  margin-top: 4px;
+  color: #cbd5e1;
+  font-size: 0.84rem;
+}
+
+.watch-icon-button {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(15, 23, 42, 0.68);
+  color: #f8fafc;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.watch-icon-button:hover,
+.watch-icon-button.active {
+  background: rgba(0, 220, 100, 0.88);
+  color: #02140a;
+}
+
+.watch-center-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  color: #7cf2ad;
+  pointer-events: none;
+}
+
+.watch-error {
+  gap: 14px;
+  padding: 20px;
+  color: #fecaca;
+  text-align: center;
+  pointer-events: auto;
+}
+
+.watch-error p {
+  max-width: 520px;
+  margin: 0;
+}
+
+.watch-error button,
+.watch-floating-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(0, 220, 100, 0.72);
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.84);
+  color: #7cf2ad;
+  padding: 10px 15px;
+  font-weight: 850;
+}
+
+.watch-error button:hover,
+.watch-floating-actions button:hover {
+  background: #00dc64;
+  color: #02140a;
+}
+
+.watch-floating-actions {
+  position: absolute;
+  right: clamp(18px, 4vw, 44px);
+  bottom: 112px;
+  z-index: 4;
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.watch-controls {
+  bottom: 0;
+  display: grid;
+  gap: 10px;
+  padding: 54px clamp(18px, 4vw, 44px) clamp(18px, 3vw, 32px);
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.94), transparent);
+}
+
+.watch-seek,
+.watch-volume {
+  height: 4px;
+  accent-color: #00dc64;
+}
+
+.watch-seek {
+  width: 100%;
+}
+
+.watch-controls-row,
+.watch-controls-group {
+  display: flex;
+  align-items: center;
+}
+
+.watch-controls-row {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.watch-controls-group {
+  gap: 8px;
+}
+
+.watch-controls .watch-icon-button {
+  background: transparent;
+}
+
+.watch-controls .watch-icon-button:hover,
+.watch-controls .watch-icon-button.active {
+  color: #7cf2ad;
+}
+
+.watch-volume {
+  width: 88px;
+}
+
+.watch-time {
+  margin-left: 4px;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.watch-speed {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #cbd5e1;
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.watch-speed select {
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #f8fafc;
+  padding: 5px;
+}
+
+@media (max-width: 640px) {
+  .watch-topbar {
+    padding: 16px;
+  }
+
+  .watch-topbar span,
+  .watch-speed span {
+    display: none;
+  }
+
+  .watch-controls {
+    padding: 42px 12px 14px;
+  }
+
+  .watch-controls-row,
+  .watch-controls-group {
+    gap: 3px;
+  }
+
+  .watch-controls .watch-icon-button {
+    width: 36px;
+    height: 36px;
+  }
+
+  .watch-volume {
+    width: 58px;
+  }
+
+  .watch-time {
+    font-size: 0.7rem;
+  }
+}

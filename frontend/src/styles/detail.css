@@ -1,0 +1,650 @@
+.detail-page {
+  height: 100dvh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #020617;
+  color: #f8fafc;
+  scrollbar-width: none;
+}
+
+.detail-page::-webkit-scrollbar {
+  display: none;
+}
+
+.detail-back {
+  position: fixed;
+  top: 22px;
+  left: clamp(20px, 4vw, 54px);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 220, 100, 0.14);
+  color: #7cf2ad;
+  padding: 10px 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.detail-back:hover {
+  background: #00dc64;
+  color: #02140a;
+}
+
+.detail-hero {
+  position: relative;
+  min-height: min(74vh, 720px);
+  display: flex;
+  align-items: end;
+  overflow: hidden;
+  padding: 132px clamp(20px, 5vw, 72px) 64px;
+  background: #07111f;
+}
+
+.detail-backdrop,
+.detail-shade {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.detail-backdrop {
+  object-fit: cover;
+  object-position: center top;
+  opacity: 0.82;
+}
+
+.image-shimmer {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  background: #111827;
+}
+
+.image-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 20%, rgba(124, 242, 173, 0.18) 42%, rgba(255, 255, 255, 0.16) 50%, rgba(124, 242, 173, 0.18) 58%, transparent 80%);
+  transform: translateX(-100%);
+  animation: shimmer-slide 1.35s ease-in-out infinite;
+}
+
+.image-shimmer-static::after {
+  display: none;
+}
+
+.image-loading {
+  opacity: 0 !important;
+}
+
+.image-loaded {
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+@keyframes shimmer-slide {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.detail-shade {
+  background:
+    linear-gradient(90deg, #020617 0%, rgba(2, 6, 23, 0.92) 32%, rgba(2, 6, 23, 0.12) 78%),
+    linear-gradient(0deg, #020617 0%, transparent 42%);
+}
+
+.detail-copy {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 680px);
+}
+
+.detail-type {
+  margin: 0 0 10px;
+  color: #00dc64;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.detail-copy h1 {
+  margin: 0 0 18px;
+  font-size: clamp(2.8rem, 7vw, 6.5rem);
+  font-weight: 800;
+  line-height: 0.96;
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.detail-meta span {
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #dbeafe;
+  padding: 5px 9px;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.detail-meta .detail-rating {
+  color: #00dc64;
+}
+
+.detail-overview {
+  max-width: 620px;
+  margin: 0 0 24px;
+  color: #dbeafe;
+  line-height: 1.7;
+}
+
+.detail-body {
+  position: relative;
+  z-index: 1;
+  padding: 28px clamp(20px, 5vw, 72px) 72px;
+}
+
+.episode-heading {
+  max-width: 980px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.detail-body h2 {
+  margin: 0;
+  font-size: 1.7rem;
+  font-weight: 800;
+}
+
+.episode-heading span {
+  color: #94a3b8;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.season-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 4px 0 14px;
+}
+
+.season-nav button {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: #f8fafc;
+  padding: 8px 0 10px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: color 180ms ease;
+}
+
+.season-nav button::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 999px;
+  background: #00dc64;
+  transform: scaleX(0);
+  transition: transform 220ms ease;
+}
+
+.season-nav button:hover {
+  color: #7cf2ad;
+}
+
+.season-nav button:hover::after {
+  transform: scaleX(0.58);
+}
+
+.season-nav button.active {
+  color: #00dc64;
+}
+
+.season-nav button.active::after {
+  transform: scaleX(1);
+}
+
+.detail-error,
+.detail-muted {
+  color: #94a3b8;
+}
+
+.detail-error {
+  color: #fca5a5;
+}
+
+.episode-list {
+  display: grid;
+  min-width: 0;
+}
+
+.episode-skeleton-list {
+  max-width: 860px;
+}
+
+.skeleton-block {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #111827;
+}
+
+.skeleton-block::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 20%, rgba(124, 242, 173, 0.18) 42%, rgba(255, 255, 255, 0.16) 50%, rgba(124, 242, 173, 0.18) 58%, transparent 80%);
+  transform: translateX(-100%);
+  animation: shimmer-slide 1.35s ease-in-out infinite;
+}
+
+.skeleton-number {
+  width: 20px;
+  height: 28px;
+  justify-self: center;
+}
+
+.skeleton-thumbnail {
+  aspect-ratio: 16 / 9;
+}
+
+.skeleton-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.skeleton-title {
+  width: min(76%, 360px);
+  height: 16px;
+}
+
+.skeleton-meta {
+  width: 130px;
+  height: 12px;
+}
+
+.skeleton-line {
+  width: min(92%, 520px);
+  height: 12px;
+}
+
+.detail-content-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 860px) minmax(380px, 460px);
+  gap: clamp(28px, 4vw, 62px);
+  align-items: start;
+  padding-right: clamp(20px, 5vw, 72px);
+}
+
+.movie-detail-content-grid {
+  grid-template-columns: minmax(0, 1fr);
+  padding-right: 0;
+}
+
+.movie-detail-content-grid .credits-panel {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    'trailer recommendations'
+    'details info'
+    'cast crew';
+  border-left: 0;
+  padding-left: 0;
+}
+
+.movie-detail-content-grid .title-facts {
+  grid-area: details;
+}
+
+.movie-detail-content-grid .season-facts {
+  grid-area: info;
+}
+
+.movie-detail-content-grid .cast-section {
+  grid-area: cast;
+}
+
+.movie-detail-content-grid .crew-section {
+  grid-area: crew;
+}
+
+.movie-detail-content-grid .trailer-section {
+  grid-area: trailer;
+}
+
+.movie-detail-content-grid .trailer-embed {
+  max-width: 720px;
+}
+
+.movie-detail-content-grid .recommendations {
+  grid-area: recommendations;
+}
+
+.movie-detail-content-grid .recommendations > div {
+  grid-template-columns: repeat(auto-fit, minmax(88px, 112px));
+  gap: 12px;
+}
+
+.episode-card {
+  display: grid;
+  grid-template-columns: 42px minmax(180px, 240px) 1fr;
+  align-items: center;
+  gap: 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 6px;
+  padding: 18px 14px 18px 6px;
+  transition: background 160ms ease;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 172px;
+}
+
+.episode-card:hover {
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.episode-pagination {
+  display: flex;
+  gap: 1px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(0, 220, 100, 0.54);
+  border-radius: 5px;
+  background: rgba(0, 220, 100, 0.08);
+}
+
+.episode-pagination button {
+  min-width: 0;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  background: rgba(0, 220, 100, 0.08);
+  color: #7cf2ad;
+  padding: 8px 14px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.episode-pagination button + button {
+  border-left: 1px solid rgba(0, 220, 100, 0.28);
+}
+
+.episode-pagination button:hover {
+  background: #00dc64;
+  color: #02140a;
+}
+
+.episode-number {
+  color: #a1a1aa;
+  font-size: 1.55rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.episode-thumbnail {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #111827;
+}
+
+.episode-thumbnail img,
+.episode-thumbnail-fallback {
+  width: 100%;
+  height: 100%;
+}
+
+.episode-thumbnail img {
+  display: block;
+  object-fit: cover;
+}
+
+.episode-thumbnail-fallback {
+  background: linear-gradient(135deg, #1f2937, #020617);
+}
+
+.episode-thumbnail button {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(0, 220, 100, 0.86);
+  border-radius: 50%;
+  background: rgba(2, 6, 23, 0.62);
+  color: #7cf2ad;
+  cursor: pointer;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  transition: opacity 160ms ease, background 160ms ease;
+}
+
+.episode-card:hover .episode-thumbnail button,
+.episode-thumbnail button:focus-visible {
+  opacity: 1;
+}
+
+.episode-thumbnail button:hover {
+  background: rgba(0, 220, 100, 0.88);
+  color: #02140a;
+}
+
+.credits-panel {
+  display: grid;
+  gap: 42px;
+  border-left: 1px solid rgba(148, 163, 184, 0.18);
+  padding-left: 34px;
+}
+
+.credits-panel > section {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+
+.credits-panel h2 {
+  margin-bottom: 22px;
+  color: #7cf2ad;
+  font-size: 1.65rem;
+}
+
+.cast-list,
+.crew-list {
+  display: grid;
+  gap: 20px;
+}
+
+.title-facts dl {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.title-facts dl div {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 12px;
+}
+
+.title-facts dt {
+  color: #7cf2ad;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.title-facts dd {
+  margin: 0;
+  color: #dbeafe;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.season-facts > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.season-facts span {
+  border: 1px solid rgba(0, 220, 100, 0.24);
+  border-radius: 999px;
+  background: rgba(0, 220, 100, 0.08);
+  color: #d1fae5;
+  padding: 6px 9px;
+  font-size: 0.78rem;
+}
+
+.season-facts strong {
+  color: #7cf2ad;
+}
+
+.trailer-embed {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  margin-top: 14px;
+  border-radius: 6px;
+  background: #111827;
+}
+
+.trailer-embed iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.recommendations > div {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.recommendation-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #111827;
+}
+
+.recommendation-poster img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.recommendations h3 {
+  display: -webkit-box;
+  margin: 7px 0 0;
+  overflow: hidden;
+  color: #dbeafe;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.cast-card {
+  display: grid;
+  grid-template-columns: 82px 1fr;
+  align-items: center;
+  gap: 18px;
+}
+
+.cast-avatar {
+  position: relative;
+  width: 82px;
+  height: 82px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #111827;
+}
+
+.cast-avatar img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center 28%;
+}
+
+.cast-card h3,
+.cast-card p,
+.crew-list h3,
+.crew-list p {
+  margin: 0;
+}
+
+.cast-card h3,
+.crew-list h3 {
+  color: #f8fafc;
+  font-size: 1.12rem;
+}
+
+.cast-card p,
+.crew-list p {
+  margin-top: 5px;
+  color: #94a3b8;
+  font-size: 0.96rem;
+  line-height: 1.35;
+}
+
+.episode-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.episode-title-row h3,
+.episode-copy p {
+  margin: 0;
+}
+
+.episode-title-row h3 {
+  color: #f8fafc;
+  font-size: 1rem;
+}
+
+.episode-title-row span,
+.episode-meta,
+.episode-description {
+  color: #a1a1aa;
+  font-size: 0.82rem;
+}
+
+.episode-meta {
+  margin-top: 6px !important;
+}
+
+.episode-description {
+  margin-top: 10px !important;
+  line-height: 1.5;
+}
+
