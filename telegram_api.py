@@ -285,9 +285,28 @@ def get_telegram_catalog():
     Endpoint: GET /api/telegram/katalog
     Mengambil katalog Telegram dari database secara dinamis.
     """
+    # Try Redis first
+    try:
+        from serverUtama import redis_get
+        redis_data = redis_get("telegram:catalog")
+        if redis_data is not None:
+            return jsonify({
+                "status": 200,
+                "message": "Katalog Telegram Berhasil Diambil (cached)",
+                "total": len(redis_data),
+                "data": redis_data
+            })
+    except: pass
+    
     rows = execute_query("SELECT * FROM telegram_catalog ORDER BY added_at DESC")
     if rows is None:
         return jsonify({"status": 500, "message": "Database error", "data": []}), 500
+        
+    # Cache to Redis
+    try:
+        from serverUtama import redis_set
+        redis_set("telegram:catalog", rows, ttl_seconds=600)
+    except: pass
         
     return jsonify({
         "status": 200,
@@ -401,6 +420,10 @@ def telegram_webhook():
     success = execute_query(query, args, commit=True)
     if success:
         print(f"[Telegram Webhook] Tersimpan DB: {title_raw} (MsgID: {message_id})", flush=True)
+        try:
+            from serverUtama import redis_delete
+            redis_delete("telegram:catalog")
+        except: pass
     
     return jsonify({"status": "ok"}), 200
 

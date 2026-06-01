@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import LoadableImage from '../LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../../utils/media'
+import { getGenres, getItemKey, getMediaType, getPosterFallbackUrl, getPosterUrl, getRating, getTitle } from '../../utils/media'
 import { normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
 
 const PREVIEW_RESULT_LIMIT = 5
@@ -32,7 +32,7 @@ function SearchBox({
   )
   const shouldShowPreview = showPreview && isFocused && normalizedQuery
   const hydrationKey = previewResults
-    .filter((item) => !getPosterUrl(item))
+    .filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved)
     .map(getItemKey)
     .join('|')
 
@@ -105,7 +105,7 @@ function SearchBox({
                   return (
                     <button className="search-preview-card" key={`${getMediaType(item)}-${item.folder_name || getTitle(item)}`} onClick={() => handleOpenDetail(item)} type="button">
                       <span className="search-preview-poster">
-                        <LoadableImage alt="" key={poster} src={poster} />
+                        <LoadableImage alt="" fallbackSrc={getPosterFallbackUrl(item)} key={poster} src={poster} />
                       </span>
                       <span className="search-preview-copy">
                         <strong>{getTitle(item)}</strong>

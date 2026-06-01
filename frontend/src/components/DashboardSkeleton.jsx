@@ -3,6 +3,7 @@ function DashboardSkeleton() {
     <main className="dashboard-page dashboard-skeleton-page" aria-label="Loading catalog">
       <section className="dashboard-skeleton-hero">
         <span className="image-shimmer" />
+        <p className="dashboard-skeleton-status">Preparing catalog and posters...</p>
       </section>
       <section className="dashboard-skeleton-shell">
         {Array.from({ length: 4 }, (_, rowIndex) => (

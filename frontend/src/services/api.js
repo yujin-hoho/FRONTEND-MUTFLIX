@@ -86,14 +86,14 @@ export async function fetchDashboardData(authToken, profileId) {
     throw new Error(catalog.message || catalog.error || 'Failed to load catalog.')
   }
 
-  let movies = Array.isArray(catalog.movies)
+  const movies = Array.isArray(catalog.movies)
     ? catalog.movies.map((item) => ({ ...item, media_type: 'movie', type: 'movie' }))
     : []
-  let series = Array.isArray(catalog.series)
+  const series = Array.isArray(catalog.series)
     ? catalog.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' }))
     : []
 
-  return enrichCatalogMetadata(authToken, { history: Array.isArray(historyData) ? historyData : [], movies, series }, 60, { batchSize: 120 })
+  return { history: Array.isArray(historyData) ? historyData : [], movies, series }
 }
 
 export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
@@ -155,38 +155,162 @@ export async function fetchSubtitleTrack(subtitlePath) {
   const response = await fetch(
     /^https?:\/\//i.test(subtitlePath)
       ? subtitlePath
-      : `/subtitle/${encodeServerPath(subtitlePath)}`,
+      : `${API_BASE_URL}/subtitle/${encodeServerPath(subtitlePath)}`,
   )
   if (!response.ok) return { cues: [], url: '' }
 
-  const subtitleText = await response.text()
-  const webVtt = /^\s*WEBVTT/i.test(subtitleText)
-    ? subtitleText
-    : `WEBVTT\n\n${subtitleText.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`
+  const subtitleText = decodeSubtitleText(await response.arrayBuffer())
+  const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
+  const cues = parseSubtitleCues(webVtt)
+  if (!cues.length) return { cues: [], url: '' }
+
   return {
-    cues: parseSubtitleCues(webVtt),
+    cues,
     url: URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })),
   }
 }
 
-function parseSubtitleCues(webVtt) {
-  return webVtt
+function decodeSubtitleText(subtitleBytes) {
+  const bytes = new Uint8Array(subtitleBytes)
+  if (!bytes.length) return ''
+
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes)
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes)
+  if (looksLikeUtf16(bytes, 0)) return new TextDecoder('utf-16be').decode(bytes)
+  if (looksLikeUtf16(bytes, 1)) return new TextDecoder('utf-16le').decode(bytes)
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    return new TextDecoder('windows-1252').decode(bytes)
+  }
+}
+
+function looksLikeUtf16(bytes, zeroByteOffset) {
+  const sampleLength = Math.min(bytes.length, 80)
+  let checkedBytes = 0
+  let zeroBytes = 0
+  for (let index = zeroByteOffset; index < sampleLength; index += 2) {
+    checkedBytes += 1
+    if (bytes[index] === 0) zeroBytes += 1
+  }
+  return checkedBytes >= 4 && zeroBytes / checkedBytes >= 0.6
+}
+
+function normalizeSubtitleToWebVtt(subtitleText, subtitlePath) {
+  const normalizedText = subtitleText.replace(/^\uFEFF/, '')
+  if (/^\s*WEBVTT/i.test(normalizedText)) return normalizedText
+
+  const extension = String(subtitlePath || '').toLowerCase().match(/\.[a-z0-9]+(?:$|\?)/)?.[0]?.replace('?', '')
+  if (extension === '.ass' || extension === '.ssa' || /^\s*\[Script Info\]/im.test(normalizedText)) {
+    return subtitleCuesToWebVtt(parseAssSubtitleCues(normalizedText))
+  }
+
+  return `WEBVTT\n\n${normalizedText.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`
+}
+
+function parseAssSubtitleCues(subtitleText) {
+  let fields = ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text']
+  let isEventsSection = false
+
+  return subtitleText
     .replace(/^\uFEFF/, '')
     .replace(/\r/g, '')
-    .split(/\n{2,}/)
-    .flatMap((block) => {
-      const lines = block.trim().split('\n')
-      const timingIndex = lines.findIndex((line) => line.includes('-->'))
-      if (timingIndex < 0) return []
+    .split('\n')
+    .flatMap((line) => {
+      const trimmedLine = line.trim()
+      if (/^\[Events\]$/i.test(trimmedLine)) {
+        isEventsSection = true
+        return []
+      }
+      if (/^\[.+\]$/.test(trimmedLine)) {
+        isEventsSection = false
+        return []
+      }
+      if (!isEventsSection) return []
+      if (/^Format\s*:/i.test(trimmedLine)) {
+        fields = trimmedLine.slice(trimmedLine.indexOf(':') + 1).split(',').map((field) => field.trim().toLowerCase())
+        return []
+      }
+      if (!/^Dialogue\s*:/i.test(trimmedLine)) return []
 
-      const [startTimestamp, endTimestampWithSettings] = lines[timingIndex].split('-->')
-      const startTime = parseSubtitleTimestamp(startTimestamp)
-      const endTime = parseSubtitleTimestamp(endTimestampWithSettings?.trim().split(/\s+/, 1)[0])
-      const text = lines.slice(timingIndex + 1).join('\n').trim()
-      if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || !text) return []
-
-      return [{ endTime, startTime, text }]
+      const values = splitAssFields(trimmedLine.slice(trimmedLine.indexOf(':') + 1), fields.length)
+      const cue = Object.fromEntries(fields.map((field, index) => [field, values[index] || '']))
+      const startTime = parseSubtitleTimestamp(cue.start)
+      const endTime = parseSubtitleTimestamp(cue.end)
+      const text = cue.text
+        .replace(/\\N/gi, '\n')
+        .replace(/\\h/gi, ' ')
+        .replace(/\{\\[^}]*\}/g, '')
+        .trim()
+      return Number.isFinite(startTime) && Number.isFinite(endTime) && text
+        ? [{ endTime, startTime, text }]
+        : []
     })
+}
+
+function splitAssFields(line, fieldCount) {
+  const fields = []
+  let remaining = line
+  for (let index = 1; index < fieldCount; index += 1) {
+    const separatorIndex = remaining.indexOf(',')
+    if (separatorIndex < 0) break
+    fields.push(remaining.slice(0, separatorIndex).trim())
+    remaining = remaining.slice(separatorIndex + 1)
+  }
+  fields.push(remaining.trim())
+  return fields
+}
+
+function subtitleCuesToWebVtt(cues) {
+  const blocks = cues.map((cue, index) => (
+    `${index + 1}\n${formatWebVttTimestamp(cue.startTime)} --> ${formatWebVttTimestamp(cue.endTime)}\n${cue.text}`
+  ))
+  return `WEBVTT\n\n${blocks.join('\n\n')}`
+}
+
+function formatWebVttTimestamp(seconds) {
+  const milliseconds = Math.max(0, Math.round(Number(seconds) * 1000))
+  const hours = Math.floor(milliseconds / 3600000)
+  const minutes = Math.floor((milliseconds % 3600000) / 60000)
+  const remainingSeconds = Math.floor((milliseconds % 60000) / 1000)
+  const remainingMilliseconds = milliseconds % 1000
+  return [hours, minutes, remainingSeconds]
+    .map((segment) => String(segment).padStart(2, '0'))
+    .join(':') + `.${String(remainingMilliseconds).padStart(3, '0')}`
+}
+
+function parseSubtitleCues(webVtt) {
+  const lines = webVtt
+    .replace(/^\uFEFF/, '')
+    .replace(/\r/g, '')
+    .split('\n')
+  const cues = []
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!lines[index].includes('-->')) continue
+
+    const [startTimestamp, endTimestampWithSettings] = lines[index].split('-->')
+    const startTime = parseSubtitleTimestamp(startTimestamp)
+    const endTime = parseSubtitleTimestamp(endTimestampWithSettings?.trim().split(/\s+/, 1)[0])
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) continue
+
+    const textLines = []
+    for (index += 1; index < lines.length; index += 1) {
+      const line = lines[index]
+      if (!line.trim()) break
+      if (line.includes('-->')) {
+        index -= 1
+        break
+      }
+      if (lines[index + 1]?.includes('-->') && /^\s*\d+\s*$/.test(line)) break
+      textLines.push(line)
+    }
+    const text = textLines.join('\n').trim()
+    if (text) cues.push({ endTime, startTime, text })
+  }
+
+  return cues
 }
 
 function parseSubtitleTimestamp(timestamp) {
@@ -364,6 +488,7 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
 
     return {
       ...item,
+      tmdb_metadata_resolved: true,
       tmdb_title: item.tmdb_title || metadata.title || metadata.name,
       tmdb_poster_path: item.tmdb_poster_path || metadata.poster_path,
       tmdb_backdrop_path: item.tmdb_backdrop_path || metadata.backdrop_path,
@@ -377,7 +502,7 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
 
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
-    .filter((item) => !getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length)
+    .filter((item) => !item.tmdb_metadata_resolved && (!getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
     .slice(0, maxItems)
     .map((item) => ({ media_type: mediaType, folder_name: item.folder_name || item.name }))
     .filter((item) => item.folder_name)
@@ -400,6 +525,11 @@ async function fetchMetadataBatch(headers, items) {
 
     const metadataMap = new Map()
     data.results.forEach((result) => {
+      if (!result.media_type || !result.folder_name) return
+      if (result.status === 404) {
+        metadataMap.set(`${result.media_type}:${result.folder_name}`, {})
+        return
+      }
       if (result.status !== 200 || !result.payload) return
       metadataMap.set(`${result.media_type}:${result.folder_name}`, result.payload)
     })

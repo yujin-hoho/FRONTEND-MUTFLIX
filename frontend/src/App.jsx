@@ -36,9 +36,10 @@ import {
   getMediaType,
   getPosterUrl,
   getRotationKey,
+  getStillUrl,
   getTitle,
   getWatchUrl,
-  preloadImage,
+  preloadImages,
   rotateItems,
 } from './utils/media'
 
@@ -148,13 +149,15 @@ function App() {
 
     async function loadDashboard() {
       const cachedDashboard = readDashboardCache(selectedProfile.id)
+      const dashboardRequest = fetchDashboardData(authToken, selectedProfile.id)
+        .then((dashboard) => ({ dashboard }))
+        .catch((error) => ({ error }))
 
       setProfileData((currentData) => ({ ...currentData, isLoading: true, error: null }))
       setCatalogData((currentData) => ({ ...currentData, isLoading: true, error: null }))
 
       if (cachedDashboard) {
-        await preloadDashboardHero(featuredItemKeys.current, selectedProfile.id, cachedDashboard.movies, cachedDashboard.series)
-
+        await preloadDashboardAssets(featuredItemKeys.current, selectedProfile.id, cachedDashboard)
         if (!ignore) {
           setProfileData({ watchHistory: cachedDashboard.history || [], isLoading: false, error: null })
           setCatalogData({ movies: cachedDashboard.movies, series: cachedDashboard.series, isLoading: false, error: null })
@@ -162,22 +165,20 @@ function App() {
       }
 
       try {
-        const dashboard = await fetchDashboardData(authToken, selectedProfile.id)
-        await preloadDashboardHero(featuredItemKeys.current, selectedProfile.id, dashboard.movies, dashboard.series)
-        writeDashboardCache(selectedProfile.id, dashboard)
+        const { dashboard, error } = await dashboardRequest
+        if (error) throw error
+
+        const refreshedDashboard = cachedDashboard
+          ? mergeCatalogMetadataUpdates(dashboard, cachedDashboard)
+          : dashboard
+        const enrichedDashboard = await enrichCatalogMetadata(authToken, refreshedDashboard)
+        writeDashboardCache(selectedProfile.id, enrichedDashboard)
+        await preloadDashboardAssets(featuredItemKeys.current, selectedProfile.id, enrichedDashboard)
 
         if (!ignore) {
-          setProfileData({ watchHistory: dashboard.history, isLoading: false, error: null })
-          setCatalogData({ movies: dashboard.movies, series: dashboard.series, isLoading: false, error: null })
+          setProfileData({ watchHistory: enrichedDashboard.history, isLoading: false, error: null })
+          setCatalogData({ movies: enrichedDashboard.movies, series: enrichedDashboard.series, isLoading: false, error: null })
         }
-        enrichCatalogMetadata(authToken, dashboard, Infinity).then((enrichedDashboard) => {
-          if (ignore) return
-          setCatalogData((currentData) => {
-            const nextData = mergeCatalogMetadataUpdates(currentData, enrichedDashboard)
-            writeDashboardCache(selectedProfile.id, { ...enrichedDashboard, movies: nextData.movies, series: nextData.series })
-            return nextData
-          })
-        })
       } catch (error) {
         if (!ignore && !cachedDashboard) {
           setProfileData({ watchHistory: [], isLoading: false, error: error.message })
@@ -214,7 +215,7 @@ function App() {
   const hydrateCatalogItems = useCallback(async (items) => {
     const pendingItems = items.filter((item) => {
       const itemKey = getItemKey(item)
-      return !getPosterUrl(item) && !pendingMetadataKeys.current.has(itemKey)
+      return !getPosterUrl(item) && !item.tmdb_metadata_resolved && !pendingMetadataKeys.current.has(itemKey)
     })
     if (!pendingItems.length) return
 
@@ -305,20 +306,27 @@ function App() {
   function handleOpenDetail(item) {
     const itemPath = getItemPath(item)
     if (!itemPath) return
-    navigate(getDetailUrl(item), { state: { from: `${location.pathname}${location.search}`, item } })
+    navigate(getDetailUrl(item), {
+      state: {
+        from: getCurrentRoute(location),
+        fromState: location.state,
+        item,
+      },
+    })
     loadDetail(item)
   }
 
   function handleDetailBack() {
     setDetailData(EMPTY_DETAIL_DATA)
-    navigate(location.state?.from || '/dashboard')
+    navigateBackToStoredRoute(navigate, location.state)
   }
 
   function handleOpenWatch(item, video, videos = [video]) {
     if (!video?.path) return
     navigate(getWatchUrl(video.path), {
       state: {
-        from: `${location.pathname}${location.search}`,
+        from: getCurrentRoute(location),
+        fromState: location.state,
         item,
         video,
         videos,
@@ -332,13 +340,25 @@ function App() {
   }
 
   function handleWatchBack() {
-    navigate(location.state?.from || '/dashboard')
+    navigateBackToStoredRoute(navigate, location.state)
   }
 
   function handleOpenSearch(query, { replace = false } = {}) {
     const normalizedQuery = query.trim()
     const searchUrl = normalizedQuery ? `/search?q=${encodeURIComponent(normalizedQuery)}` : '/search'
-    navigate(searchUrl, { replace })
+    navigate(searchUrl, {
+      replace,
+      state: replace && isSearchRoute
+        ? location.state
+        : {
+            from: getCurrentRoute(location),
+            fromState: location.state,
+          },
+    })
+  }
+
+  function handleSearchBack() {
+    navigateBackToStoredRoute(navigate, location.state)
   }
 
   async function handleAddProfile(event) {
@@ -425,7 +445,6 @@ function App() {
   }
 
   if (currentUser && selectedProfile) {
-    if (catalogData.isLoading) return <DashboardSkeleton />
     if (isWatchRoute) {
       const mediaPath = decodeRouteValue(location.pathname.slice('/watch/'.length))
       const historyEntry = profileData.watchHistory.find((entry) => entry.media_path === mediaPath)
@@ -467,13 +486,14 @@ function App() {
         />
       )
     }
+    if (catalogData.isLoading) return <DashboardSkeleton />
     if (isSearchRoute) {
       return (
         <SearchResultsPage
           key={new URLSearchParams(location.search).get('q') || '__empty__'}
           catalogData={catalogData}
           initialQuery={new URLSearchParams(location.search).get('q') || ''}
-          onBack={() => navigate('/dashboard')}
+          onBack={handleSearchBack}
           onHydrateItems={hydrateCatalogItems}
           onOpenDetail={handleOpenDetail}
           onQueryChange={(query) => handleOpenSearch(query, { replace: true })}
@@ -531,10 +551,24 @@ function readStoredJson(key) {
   }
 }
 
-async function preloadDashboardHero(featuredKeys, profileId, movies, series) {
+async function preloadDashboardAssets(featuredKeys, profileId, { history = [], movies = [], series = [] }) {
+  const catalogItems = [...movies, ...series]
   const itemKey = getFeaturedItemKey(featuredKeys, profileId, movies, series)
-  const heroItem = [...movies, ...series].find((item) => getItemKey(item) === itemKey)
-  await preloadImage(heroItem ? getDetailArtworkUrl(heroItem) : '')
+  const heroItem = catalogItems.find((item) => getItemKey(item) === itemKey)
+
+  await preloadImages([
+    heroItem ? getDetailArtworkUrl(heroItem) : '',
+    ...catalogItems.map((item) => getPosterUrl(item)),
+    ...history.map((item) => getStillUrl(item)),
+  ])
+}
+
+function getCurrentRoute(location) {
+  return `${location.pathname}${location.search}`
+}
+
+function navigateBackToStoredRoute(navigate, routeState) {
+  navigate(routeState?.from || '/dashboard', { state: routeState?.fromState || null })
 }
 
 function getFeaturedItemKey(featuredKeys, profileId, movies, series) {

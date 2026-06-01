@@ -26,6 +26,15 @@ import orjson
 import diskcache
 from flask_compress import Compress
 
+# --- REDIS (Shared cross-worker cache layer) ---
+try:
+    import redis as _redis_lib
+    _HAS_REDIS = True
+except ImportError:
+    _redis_lib = None
+    _HAS_REDIS = False
+    print("WARNING: 'redis' library not installed. Redis caching disabled.", flush=True)
+
 # --- LIBRARY FLASK & GOOGLE ---
 from flask import Flask, jsonify, send_from_directory, request, Response, stream_with_context
 from flask_cors import CORS
@@ -123,32 +132,34 @@ DISCORD_ADMIN_ID = os.environ.get('DISCORD_ADMIN_ID')
 # Configurable via env vars for easy tuning on HuggingFace
 _RATE_LIMIT_RPM = int(os.environ.get('RATE_LIMIT_RPM', '60'))       # requests per minute per IP
 _RATE_LIMIT_BURST = int(os.environ.get('RATE_LIMIT_BURST', '120'))   # burst limit (short window)
-_rate_limit_store = {}  # {ip: [timestamp, timestamp, ...]}
+_SUBTITLE_RATE_LIMIT_RPM = int(os.environ.get('SUBTITLE_RATE_LIMIT_RPM', '600'))
+_rate_limit_store = {}  # {(scope, ip): [timestamp, timestamp, ...]}
 _rate_limit_lock = threading.Lock()
 
-def _rate_limit_check(limit=None):
+def _rate_limit_check(limit=None, scope=None):
     """Check rate limit for current request IP. Returns (allowed, retry_after_seconds)."""
     if limit is None:
         limit = _RATE_LIMIT_RPM
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     if ip and ',' in ip:
         ip = ip.split(',')[0].strip()  # Take first IP from proxy chain
+    bucket_key = (scope or request.endpoint or 'default', ip or 'unknown')
     now = _monotonic()
     window = 60.0  # 1 minute window
     
     with _rate_limit_lock:
-        if ip not in _rate_limit_store:
-            _rate_limit_store[ip] = []
+        if bucket_key not in _rate_limit_store:
+            _rate_limit_store[bucket_key] = []
         
         # Clean old entries outside window
-        _rate_limit_store[ip] = [t for t in _rate_limit_store[ip] if now - t < window]
+        _rate_limit_store[bucket_key] = [t for t in _rate_limit_store[bucket_key] if now - t < window]
         
-        if len(_rate_limit_store[ip]) >= limit:
-            oldest = _rate_limit_store[ip][0]
+        if len(_rate_limit_store[bucket_key]) >= limit:
+            oldest = _rate_limit_store[bucket_key][0]
             retry_after = int(window - (now - oldest)) + 1
             return False, max(retry_after, 1)
         
-        _rate_limit_store[ip].append(now)
+        _rate_limit_store[bucket_key].append(now)
         
         # Periodic cleanup: remove IPs with no recent activity (every ~100 requests)
         if len(_rate_limit_store) > 1000:
@@ -158,15 +169,17 @@ def _rate_limit_check(limit=None):
     
     return True, 0
 
-def rate_limited(limit=None):
+def rate_limited(limit=None, scope=None, cors=False):
     """Decorator: rate limit an endpoint by IP address."""
     def decorator(f):
         @wraps(f)
         def decorated(*args, **kwargs):
-            allowed, retry_after = _rate_limit_check(limit)
+            allowed, retry_after = _rate_limit_check(limit, scope or f.__name__)
             if not allowed:
                 resp = orjson_jsonify({"error": "Rate limit exceeded", "retry_after": retry_after}, 429)
                 resp.headers['Retry-After'] = str(retry_after)
+                if cors:
+                    resp.headers['Access-Control-Allow-Origin'] = '*'
                 return resp
             return f(*args, **kwargs)
         return decorated
@@ -205,6 +218,62 @@ WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed serv
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
+
+# --- REDIS CLIENT INITIALIZATION ---
+redis_client = None
+_REDIS_URL = os.environ.get('REDIS_URL')
+if _HAS_REDIS and _REDIS_URL:
+    try:
+        redis_client = _redis_lib.from_url(
+            _REDIS_URL,
+            decode_responses=False,   # kita handle encode/decode sendiri pakai orjson
+            socket_timeout=2,         # timeout 2 detik biar gak blocking
+            socket_connect_timeout=2,
+            retry_on_timeout=True,
+        )
+        redis_client.ping()
+        print("[INIT] \u2705 Redis connected successfully!", flush=True)
+    except Exception as _redis_err:
+        redis_client = None
+        print(f"[INIT] \u26a0\ufe0f Redis connection failed: {_redis_err} — falling back to DiskCache", flush=True)
+elif not _REDIS_URL:
+    print("[INIT] \u26a0\ufe0f REDIS_URL not set — Redis caching disabled, using DiskCache fallback", flush=True)
+
+# === REDIS HELPER FUNCTIONS ===
+# Semua operasi Redis dibungkus try/except supaya KALAU Redis mati,
+# server tetap jalan pakai fallback (DiskCache / RAM)
+
+def redis_get(key):
+    """Get value from Redis, return None if miss or error."""
+    if not redis_client:
+        return None
+    try:
+        raw = redis_client.get(key)
+        if raw is None:
+            return None
+        return orjson.loads(raw)
+    except Exception as e:
+        print(f"[REDIS] GET error ({key}): {e}", flush=True)
+        return None
+
+def redis_set(key, value, ttl_seconds=1800):
+    """Set value in Redis with TTL. Silently fails if Redis down."""
+    if not redis_client:
+        return
+    try:
+        raw = orjson.dumps(value)
+        redis_client.setex(key, ttl_seconds, raw)
+    except Exception as e:
+        print(f"[REDIS] SET error ({key}): {e}", flush=True)
+
+def redis_delete(*keys):
+    """Delete one or more keys from Redis."""
+    if not redis_client or not keys:
+        return
+    try:
+        redis_client.delete(*keys)
+    except Exception as e:
+        print(f"[REDIS] DEL error: {e}", flush=True)
 
 # === AGGRESSIVE IN-MEMORY CACHE (16GB RAM) ===
 # Data NEVER expires from RAM — BG worker proactively refreshes
@@ -284,6 +353,8 @@ _response_lock = threading.Lock()
 _tmdb_overrides_cache = None      # {folder_name: override_dict}
 _tmdb_overrides_ts = 0
 _tmdb_overrides_lock = threading.Lock()
+_tmdb_overrides_refresh_lock = threading.Lock()
+_tmdb_overrides_retry_after = 0
 
 # === TMDB PROXY CACHE ===
 # Cache response TMDB server-side so repeated app requests avoid TMDB.
@@ -364,13 +435,17 @@ def _subtitle_map_cache_valid(cache_ts, folder_name, cache_value):
     return (time.time() - cache_ts) < ttl
 
 def _invalidate_user_cache(cache_type, cache_key):
-    """Cross-worker invalidation: write timestamp ke diskcache (shared),
-    dan hapus dari RAM cache worker ini."""
+    """Cross-worker invalidation: Redis + diskcache + RAM."""
     now = time.time()
     inv_key = f"_inv_{cache_type}_{cache_key}"
     try:
         disk_cache.set(inv_key, now, expire=3600)  # TTL 1 jam
     except: pass
+    # === REDIS INVALIDATION ===
+    if cache_type == 'profiles':
+        redis_delete(f"profiles:{cache_key}")
+    elif cache_type == 'mylist':
+        redis_delete(f"mylist:{cache_key}")
     with _user_data_lock:
         if cache_type == 'profiles':
             _user_profiles_cache.pop(cache_key, None)
@@ -1682,42 +1757,76 @@ def delete_tmdb_override(current_user, folder_name):
 
 
 def _invalidate_tmdb_override_cache():
-    global _tmdb_overrides_cache, _tmdb_overrides_ts
+    global _tmdb_overrides_cache, _tmdb_overrides_ts, _tmdb_overrides_retry_after
     with _tmdb_overrides_lock:
         _tmdb_overrides_cache = None
         _tmdb_overrides_ts = 0
+        _tmdb_overrides_retry_after = 0
+    redis_delete("tmdb_overrides:all")
     _invalidate_response_cache('resp_folders', 'resp_folders_merged')
 
 def _get_tmdb_overrides_map():
-    global _tmdb_overrides_cache, _tmdb_overrides_ts
+    global _tmdb_overrides_cache, _tmdb_overrides_ts, _tmdb_overrides_retry_after
+    
+    # Try Redis first (Tier 1)
+    redis_key = "tmdb_overrides:all"
+    redis_data = redis_get(redis_key)
+    if redis_data is not None:
+        with _tmdb_overrides_lock:
+            _tmdb_overrides_cache = redis_data
+            _tmdb_overrides_ts = time.time()
+            _tmdb_overrides_retry_after = 0
+        return redis_data
+
     now = time.time()
     with _tmdb_overrides_lock:
         if _tmdb_overrides_cache is not None and (now - _tmdb_overrides_ts) < 300:
             return _tmdb_overrides_cache
-
-    conn, db_type = None, None
-    try:
-        conn, db_type = get_db_connection()
-        select_cols = 'folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region'
-        if db_type == 'postgres':
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute(f'SELECT {select_cols} FROM tmdb_overrides')
-            rows = [dict(r) for r in cur.fetchall()]
-        else:
-            import sqlite3
-            conn.row_factory = sqlite3.Row
-            rows = [dict(r) for r in conn.execute(f'SELECT {select_cols} FROM tmdb_overrides').fetchall()]
-        by_name = {r['folder_name']: r for r in rows}
-        with _tmdb_overrides_lock:
-            _tmdb_overrides_cache = by_name
-            _tmdb_overrides_ts = now
-        return by_name
-    except Exception as e:
-        print(f"[TMDB-OVERRIDE] load override cache failed: {e}", flush=True)
-        with _tmdb_overrides_lock:
+        if now < _tmdb_overrides_retry_after:
             return _tmdb_overrides_cache or {}
-    finally:
-        release_db_connection(conn, db_type)
+
+    with _tmdb_overrides_refresh_lock:
+        now = time.time()
+        with _tmdb_overrides_lock:
+            if _tmdb_overrides_cache is not None and (now - _tmdb_overrides_ts) < 300:
+                return _tmdb_overrides_cache
+            if now < _tmdb_overrides_retry_after:
+                return _tmdb_overrides_cache or {}
+
+        select_cols = 'folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region'
+        last_error = None
+        for attempt in range(3):
+            conn, db_type = None, None
+            try:
+                conn, db_type = get_db_connection()
+                if db_type == 'postgres':
+                    cur = conn.cursor(cursor_factory=RealDictCursor)
+                    cur.execute(f'SELECT {select_cols} FROM tmdb_overrides')
+                    rows = [dict(r) for r in cur.fetchall()]
+                else:
+                    import sqlite3
+                    conn.row_factory = sqlite3.Row
+                    rows = [dict(r) for r in conn.execute(f'SELECT {select_cols} FROM tmdb_overrides').fetchall()]
+                by_name = {r['folder_name']: r for r in rows}
+                with _tmdb_overrides_lock:
+                    _tmdb_overrides_cache = by_name
+                    _tmdb_overrides_ts = time.time()
+                    _tmdb_overrides_retry_after = 0
+                
+                # Write to Redis
+                redis_set(redis_key, by_name, ttl_seconds=43200) # 12 hours
+                return by_name
+            except Exception as e:
+                last_error = e
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+            finally:
+                release_db_connection(conn, db_type)
+
+        print(f"[TMDB-OVERRIDE] load override cache failed after retries: {last_error}", flush=True)
+        with _tmdb_overrides_lock:
+            _tmdb_overrides_retry_after = time.time() + 30
+            return _tmdb_overrides_cache or {}
 
 def _merge_tmdb_overrides_into_folders(all_c):
     """
@@ -1855,6 +1964,18 @@ def _catalog_item_for_folder(folder_name, resolved_name=None):
 def _load_markers_cache(marker_type):
     """Load all markers of given type from DB into RAM cache. Called once, then served from RAM."""
     global _intro_markers_cache, _outro_markers_cache
+    
+    redis_key = f"markers:{marker_type}"
+    redis_data = redis_get(redis_key)
+    if redis_data is not None:
+        with _markers_lock:
+            if marker_type == 'intro':
+                _intro_markers_cache = redis_data
+            else:
+                _outro_markers_cache = redis_data
+        print(f"[MARKERS] Loaded {len(redis_data)} {marker_type} markers from Redis", flush=True)
+        return
+        
     conn, db_type = None, None
     try:
         conn, db_type = get_db_connection()
@@ -1875,6 +1996,10 @@ def _load_markers_cache(marker_type):
                 _intro_markers_cache = cache
             else:
                 _outro_markers_cache = cache
+        
+        # Write to Redis (12 hours)
+        redis_set(redis_key, cache, ttl_seconds=43200)
+        
         print(f"[MARKERS] Loaded {len(cache)} {marker_type} markers into RAM cache", flush=True)
     except Exception as e:
         print(f"[MARKERS] Error loading {marker_type} cache: {e}", flush=True)
@@ -1889,6 +2014,7 @@ def _invalidate_markers_cache(marker_type):
             _intro_markers_cache = None
         else:
             _outro_markers_cache = None
+    redis_delete(f"markers:{marker_type}")
 
 def _get_markers_cache(marker_type):
     """Get markers cache dict, loading from DB if needed."""
@@ -2171,11 +2297,23 @@ def redeem_token(current_user):
 @token_required(check_expiry=False)
 def get_profiles(current_user):
     uid = current_user['id']
-    # [FIX] Cross-worker validation sebelum serve dari RAM cache
+    redis_key = f"profiles:{uid}"
+    
+    # Tier 0: RAM cache
     cached = _user_profiles_cache.get(uid)
     if cached is not None and _is_user_cache_valid('profiles', uid):
         return orjson_jsonify(cached)
+        
+    # Tier 1: Redis cache
+    redis_data = redis_get(redis_key)
+    if redis_data is not None:
+        now = time.time()
+        with _user_data_lock:
+            _user_profiles_cache[uid] = redis_data
+            _user_profiles_cache_ts[uid] = now
+        return orjson_jsonify(redis_data)
     
+    # Tier 2: Database
     conn, db_type = get_db_connection()
     try:
         if db_type == 'postgres':
@@ -2188,6 +2326,8 @@ def get_profiles(current_user):
         with _user_data_lock:
             _user_profiles_cache[uid] = res
             _user_profiles_cache_ts[uid] = now
+            
+        redis_set(redis_key, res, ttl_seconds=1800)
         return add_no_cache_headers(orjson_jsonify(res))
     finally: release_db_connection(conn, db_type)
 
@@ -2366,11 +2506,23 @@ def delete_history(current_user):
 def get_mylist(current_user):
     profile_id = request.args.get('profile_id')
     cache_key = f"{current_user['id']}_{profile_id}"
-    # [FIX] Cross-worker validation sebelum serve dari RAM cache
+    redis_key = f"mylist:{cache_key}"
+    
+    # Tier 0: RAM
     cached = _user_mylist_cache.get(cache_key)
     if cached is not None and _is_user_cache_valid('mylist', cache_key):
         return orjson_jsonify(cached)
+        
+    # Tier 1: Redis
+    redis_data = redis_get(redis_key)
+    if redis_data is not None:
+        now = time.time()
+        with _user_data_lock:
+            _user_mylist_cache[cache_key] = redis_data
+            _user_mylist_cache_ts[cache_key] = now
+        return orjson_jsonify(redis_data)
     
+    # Tier 2: DB
     conn, db_type = get_db_connection()
     try:
         ph = '%s' if db_type == 'postgres' else '?'
@@ -2389,6 +2541,8 @@ def get_mylist(current_user):
         with _user_data_lock:
             _user_mylist_cache[cache_key] = res
             _user_mylist_cache_ts[cache_key] = now
+            
+        redis_set(redis_key, res, ttl_seconds=1800)
         return orjson_jsonify(res)
     finally: release_db_connection(conn, db_type)
 
@@ -2660,14 +2814,18 @@ def _download_subtitle(file_path):
     """Internal: download subtitle from GDrive or Supabase. Returns bytes or None."""
     try:
         if file_path.startswith("gdrive_sub/"):
-            fid = file_path.split('/', 1)[1]
+            fid = _subtitle_gdrive_file_id(file_path)
             svc = get_gdrive_subtitle_service()
-            if not svc: return None
+            if not svc:
+                print(f"[SUBTITLE] Dedicated GDrive service unavailable for '{file_path}'", flush=True)
+                return None
             return svc.files().get_media(fileId=fid).execute()
         elif file_path.startswith("gdrive/"):
-            fid = file_path.split('/', 1)[1]
+            fid = _subtitle_gdrive_file_id(file_path)
             svc = get_gdrive_service()
-            if not svc: return None
+            if not svc:
+                print(f"[SUBTITLE] GDrive service unavailable for '{file_path}'", flush=True)
+                return None
             return svc.files().get_media(fileId=fid).execute()
         elif file_path.startswith("supabase/"):
             if not supabase: return None
@@ -2683,9 +2841,39 @@ def _download_subtitle(file_path):
                     for item in folders:
                         if item['name'].lower() == folder_name.lower():
                             return supabase.storage.from_('subtitles').download(f"{item['name']}/{file_name}")
-    except:
-        pass
+    except Exception as e:
+        print(f"[SUBTITLE] Download failed for '{file_path}': {e}", flush=True)
     return None
+
+def _subtitle_gdrive_file_id(file_path):
+    """Extract the file ID from legacy and extension-preserving subtitle paths."""
+    return file_path.split('/', 2)[1]
+
+def _subtitle_source_path(prefix, item):
+    """Keep the original extension so /subtitle can return the correct MIME type."""
+    extension = os.path.splitext(item.get('name', ''))[1].lower()
+    return f"{prefix}/{item['id']}/subtitle{extension}"
+
+def _is_supported_subtitle(filename):
+    return str(filename or '').lower().endswith(('.srt', '.vtt', '.ass', '.ssa'))
+
+def _gdrive_subtitle_query():
+    return "(name contains '.srt' or name contains '.vtt' or name contains '.ass' or name contains '.ssa')"
+
+def _subtitle_mimetype(file_path):
+    return 'text/vtt' if str(file_path or '').lower().endswith('.vtt') else 'text/plain; charset=utf-8'
+
+def _videos_cache_duration(payload):
+    videos = payload.get("videos") or []
+    if not videos:
+        return CACHE_DURATION_EMPTY
+    for video in videos:
+        subtitle_path = video.get("subtitle_path")
+        if not subtitle_path:
+            return _subtitle_empty_map_ttl
+        if subtitle_path.startswith(("gdrive/", "gdrive_sub/")) and "/subtitle." not in subtitle_path:
+            return 0
+    return CACHE_DURATION_VIDEOS
 
 def _normalize_text(text):
     """Normalize text for search index: lowercase, remove accents, split words.
@@ -2868,6 +3056,7 @@ def fetch_supabase_subtitles_map(folder_name):
             return {}
         for item in res:
             if item['name'].startswith('.'): continue
+            if not _is_supported_subtitle(item['name']): continue
             sub_path = f"supabase/{folder_name}/{item['name']}"
             s, e = get_season_episode_from_string(item['name'])
             if s and e:
@@ -2926,13 +3115,16 @@ def fetch_gdrive_subtitle_map(folder_name):
             return {}
         # List subtitle files inside the subfolder
         sub_folder_id = target_folders[0]['id']
-        files_q = f"'{sub_folder_id}' in parents and (name contains '.srt' or name contains '.vtt') and trashed = false"
+        # List everything, then filter locally. Drive's `name contains` filter
+        # can miss uppercase extensions such as .VTT or .ASS.
+        files_q = f"'{sub_folder_id}' in parents and trashed = false"
         page_token = None
         while True:
             files_res = svc.files().list(q=files_q, pageSize=200, fields="nextPageToken, files(id, name)", pageToken=page_token).execute()
             for item in files_res.get('files', []):
                 if item['name'].startswith('.'): continue
-                sub_path = f"gdrive_sub/{item['id']}"
+                if not _is_supported_subtitle(item['name']): continue
+                sub_path = _subtitle_source_path("gdrive_sub", item)
                 s, e = get_season_episode_from_string(item['name'])
                 if s and e:
                     subs_map[(s, e)] = sub_path
@@ -3140,7 +3332,7 @@ def fetch_gdrive_videos(service, folder_name):
             for i in range(0, len(all_folder_ids), CHUNK_SIZE):
                 chunk = all_folder_ids[i:i + CHUNK_SIZE]
                 parent_clauses = " or ".join([f"'{fid}' in parents" for fid in chunk])
-                files_q = f"({parent_clauses}) and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt' or name contains '.m3u8') and trashed = false"
+                files_q = f"({parent_clauses}) and (mimeType contains 'video/' or {_gdrive_subtitle_query()} or name contains '.m3u8') and trashed = false"
                 
                 page_token = None
                 while True:
@@ -3149,7 +3341,7 @@ def fetch_gdrive_videos(service, folder_name):
                         lname = f['name'].lower()
                         if 'video/' in f['mimeType'] or lname.endswith('.m3u8'): 
                             video_files.append(f)
-                        elif lname.endswith(('.srt', '.vtt')): 
+                        elif _is_supported_subtitle(lname):
                             subtitle_files.append(f)
                     page_token = files_res.get('nextPageToken')
                     if not page_token: break
@@ -3215,7 +3407,7 @@ def fetch_gdrive_videos(service, folder_name):
                         final_subtitle_path = gdrive_subs_map.get(('clean', cleaned_video))
                 # [Priority 3] GDrive co-located subtitle
                 if not final_subtitle_path and found_subtitle_gdrive:
-                    final_subtitle_path = f"gdrive/{found_subtitle_gdrive['id']}"
+                    final_subtitle_path = _subtitle_source_path("gdrive", found_subtitle_gdrive)
 
                 gdrive_videos.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": final_subtitle_path, "season": season if season else 1, "episode": episode, "source": "Google Drive", "original_name": video['name']})
             
@@ -3498,7 +3690,7 @@ def get_videos_in_folder(current_user, folder_name):
         # RAM first → pre-serialized response (~0.01ms)
         cached = mem_get(key)
         if cached:
-            dur = CACHE_DURATION_EMPTY if not cached.get("videos") else CACHE_DURATION_VIDEOS
+            dur = _videos_cache_duration(cached)
             if mem_is_fresh(key, dur):
                 if not cached.get('catalog_item'):
                     cached = copy.deepcopy(cached)
@@ -3547,10 +3739,10 @@ def get_videos_in_folder(current_user, folder_name):
                         print(f"[VIDEOS] Failed to resolve gdrive_folder name: {fe}", flush=True)
 
                     PAGE_SIZE = 100
-                    files_q = f"'{fid}' in parents and (mimeType contains 'video/' or name contains '.srt' or name contains '.vtt') and trashed = false"
+                    files_q = f"'{fid}' in parents and (mimeType contains 'video/' or {_gdrive_subtitle_query()}) and trashed = false"
                     files_res = svc.files().list(q=files_q, pageSize=PAGE_SIZE, fields="files(id, name, mimeType, parents)").execute()
                     video_files = [f for f in files_res.get('files', []) if 'video/' in f.get('mimeType', '')]
-                    subtitle_files_gd = [f for f in files_res.get('files', []) if f['name'].lower().endswith(('.srt', '.vtt'))]
+                    subtitle_files_gd = [f for f in files_res.get('files', []) if _is_supported_subtitle(f['name'])]
                     
                     if video_files:
                         # Resolve supa subtitle
@@ -3576,12 +3768,12 @@ def get_videos_in_folder(current_user, folder_name):
                             if not sub_path:
                                 for s in subtitle_files_gd:
                                     if os.path.splitext(s['name'])[0].lower() == video_base_name.lower():
-                                        sub_path = f"gdrive/{s['id']}"; break
+                                        sub_path = _subtitle_source_path("gdrive", s); break
                                 if not sub_path:
                                     cleaned_v = _clean_title_for_matching(video['name'])
                                     for s in subtitle_files_gd:
                                         if _clean_title_for_matching(s['name']) == cleaned_v:
-                                            sub_path = f"gdrive/{s['id']}"; break
+                                            sub_path = _subtitle_source_path("gdrive", s); break
                             
                             result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": video['name']})
                         
@@ -3611,10 +3803,11 @@ def get_videos_in_folder(current_user, folder_name):
                             sub_path = supa_subs.get(('clean', cleaned))
                     # Fallback: cek GDrive subtitle
                     if not sub_path and pid:
-                        sq = f"'{pid}' in parents and (name contains '.srt' or name contains '.vtt') and trashed = false"
+                        sq = f"'{pid}' in parents and {_gdrive_subtitle_query()} and trashed = false"
                         sr = svc.files().list(q=sq, fields="files(id, name)").execute()
                         for s in sr.get('files', []):
-                            if s['name'].lower().startswith(name.lower()): sub_path = f"gdrive/{s['id']}"; break
+                            if _is_supported_subtitle(s['name']) and s['name'].lower().startswith(name.lower()):
+                                sub_path = _subtitle_source_path("gdrive", s); break
                     final = {"videos": [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}], "has_season_folders": False, "catalog_item": catalog_item}
                     mem_set(key, final); _response_cache.pop(resp_key, None)
                     return orjson_jsonify(final, cache_key=resp_key)
@@ -3624,7 +3817,7 @@ def get_videos_in_folder(current_user, folder_name):
         vids.sort(key=lambda x: (x.get("season", 999), x.get("episode", 999), x["name"]))
         final = {"videos": vids, "has_season_folders": has_s, "catalog_item": catalog_item}
         mem_set(key, final); _response_cache.pop(resp_key, None)
-        return add_cache_headers(orjson_jsonify(final, cache_key=resp_key), max_age=(CACHE_DURATION_EMPTY if not final.get("videos") else CACHE_DURATION_VIDEOS))
+        return add_cache_headers(orjson_jsonify(final, cache_key=resp_key), max_age=_videos_cache_duration(final))
     
     stale = mem_get(key)
     if stale:
@@ -3777,6 +3970,18 @@ def _verify_stream_token(fid, token):
         return False
 
 
+_gdrive_stream_http_local = threading.local()
+
+def _get_gdrive_stream_http_session():
+    """Reuse upstream TCP/TLS connections for stream ranges and HLS segments."""
+    session = getattr(_gdrive_stream_http_local, 'session', None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update({"User-Agent": "Mutflix/1.0"})
+        _gdrive_stream_http_local.session = session
+    return session
+
+
 def _proxy_gdrive_media(fid):
     """Proxy media with a fresh server-side GDrive token on every Range request."""
     global _gdrive_token, _gdrive_token_ts
@@ -3793,7 +3998,8 @@ def _proxy_gdrive_media(fid):
     range_header = request.headers.get('Range')
     headers["Range"] = range_header or "bytes=0-"
 
-    upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 120))
+    stream_http = _get_gdrive_stream_http_session()
+    upstream = stream_http.get(media_url, headers=headers, stream=True, timeout=(10, 120))
     if upstream.status_code in (401, 403):
         svc = get_gdrive_service()
         if not svc:
@@ -3806,11 +4012,11 @@ def _proxy_gdrive_media(fid):
             _gdrive_token = token
             _gdrive_token_ts = time.time()
         headers["Authorization"] = f"Bearer {token}"
-        upstream = requests.get(media_url, headers=headers, stream=True, timeout=(10, 120))
+        upstream = stream_http.get(media_url, headers=headers, stream=True, timeout=(10, 120))
 
     def generate():
         try:
-            for chunk in upstream.iter_content(chunk_size=256 * 1024):
+            for chunk in upstream.iter_content(chunk_size=1024 * 1024):
                 if chunk:
                     yield chunk
         finally:
@@ -3866,7 +4072,7 @@ def get_hls_manifest(fid):
     
     headers = {"Authorization": f"Bearer {server_token}"}
     m3u8_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
-    resp = requests.get(m3u8_url, headers=headers, timeout=15)
+    resp = _get_gdrive_stream_http_session().get(m3u8_url, headers=headers, timeout=15)
     if resp.status_code != 200:
         return _hls_cors_response(f"Failed to fetch m3u8 (status={resp.status_code})", resp.status_code)
         
@@ -3915,15 +4121,14 @@ def get_hls_manifest(fid):
         return _hls_cors_response(m3u8_content)
 
 @app.route("/subtitle/<path:file_path>")
-@rate_limited(limit=120)
+@rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='subtitle', cors=True)
 def serve_subtitle(file_path):
     """[OPTIMIZED] Serve subtitle from RAM cache first (~0.01ms).
     Falls back to download on cache miss, then auto-caches for next time."""
     # === RAM CACHE HIT (~0.01ms) ===
     cached_content = _subtitle_cache.get(file_path)
     if cached_content:
-        mimetype = 'text/vtt' if '.vtt' in file_path.lower() else 'text/plain; charset=utf-8'
-        return Response(cached_content, mimetype=mimetype)
+        return _subtitle_response(cached_content, file_path)
     
     # === CACHE MISS: download and cache ===
     content = _download_subtitle(file_path)
@@ -3932,10 +4137,18 @@ def serve_subtitle(file_path):
         with _subtitle_lock:
             _subtitle_cache[file_path] = content
             _subtitle_cache_ts[file_path] = time.time()
-        mimetype = 'text/vtt' if '.vtt' in file_path.lower() else 'text/plain; charset=utf-8'
-        return Response(content, mimetype=mimetype)
+        return _subtitle_response(content, file_path)
     
-    return jsonify({"error": "Not found"}), 404
+    response = jsonify({"error": "Not found"})
+    response.status_code = 404
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    return response
+
+def _subtitle_response(content, file_path):
+    response = Response(content, mimetype=_subtitle_mimetype(file_path))
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
 
 # ==========================================
 # SEARCH API (Server-side instant search)
@@ -4114,13 +4327,24 @@ def _delete_release(folder_name):
 @app.route("/api/content-releases", methods=["GET"])
 @token_required(check_expiry=False)
 def get_content_releases(current_user):
-    """Get all content releases — cached in RAM."""
+    """Get all content releases — cached in RAM/Redis."""
     key = "content_releases"
+    
+    # Tier 0: RAM
     cached = mem_get(key)
     if cached is not None and mem_is_fresh(key, 300):  # 5 min TTL
         return add_cache_headers(orjson_jsonify(cached, cache_key='resp_releases'), max_age=300)
+        
+    # Tier 1: Redis
+    redis_data = redis_get("releases:all")
+    if redis_data is not None:
+        mem_set(key, redis_data)
+        return add_cache_headers(orjson_jsonify(redis_data, cache_key='resp_releases'), max_age=300)
+        
+    # Tier 2: DB
     releases = _load_releases()
     mem_set(key, releases)
+    redis_set("releases:all", releases, ttl_seconds=300)
     _response_cache.pop('resp_releases', None)
     return add_cache_headers(orjson_jsonify(releases, cache_key='resp_releases'), max_age=300)
 
@@ -4138,6 +4362,7 @@ def set_content_release(current_user):
     _mem_cache.pop('content_releases', None)
     _mem_cache_ts.pop('content_releases', None)
     _response_cache.pop('resp_releases', None)
+    redis_delete("releases:all")
     _invalidate_response_cache('resp_folders_merged')
     return orjson_jsonify({"success": True, "status": data.get('status', 'published')})
 
@@ -4150,6 +4375,7 @@ def delete_content_release(current_user, folder_name):
     _mem_cache.pop('content_releases', None)
     _mem_cache_ts.pop('content_releases', None)
     _response_cache.pop('resp_releases', None)
+    redis_delete("releases:all")
     _invalidate_response_cache('resp_folders_merged')
     return orjson_jsonify({"success": True})
 
@@ -4157,6 +4383,30 @@ def delete_content_release(current_user, folder_name):
 # ==========================================
 # DEBUG ROUTES (temporary)
 # ==========================================
+
+@app.route("/api/server-location")
+def server_location():
+    import socket
+    import requests
+    import os
+    data = {
+        "hostname": socket.gethostname(),
+        "env_region_candidates": {
+            k: v for k, v in os.environ.items()
+            if "REGION" in k.upper()
+            or "ZONE" in k.upper()
+            or "LOCATION" in k.upper()
+            or "SPACE" in k.upper()
+        }
+    }
+
+    try:
+        r = requests.get("https://ipinfo.io/json", timeout=5)
+        data["ipinfo"] = r.json()
+    except Exception as e:
+        data["ipinfo_error"] = str(e)
+
+    return jsonify(data)
 
 @app.route("/api/debug/routes", methods=["GET"])
 @token_required(check_expiry=False)

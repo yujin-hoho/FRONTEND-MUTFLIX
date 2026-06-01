@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../utils/media'
+import { getGenres, getItemKey, getMediaType, getPosterFallbackUrl, getPosterUrl, getRating, getTitle } from '../utils/media'
 import { normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
 function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, onOpenDetail, onQueryChange }) {
@@ -14,7 +14,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
   const results = useMemo(() => searchCatalog(searchIndex, deferredQuery), [deferredQuery, searchIndex])
   const normalizedQuery = normalizeSearchQuery(deferredQuery)
   const hydrationItems = useMemo(
-    () => results.slice(0, 24).filter((item) => !getPosterUrl(item)),
+    () => results.slice(0, 24).filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
     [results],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
@@ -91,7 +91,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
               return (
                 <button className="search-result-card" key={getItemKey(item)} onClick={() => onOpenDetail(item)} type="button">
                   <span className="search-result-poster">
-                    <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
+                    <LoadableImage alt={getTitle(item)} fallbackSrc={getPosterFallbackUrl(item)} key={poster} src={poster} />
                     {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
                   </span>
                   <span className="search-result-copy">

@@ -66,7 +66,7 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
         {(showAll ? items : items.slice(0, 15)).map((item) => (
           <button className="catalog-card history-card" key={item.media_path} onClick={() => onPlay(item)} type="button">
             <div className="history-frame">
-              <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} key={getStillUrl(item)} src={getStillUrl(item)} />
+              <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} fallbackSrc={getPosterFallbackUrl(item)} key={getStillUrl(item)} src={getStillUrl(item)} />
               <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
               <span className="history-progress-track">
                 <span style={{ width: `${getWatchProgress(item)}%` }} />

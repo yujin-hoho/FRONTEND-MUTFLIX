@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp, Play } from 'lucide-react'
 import { EPISODES_PER_PAGE } from '../config'
 import LoadableImage from '../components/LoadableImage'
@@ -8,25 +8,40 @@ import {
   getDetailArtworkUrl,
   getGenres,
   getMediaType,
+  getPosterFallbackUrl,
   getRating,
   getStillUrl,
   getTitle,
+  preloadImage,
 } from '../utils/media'
 
 function DetailPage({ detailData, onBack, onPlayVideo }) {
   const { credits, error, isLoading, item, videos } = detailData
-  const seasons = [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b)
+  const seasons = useMemo(
+    () => [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b),
+    [videos],
+  )
   const [activeSeason, setActiveSeason] = useState(seasons[0] || 1)
   const [visibleEpisodeCount, setVisibleEpisodeCount] = useState(EPISODES_PER_PAGE)
   const selectedSeason = seasons.includes(activeSeason) ? activeSeason : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
   const backdrop = getDetailArtworkUrl(item)
+  const backdropFallback = isLoading ? '' : getPosterFallbackUrl(item)
   const genres = getGenres(item)
   const firstVideo = videos[0]
-  const visibleVideos = videos.filter((video) => Number(video.season || 1) === selectedSeason)
+  const visibleVideos = useMemo(
+    () => videos.filter((video) => Number(video.season || 1) === selectedSeason),
+    [selectedSeason, videos],
+  )
   const renderedVideos = visibleVideos.slice(0, visibleEpisodeCount)
   const hasMoreEpisodes = visibleEpisodeCount < visibleVideos.length
   const canShowLessEpisodes = visibleEpisodeCount > EPISODES_PER_PAGE
+
+  useEffect(() => {
+    visibleVideos
+      .slice(visibleEpisodeCount, visibleEpisodeCount + EPISODES_PER_PAGE)
+      .forEach((video) => preloadImage(getStillUrl(video)))
+  }, [visibleEpisodeCount, visibleVideos])
 
   return (
     <main className="detail-page">
@@ -36,7 +51,7 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
       </button>
 
       <section className="detail-hero">
-        {backdrop && <LoadableImage className="detail-backdrop" fetchPriority="high" key={backdrop} loading="eager" shimmerOnError={false} src={backdrop} />}
+        <LoadableImage className="detail-backdrop" fallbackSrc={backdropFallback} fetchPriority="high" key={`${backdrop}-${backdropFallback}`} loading="eager" src={backdrop} />
         <div className="detail-shade" />
         <div className="detail-copy">
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
@@ -104,13 +119,16 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
                 {renderedVideos.map((video, index) => {
                   const episodeNumber = video.episode || index + 1
                   const thumbnail = getStillUrl(video)
+                  const thumbnailFallback = getPosterFallbackUrl({
+                    name: video.name || `${getTitle(item)} episode ${episodeNumber}`,
+                  })
                   const duration = formatDuration(video)
 
                   return (
                     <article className="episode-card" key={`${video.path || video.name}-${index}`}>
                       <span className="episode-number">{episodeNumber}</span>
                       <div className="episode-thumbnail">
-                        <LoadableImage key={thumbnail} src={thumbnail} />
+                        <LoadableImage fallbackSrc={thumbnailFallback} key={thumbnail} loading="eager" src={thumbnail} />
                         <button aria-label={`Play ${video.name || `episode ${episodeNumber}`}`} onClick={() => onPlayVideo(video)} type="button">
                           <Play fill="currentColor" size={20} />
                         </button>

@@ -10,7 +10,7 @@ export function hashString(value) {
 }
 
 export function getTitle(item) {
-  return item.tmdb_title || item.title || item.name || item.folder_name || 'Untitled'
+  return item.tmdb_title || item.title || item.name || item.folder_name || item.series_title || item.media_title || 'Untitled'
 }
 
 export function getPosterUrl(item, size = 'w342') {
@@ -25,7 +25,7 @@ export function getBackdropUrl(item, size = 'w1280') {
 }
 
 export function getDetailArtworkUrl(item) {
-  return getBackdropUrl(item) || getPosterUrl(item, 'w780') || getPosterFallbackUrl(item)
+  return getBackdropUrl(item) || getPosterUrl(item, 'w780')
 }
 
 export function getStillUrl(item) {
@@ -70,7 +70,9 @@ export function getPersonFallbackUrl(person = {}) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
-export function getPosterFallbackUrl(item = {}) {
+export function getPosterFallbackUrl(item = {}, { onlyWhenResolved = false } = {}) {
+  if (onlyWhenResolved && !item.tmdb_metadata_resolved && !getPosterUrl(item) && !getBackdropUrl(item)) return ''
+
   const title = getTitle(item)
   const seed = hashString(title)
   const hue = Math.abs(seed) % 360
@@ -138,7 +140,7 @@ export function preloadImage(url) {
 
   return new Promise((resolve) => {
     const image = new Image()
-    const timeout = window.setTimeout(resolve, 8000)
+    const timeout = window.setTimeout(resolve, 16000)
     const finish = () => {
       window.clearTimeout(timeout)
       resolve()
@@ -147,6 +149,23 @@ export function preloadImage(url) {
     image.onerror = finish
     image.src = url
   })
+}
+
+export async function preloadImages(urls, { concurrency = 12 } = {}) {
+  const queue = [...new Set(urls.filter(Boolean))]
+  let nextIndex = 0
+
+  async function preloadNext() {
+    while (nextIndex < queue.length) {
+      const url = queue[nextIndex]
+      nextIndex += 1
+      await preloadImage(url)
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, queue.length) }, preloadNext),
+  )
 }
 
 function getTmdbImageUrl(path, size) {

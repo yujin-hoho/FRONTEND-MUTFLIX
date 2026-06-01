@@ -23,9 +23,12 @@ import { getItemPath, getMediaType, getTitle } from '../utils/media'
 
 const SAVE_INTERVAL_MS = 10000
 const CONTROLS_HIDE_DELAY_MS = 2600
-const STREAM_STALL_FALLBACK_DELAY_MS = 8000
+const STREAM_STALL_FALLBACK_DELAY_MS = 10000
+const SEEK_STALL_FALLBACK_DELAY_MS = 16000
 const SUBTITLE_DELAY_LIMIT_SECONDS = 50
 const SUBTITLE_DELAY_STEP_SECONDS = 0.5
+const SUBTITLE_POSITION_MIN_PERCENT = 8
+const SUBTITLE_POSITION_MAX_PERCENT = 90
 const SUBTITLE_SETTINGS_STORAGE_KEY = 'mutflix.subtitle-settings'
 const DEFAULT_SUBTITLE_SETTINGS = {
   background: 'translucent',
@@ -36,7 +39,7 @@ const DEFAULT_SUBTITLE_SETTINGS = {
   fontSize: 'medium',
   fontStyle: 'normal',
   outline: 'uniform',
-  position: 'bottom',
+  positionPercent: 82,
 }
 
 function WatchPage({
@@ -55,7 +58,11 @@ function WatchPage({
   const controlsTimeoutRef = useRef(null)
   const streamStallTimeoutRef = useRef(null)
   const fallbackStreamUrlRef = useRef('')
+  const fallbackPositionRef = useRef(null)
   const hasUsedStreamFallbackRef = useRef(false)
+  const isSeekingRef = useRef(false)
+  const pendingInitialSeekRef = useRef(false)
+  const requestedSeekPositionRef = useRef(null)
   const lastSavedAtRef = useRef(0)
   const lastSavedPositionRef = useRef(-1)
   const restoredPositionRef = useRef(false)
@@ -108,6 +115,10 @@ function WatchPage({
     [currentTime, isCaptionsEnabled, subtitleCues, subtitleSettings.delaySeconds],
   )
   const subtitleCueStyle = useMemo(() => createSubtitleCueStyle(subtitleSettings), [subtitleSettings])
+  const subtitlePositionStyle = useMemo(
+    () => ({ top: `${subtitleSettings.positionPercent}%` }),
+    [subtitleSettings.positionPercent],
+  )
 
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
@@ -197,30 +208,63 @@ function WatchPage({
     const fallbackUrl = fallbackStreamUrlRef.current
     if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
 
+    const player = playerRef.current
+    fallbackPositionRef.current = Number.isFinite(requestedSeekPositionRef.current)
+      ? requestedSeekPositionRef.current
+      : Number.isFinite(player?.currentTime) ? player.currentTime : null
     clearStreamStallTimeout()
     hasUsedStreamFallbackRef.current = true
+    isSeekingRef.current = false
+    pendingInitialSeekRef.current = false
+    restoredPositionRef.current = false
     setPlayerError('')
     setIsBuffering(true)
     setStreamUrl(fallbackUrl)
     return true
   }, [clearStreamStallTimeout, streamUrl])
 
-  const armStreamStallFallback = useCallback(() => {
+  const armStreamStallFallback = useCallback((delayMs = STREAM_STALL_FALLBACK_DELAY_MS) => {
     clearStreamStallTimeout()
     if (!fallbackStreamUrlRef.current || hasUsedStreamFallbackRef.current) return
 
     streamStallTimeoutRef.current = window.setTimeout(() => {
       switchToFallbackStream()
-    }, STREAM_STALL_FALLBACK_DELAY_MS)
+    }, delayMs)
   }, [clearStreamStallTimeout, switchToFallbackStream])
 
   const handleBuffering = useCallback(() => {
     setIsBuffering(true)
-    armStreamStallFallback()
+    armStreamStallFallback(isSeekingRef.current ? SEEK_STALL_FALLBACK_DELAY_MS : STREAM_STALL_FALLBACK_DELAY_MS)
   }, [armStreamStallFallback])
+
+  const handleSeeking = useCallback(() => {
+    const player = playerRef.current
+    isSeekingRef.current = true
+    requestedSeekPositionRef.current = Number.isFinite(player?.currentTime) ? player.currentTime : null
+    clearStreamStallTimeout()
+    setIsBuffering(true)
+  }, [clearStreamStallTimeout])
+
+  const handleSeeked = useCallback(() => {
+    const player = playerRef.current
+    isSeekingRef.current = false
+    requestedSeekPositionRef.current = null
+    clearStreamStallTimeout()
+    if (!player) return
+
+    setCurrentTime(player.currentTime)
+    setIsBuffering(!player.paused && player.readyState < HTMLMediaElement.HAVE_FUTURE_DATA)
+    if (pendingInitialSeekRef.current) {
+      pendingInitialSeekRef.current = false
+      player.play().catch(() => setShowControls(true))
+    }
+  }, [clearStreamStallTimeout])
 
   const handlePlaying = useCallback(() => {
     clearStreamStallTimeout()
+    isSeekingRef.current = false
+    pendingInitialSeekRef.current = false
+    requestedSeekPositionRef.current = null
     setIsBuffering(false)
   }, [clearStreamStallTimeout])
 
@@ -240,7 +284,12 @@ function WatchPage({
 
     clearStreamStallTimeout()
     fallbackStreamUrlRef.current = ''
+    fallbackPositionRef.current = null
     hasUsedStreamFallbackRef.current = false
+    isSeekingRef.current = false
+    pendingInitialSeekRef.current = false
+    requestedSeekPositionRef.current = null
+    restoredPositionRef.current = false
 
     fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
       .then(({ fallbackUrl, url }) => {
@@ -303,7 +352,9 @@ function WatchPage({
 
       hls = new Hls({
         backBufferLength: 30,
-        maxBufferLength: 60,
+        maxBufferLength: 90,
+        maxBufferSize: 120 * 1000 * 1000,
+        maxMaxBufferLength: 180,
       })
       hls.loadSource(streamUrl)
       hls.attachMedia(player)
@@ -379,15 +430,27 @@ function WatchPage({
 
     clearStreamStallTimeout()
     setDuration(player.duration || 0)
-    setIsBuffering(false)
     if (!restoredPositionRef.current) {
-      const resumeSeconds = Number(resumeEntry?.position_ms || 0) / 1000
-      if (resumeSeconds > 0 && resumeSeconds < player.duration - 2) {
-        player.currentTime = resumeSeconds
-        setCurrentTime(resumeSeconds)
+      const fallbackSeconds = fallbackPositionRef.current
+      const targetSeconds = Number.isFinite(fallbackSeconds)
+        ? fallbackSeconds
+        : Number(resumeEntry?.position_ms || 0) / 1000
+      if (targetSeconds > 0 && targetSeconds < player.duration - 2) {
+        isSeekingRef.current = true
+        pendingInitialSeekRef.current = true
+        requestedSeekPositionRef.current = targetSeconds
+        player.currentTime = targetSeconds
+        setCurrentTime(targetSeconds)
+        setIsBuffering(true)
+        fallbackPositionRef.current = null
+        restoredPositionRef.current = true
+        setTextTracksHidden(player)
+        return
       }
+      fallbackPositionRef.current = null
       restoredPositionRef.current = true
     }
+    setIsBuffering(false)
     setTextTracksHidden(player)
     player.play().catch(() => setShowControls(true))
   }
@@ -424,6 +487,11 @@ function WatchPage({
   function handleSubtitleSetting(event) {
     const { name, value } = event.target
     setSubtitleSettings((currentSettings) => ({ ...currentSettings, [name]: value }))
+  }
+
+  function handleSubtitlePosition(event) {
+    const positionPercent = clampSubtitlePosition(event.target.value)
+    setSubtitleSettings((currentSettings) => ({ ...currentSettings, positionPercent }))
   }
 
   function handleSubtitleDelayInput(event) {
@@ -468,7 +536,6 @@ function WatchPage({
       ref={shellRef}
     >
       <video
-        autoPlay
         className="watch-video"
         onClick={togglePlay}
         onEnded={() => {
@@ -492,6 +559,8 @@ function WatchPage({
           setIsBuffering(false)
         }}
         onPlaying={handlePlaying}
+        onSeeked={handleSeeked}
+        onSeeking={handleSeeking}
         onTimeUpdate={handleTimeUpdate}
         onWaiting={handleBuffering}
         playsInline
@@ -513,7 +582,8 @@ function WatchPage({
       {activeSubtitleCues.length > 0 && (
         <div
           aria-hidden="true"
-          className={`watch-subtitles position-${subtitleSettings.position}`}
+          className="watch-subtitles"
+          style={subtitlePositionStyle}
         >
           {activeSubtitleCues.map((cue) => (
             <p className="watch-subtitle-cue" key={`${cue.startTime}-${cue.endTime}-${cue.text}`} style={subtitleCueStyle}>
@@ -659,13 +729,16 @@ function WatchPage({
                   <option value="raised">Raised</option>
                 </select>
               </label>
-              <label className="watch-subtitle-setting">
-                <span>Position</span>
-                <select name="position" onChange={handleSubtitleSetting} value={subtitleSettings.position}>
-                  <option value="top">Top</option>
-                  <option value="middle">Middle</option>
-                  <option value="bottom">Bottom</option>
-                </select>
+              <label className="watch-subtitle-setting watch-subtitle-position-setting">
+                <span>Vertical position: {subtitleSettings.positionPercent}%</span>
+                <input
+                  max={SUBTITLE_POSITION_MAX_PERCENT}
+                  min={SUBTITLE_POSITION_MIN_PERCENT}
+                  onChange={handleSubtitlePosition}
+                  step="1"
+                  type="range"
+                  value={subtitleSettings.positionPercent}
+                />
               </label>
             </div>
           </section>
@@ -707,16 +780,18 @@ function WatchPage({
             <span className="watch-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
           </div>
           <div className="watch-controls-group">
-            <button
-              aria-controls="subtitle-settings"
-              aria-expanded={isSubtitlePanelOpen}
-              aria-label="Subtitle settings"
-              className={`watch-icon-button ${subtitleUrl && isCaptionsEnabled ? 'active' : ''}`}
-              onClick={() => setIsSubtitlePanelOpen((isOpen) => !isOpen)}
-              type="button"
-            >
-              <Captions size={22} />
-            </button>
+            {subtitleUrl && (
+              <button
+                aria-controls="subtitle-settings"
+                aria-expanded={isSubtitlePanelOpen}
+                aria-label="Subtitle settings"
+                className={`watch-icon-button ${isCaptionsEnabled ? 'active' : ''}`}
+                onClick={() => setIsSubtitlePanelOpen((isOpen) => !isOpen)}
+                type="button"
+              >
+                <Captions size={22} />
+              </button>
+            )}
             <label className="watch-speed">
               <span>Speed</span>
               <select aria-label="Playback speed" defaultValue="1" onChange={handlePlaybackRate}>
@@ -774,13 +849,25 @@ function formatSubtitleDelay(seconds) {
   return String(Number(clampSubtitleDelay(seconds).toFixed(1)))
 }
 
+function clampSubtitlePosition(positionPercent) {
+  const numericPosition = Number(positionPercent)
+  if (!Number.isFinite(numericPosition)) return DEFAULT_SUBTITLE_SETTINGS.positionPercent
+  return Math.min(SUBTITLE_POSITION_MAX_PERCENT, Math.max(SUBTITLE_POSITION_MIN_PERCENT, numericPosition))
+}
+
 function readSubtitleSettings() {
   try {
     const storedSettings = JSON.parse(window.localStorage.getItem(SUBTITLE_SETTINGS_STORAGE_KEY) || '{}')
+    const legacyPositionPercent = {
+      top: 16,
+      middle: 50,
+      bottom: DEFAULT_SUBTITLE_SETTINGS.positionPercent,
+    }[storedSettings.position]
     return {
       ...DEFAULT_SUBTITLE_SETTINGS,
       ...storedSettings,
       delaySeconds: clampSubtitleDelay(storedSettings.delaySeconds),
+      positionPercent: clampSubtitlePosition(storedSettings.positionPercent ?? legacyPositionPercent),
     }
   } catch {
     return DEFAULT_SUBTITLE_SETTINGS

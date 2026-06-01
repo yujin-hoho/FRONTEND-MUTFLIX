@@ -1,9 +1,9 @@
 name = "mutflix-stream"
 main = "worker.js"
 compatibility_date = "2024-01-01"
+account_id = "8e130badb96b1ae2829f883ab37f999d"
 
 [vars]
-# Allowed origins — bisa diisi comma-separated
-# Contoh: "https://mutflix.onrender.com,https://melancholia112-mutflix.hf.space"
-# Pakai * untuk izinkan semua (token sudah jadi auth layer)
+# Allowed origins can be comma-separated. The GDrive token remains the
+# authorization layer for this edge proxy.
 ALLOWED_ORIGINS = "*"

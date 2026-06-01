@@ -1,210 +1,195 @@
 /**
- * MUTFLIX Cloudflare Worker — GDrive Streaming Proxy (v2: Edge Cache)
- * 
- * Proxy video stream dari Google Drive melalui Cloudflare Edge Network.
- * 
- * URL Format:
+ * MUTFLIX Cloudflare Worker - GDrive streaming proxy with edge caching.
+ *
+ * URL format:
  *   GET /{fileId}?token={gdrive_access_token}
- * 
- * Features:
- *   - ✅ Range header support (seeking)
- *   - ✅ Edge Cache — range responses di-cache di Cloudflare edge (POP terdekat)
- *       → Moov atom (biasanya di akhir file) cuma lambat pertama kali
- *       → Seeking ke posisi yang sama = instant dari cache
- *       → Popular content otomatis ke-cache
- *   - ✅ CORS headers untuk cross-origin playback
- *   - ✅ Streaming passthrough (tidak buffer seluruh file)
- *   - ✅ Health check endpoint (/health)
+ *
+ * The backend keeps returning both the direct GDrive URL and its own proxy URL.
+ * This worker is an optional faster route for ordinary video files; the player
+ * can fall back to the backend proxy if the edge request fails.
  */
 
-// Allowed origins — set via wrangler.toml [vars] or CF dashboard
 const DEFAULT_ALLOWED_ORIGINS = '*';
-
-// Cache TTL: 24 jam. Video files rarely change.
 const CACHE_TTL_SECONDS = 86400;
+const INITIAL_RANGE_BYTES = 4 * 1024 * 1024;
+const CACHEABLE_RANGE_MAX_BYTES = INITIAL_RANGE_BYTES;
+const CACHE_KEY_PREFIX = '/__mutflix_cache/';
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // ── Preflight CORS ──
     if (request.method === 'OPTIONS') {
       return handleCORS(request, env);
     }
 
-    // ── Health check ──
     if (url.pathname === '/health') {
-      return new Response(JSON.stringify({ status: 'ok', worker: 'mutflix-stream', ts: Date.now() }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(request, env) },
-      });
+      return jsonResponse({ status: 'ok', worker: 'mutflix-stream', ts: Date.now() }, 200, request, env);
     }
 
-    // ── Main: proxy GDrive stream ──
-    // URL: /{fileId}?token={access_token}
-    const fileId = url.pathname.replace(/^\//, '');
+    if (request.method !== 'GET') {
+      return jsonResponse({ error: 'Method not allowed' }, 405, request, env);
+    }
+
+    const fileId = decodeURIComponent(url.pathname.replace(/^\//, ''));
     const token = url.searchParams.get('token');
-
     if (!fileId || !token) {
-      return new Response(JSON.stringify({ error: 'Missing fileId or token' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(request, env) },
-      });
+      return jsonResponse({ error: 'Missing fileId or token' }, 400, request, env);
     }
 
-    // ══════════════════════════════════════════════
-    // EDGE CACHE LAYER (Cloudflare Cache API)
-    // ══════════════════════════════════════════════
-    // Cache key = fileId + Range header (token-independent, karena token berubah tiap jam)
-    // Ini bikin:
-    //   1. Moov atom fetch (akhir file) cuma lambat pertama kali per-POP
-    //   2. Seeking ke area yang sama = instant dari cache
-    //   3. Multiple user nonton konten sama = share cache
-    
-    // ── Optimasi: Paksa jadi chunk (misal 15MB) agar gampang di-cache di Edge ──
-    const originalRange = request.headers.get('Range') || '';
-    const INITIAL_CHUNK_SIZE = 16 * 1024 * 1024; // 16MB
-    const STREAM_CHUNK_SIZE = 64 * 1024 * 1024; // 64MB
-    const CACHEABLE_MAX_BYTES = 70 * 1024 * 1024;
-    let modifiedRange = originalRange;
+    const rangePlan = createRangePlan(request.headers.get('Range') || '');
+    const cacheKey = await createCacheKey(request, fileId, token, rangePlan.upstreamRange);
+    const cache = cacheKey ? caches.default : null;
 
-    if (!originalRange) {
-      // Jika request tanpa Range (misal initial load), paksa jadi 0-CHUNK
-      modifiedRange = `bytes=0-${INITIAL_CHUNK_SIZE - 1}`;
-    } else {
-      const match = originalRange.trim().match(/bytes=(\d+)-(.*)/);
-      if (match) {
-        const start = parseInt(match[1], 10);
-        const endStr = match[2];
-        const chunkSize = start === 0 ? INITIAL_CHUNK_SIZE : STREAM_CHUNK_SIZE;
-        if (!endStr) {
-          // Range terbuka, misal 'bytes=0-', kita batasi ukurannya
-          modifiedRange = `bytes=${start}-${start + chunkSize - 1}`;
-        } else {
-          const end = parseInt(endStr, 10);
-          if (end - start + 1 > chunkSize) {
-            // Range dibatasi tapi masih terlalu besar
-            modifiedRange = `bytes=${start}-${start + chunkSize - 1}`;
-          }
-        }
+    if (cacheKey) {
+      const cachedResponse = await cache.match(cacheKey);
+      if (cachedResponse) {
+        return responseForClient(cachedResponse, request, env, 'HIT');
       }
     }
 
-    const cacheKeyUrl = new URL(`https://cache-internal.mutflix.workers.dev/${fileId}`);
-    cacheKeyUrl.searchParams.set('r', modifiedRange);
-    const cacheKey = new Request(cacheKeyUrl.toString());
-    const cache = caches.default;
-
-    // Check edge cache first
-    const cachedResponse = await cache.match(cacheKey);
-    if (cachedResponse) {
-      // Cache HIT — serve dari Cloudflare edge (< 5ms latency)
-      const headers = new Headers(cachedResponse.headers);
-      // Re-apply CORS headers (origin bisa beda dari cached request)
-      for (const [k, v] of Object.entries(corsHeaders(request, env))) {
-        headers.set(k, v);
-      }
-      headers.set('X-Cache', 'HIT');
-      return new Response(cachedResponse.body, {
-        status: cachedResponse.status,
-        headers,
-      });
-    }
-
-    // ══════════════════════════════════════════════
-    // CACHE MISS — Fetch from Google Drive
-    // ══════════════════════════════════════════════
-    const gdriveUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-    const gdriveHeaders = {
-      'Authorization': `Bearer ${token}`,
-      'User-Agent': 'Mutflix/1.0',
-      'Range': modifiedRange // Selalu gunakan modifiedRange
-    };
-
+    const gdriveUrl = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?alt=media`;
     try {
-      const gdriveResp = await fetch(gdriveUrl, {
-        headers: gdriveHeaders,
-      });
-
-      if (!gdriveResp.ok && gdriveResp.status !== 206) {
-        // Don't cache errors
-        return new Response(`GDrive error: ${gdriveResp.status} ${gdriveResp.statusText}`, {
-          status: gdriveResp.status,
-          headers: corsHeaders(request, env),
-        });
-      }
-
-      // Build response headers
-      const respHeaders = {
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': `public, max-age=${CACHE_TTL_SECONDS}`,
-        'X-Cache': 'MISS',
-        ...corsHeaders(request, env),
+      const upstreamHeaders = {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': 'Mutflix/1.0',
       };
+      if (rangePlan.upstreamRange) upstreamHeaders.Range = rangePlan.upstreamRange;
 
-      // Forward relevant headers from GDrive
-      const forwardHeaders = ['content-type', 'content-length', 'content-range'];
-      for (const h of forwardHeaders) {
-        const val = gdriveResp.headers.get(h);
-        if (val) respHeaders[h] = val;
-      }
-
-      const response = new Response(gdriveResp.body, {
-        status: gdriveResp.status,
-        headers: respHeaders,
+      const upstreamResponse = await fetch(gdriveUrl, {
+        headers: upstreamHeaders,
       });
 
-      // ── Store in edge cache (non-blocking) ──
-      // ctx.waitUntil ensures the cache write completes even after response is sent
-      // Only cache small responses (e.g., < 25MB) to prevent stream backpressure
-      // from stalling the client video player (since clone() forces both streams to be consumed).
-      const contentLength = parseInt(gdriveResp.headers.get('content-length'), 10);
-      if (contentLength && contentLength <= CACHEABLE_MAX_BYTES) {
-        ctx.waitUntil(cache.put(cacheKey, response.clone()));
+      if (!upstreamResponse.ok && upstreamResponse.status !== 206) {
+        return passthroughError(upstreamResponse, request, env);
       }
 
-      return response;
-    } catch (err) {
-      return new Response(JSON.stringify({ error: 'Upstream fetch failed', detail: err.message }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(request, env) },
+      const responseHeaders = createResponseHeaders(upstreamResponse, request, env, rangePlan.proxyMode);
+      const clientResponse = new Response(upstreamResponse.body, {
+        status: upstreamResponse.status,
+        headers: responseHeaders,
       });
+
+      const contentLength = Number.parseInt(upstreamResponse.headers.get('content-length') || '', 10);
+      if (cacheKey && contentLength > 0 && contentLength <= CACHEABLE_RANGE_MAX_BYTES) {
+        const cacheHeaders = new Headers(responseHeaders);
+        cacheHeaders.set('Cache-Control', `public, max-age=${CACHE_TTL_SECONDS}`);
+        cacheHeaders.set('X-Origin-Status', String(upstreamResponse.status));
+        const cacheResponse = new Response(clientResponse.clone().body, {
+          // Cloudflare Cache API rejects partial-content responses. Keep the
+          // cached representation internal as 200 and restore 206 on cache hit.
+          status: 200,
+          headers: cacheHeaders,
+        });
+        ctx.waitUntil(cache.put(cacheKey, cacheResponse));
+      }
+
+      return clientResponse;
+    } catch (error) {
+      return jsonResponse({ error: 'Upstream fetch failed', detail: error.message }, 502, request, env);
     }
   },
 };
 
-/**
- * CORS headers helper
- */
-function corsHeaders(request, env) {
-  const allowedOrigins = (env?.ALLOWED_ORIGINS || DEFAULT_ALLOWED_ORIGINS).split(',').map(s => s.trim());
-  const origin = request.headers.get('Origin') || '';
-
-  let allowOrigin = DEFAULT_ALLOWED_ORIGINS;
-  if (allowedOrigins.length && allowedOrigins[0] !== '*') {
-    // Check if request origin is in the allowed list
-    if (allowedOrigins.includes(origin)) {
-      allowOrigin = origin;
-    } else {
-      // Not in allowed list — still allow (token is the real auth), but log
-      allowOrigin = allowedOrigins[0]; // Use first allowed as default
-    }
+function createRangePlan(range) {
+  const normalizedRange = range.trim();
+  if (normalizedRange !== 'bytes=0-') {
+    return {
+      proxyMode: normalizedRange ? 'direct-range' : 'direct-stream',
+      upstreamRange: normalizedRange,
+    };
   }
+
+  // Cache a small metadata bootstrap, then let later playback and seek ranges
+  // stream continuously so the browser is not forced through chunk boundaries.
+  return {
+    proxyMode: 'initial-window',
+    upstreamRange: `bytes=0-${INITIAL_RANGE_BYTES - 1}`,
+  };
+}
+
+async function createCacheKey(request, fileId, token, range) {
+  if (!isCacheableRange(range)) return null;
+
+  const cacheKeyUrl = new URL(request.url);
+  cacheKeyUrl.pathname = `${CACHE_KEY_PREFIX}${encodeURIComponent(fileId)}`;
+  cacheKeyUrl.search = '';
+  cacheKeyUrl.searchParams.set('r', range);
+  cacheKeyUrl.searchParams.set('auth', await hashToken(token));
+  return new Request(cacheKeyUrl.toString());
+}
+
+function isCacheableRange(range) {
+  const match = range.trim().match(/^bytes=(\d+)-(\d+)$/);
+  if (!match) return false;
+
+  const start = Number.parseInt(match[1], 10);
+  const end = Number.parseInt(match[2], 10);
+  return end >= start && end - start + 1 <= CACHEABLE_RANGE_MAX_BYTES;
+}
+
+async function hashToken(token) {
+  const bytes = new TextEncoder().encode(token);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function createResponseHeaders(upstreamResponse, request, env, proxyMode) {
+  const headers = new Headers({
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, max-age=3600',
+    'X-Cache': 'MISS',
+    'X-Proxy-Mode': proxyMode,
+    ...corsHeaders(request, env),
+  });
+
+  for (const header of ['content-type', 'content-length', 'content-range']) {
+    const value = upstreamResponse.headers.get(header);
+    if (value) headers.set(header, value);
+  }
+  return headers;
+}
+
+function responseForClient(cachedResponse, request, env, cacheStatus) {
+  const headers = new Headers(cachedResponse.headers);
+  const status = Number.parseInt(headers.get('X-Origin-Status') || '200', 10);
+  headers.delete('X-Origin-Status');
+  headers.set('X-Cache', cacheStatus);
+  headers.set('X-Proxy-Mode', 'metadata-cache');
+  for (const [key, value] of Object.entries(corsHeaders(request, env))) {
+    headers.set(key, value);
+  }
+  return new Response(cachedResponse.body, { status, headers });
+}
+
+function passthroughError(upstreamResponse, request, env) {
+  const headers = new Headers(upstreamResponse.headers);
+  for (const [key, value] of Object.entries(corsHeaders(request, env))) {
+    headers.set(key, value);
+  }
+  return new Response(upstreamResponse.body, { status: upstreamResponse.status, headers });
+}
+
+function jsonResponse(payload, status, request, env) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(request, env) },
+  });
+}
+
+function corsHeaders(request, env) {
+  const allowedOrigins = String(env?.ALLOWED_ORIGINS || DEFAULT_ALLOWED_ORIGINS).split(',').map((origin) => origin.trim());
+  const origin = request.headers.get('Origin') || '';
+  const allowOrigin = allowedOrigins[0] === '*' || allowedOrigins.includes(origin) ? (allowedOrigins[0] === '*' ? '*' : origin) : allowedOrigins[0];
 
   return {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Range, Authorization',
-    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, X-Cache',
+    'Access-Control-Allow-Headers': 'Range',
+    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges, X-Cache, X-Proxy-Mode',
   };
 }
 
-/**
- * Handle CORS preflight
- */
 function handleCORS(request, env) {
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders(request, env),
-  });
+  return new Response(null, { status: 204, headers: corsHeaders(request, env) });
 }

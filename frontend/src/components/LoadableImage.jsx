@@ -17,7 +17,11 @@ const LoadableImage = memo(function LoadableImage({
     ? 'image-shimmer image-shimmer-static'
     : 'image-shimmer'
 
-  if (!resolvedSrc) return shimmerOnError ? <span className="image-shimmer image-shimmer-static" aria-hidden="true" /> : null
+  if (!resolvedSrc) {
+    return shimmerOnError
+      ? <span className={imageState === 'error' ? 'image-shimmer image-shimmer-static' : 'image-shimmer'} aria-hidden="true" />
+      : null
+  }
 
   return (
     <>

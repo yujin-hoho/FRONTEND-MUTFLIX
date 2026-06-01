@@ -33,6 +33,18 @@
   background: #07111f;
 }
 
+.dashboard-skeleton-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  color: #d1fae5;
+  font-size: 0.95rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  transform: translate(-50%, -50%);
+}
+
 .dashboard-skeleton-shell {
   position: relative;
   z-index: 2;

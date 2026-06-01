@@ -7,6 +7,7 @@ import {
   getDetailArtworkUrl,
   getGenres,
   getItemKey,
+  getPosterFallbackUrl,
   getPosterUrl,
   getProfileAvatarUrl,
   getRating,
@@ -79,7 +80,14 @@ function DashboardPage({
       </nav>
 
       <section className="dashboard-hero" aria-label="Featured title">
-        {dashboardView.featuredBackdrop && <LoadableImage className="dashboard-hero-poster" fetchPriority="high" key={dashboardView.featuredBackdrop} loading="eager" shimmerOnError={false} src={dashboardView.featuredBackdrop} />}
+        <LoadableImage
+          className="dashboard-hero-poster"
+          fallbackSrc={dashboardView.featuredFallback}
+          fetchPriority="high"
+          key={`${dashboardView.featuredBackdrop}-${dashboardView.featuredFallback}`}
+          loading="eager"
+          src={dashboardView.featuredBackdrop}
+        />
         <div className="dashboard-hero-shade" />
         <div className="dashboard-hero-content">
           <h1>{dashboardView.featuredItem ? getTitle(dashboardView.featuredItem) : 'Mutflix'}</h1>
@@ -150,6 +158,7 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey) {
     catalogItems.filter((item) => getPosterUrl(item)),
     `${rotationKey}-fresh-picks`,
   ).slice(0, 24)
+  const browseAll = rotateItems(catalogItems, `${rotationKey}-browse-all`).slice(0, 24)
   const hiddenGems = rotateItems(
     catalogItems.filter((item) => {
       const rating = getRating(item)
@@ -167,10 +176,12 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey) {
       mysteryRow.items.length ? mysteryRow : null,
     ].filter(Boolean),
     curatedRows: [
+      browseAll.length ? { genre: 'Browse All', items: browseAll } : null,
       freshPicks.length ? { genre: 'Fresh Picks', items: freshPicks } : null,
       hiddenGems.length ? { genre: 'Hidden Gems', items: hiddenGems } : null,
     ].filter(Boolean),
     featuredBackdrop: featuredItem ? getDetailArtworkUrl(featuredItem) : '',
+    featuredFallback: featuredItem ? getPosterFallbackUrl(featuredItem) : '',
     featuredItem,
   }
 }
