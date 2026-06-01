@@ -12,6 +12,7 @@ import {
   SkipForward,
   Volume2,
   VolumeX,
+  X,
 } from 'lucide-react'
 import {
   fetchPlaybackMarkers,
@@ -22,6 +23,21 @@ import { getItemPath, getMediaType, getTitle } from '../utils/media'
 
 const SAVE_INTERVAL_MS = 10000
 const CONTROLS_HIDE_DELAY_MS = 2600
+const STREAM_STALL_FALLBACK_DELAY_MS = 8000
+const SUBTITLE_DELAY_LIMIT_SECONDS = 50
+const SUBTITLE_DELAY_STEP_SECONDS = 0.5
+const SUBTITLE_SETTINGS_STORAGE_KEY = 'mutflix.subtitle-settings'
+const DEFAULT_SUBTITLE_SETTINGS = {
+  background: 'translucent',
+  color: 'white',
+  delaySeconds: 0,
+  enabled: true,
+  fontFamily: 'sans',
+  fontSize: 'medium',
+  fontStyle: 'normal',
+  outline: 'uniform',
+  position: 'bottom',
+}
 
 function WatchPage({
   authToken,
@@ -37,6 +53,9 @@ function WatchPage({
   const playerRef = useRef(null)
   const shellRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
+  const streamStallTimeoutRef = useRef(null)
+  const fallbackStreamUrlRef = useRef('')
+  const hasUsedStreamFallbackRef = useRef(false)
   const lastSavedAtRef = useRef(0)
   const lastSavedPositionRef = useRef(-1)
   const restoredPositionRef = useRef(false)
@@ -51,7 +70,10 @@ function WatchPage({
   const [isPlaying, setIsPlaying] = useState(false)
   const [isBuffering, setIsBuffering] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [isCaptionsEnabled, setIsCaptionsEnabled] = useState(true)
+  const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
+  const [subtitleDelayInput, setSubtitleDelayInput] = useState(() => formatSubtitleDelay(subtitleSettings.delaySeconds))
+  const [subtitleCues, setSubtitleCues] = useState([])
+  const [isSubtitlePanelOpen, setIsSubtitlePanelOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [playerError, setPlayerError] = useState('')
 
@@ -63,6 +85,7 @@ function WatchPage({
   const videoOriginalName = video.original_name || ''
   const videoPath = video.path
   const subtitlePath = video.subtitle_path || ''
+  const isCaptionsEnabled = subtitleSettings.enabled
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
   const episodeLabel = isSeries
@@ -75,6 +98,16 @@ function WatchPage({
     (markers.outroStartSeconds > 0 && currentTime >= duration - markers.outroStartSeconds)
     || currentTime >= duration - 2
   )
+  const activeSubtitleCues = useMemo(
+    () => isCaptionsEnabled
+      ? subtitleCues.filter((cue) => (
+          cue.startTime <= currentTime + subtitleSettings.delaySeconds
+          && cue.endTime > currentTime + subtitleSettings.delaySeconds
+        ))
+      : [],
+    [currentTime, isCaptionsEnabled, subtitleCues, subtitleSettings.delaySeconds],
+  )
+  const subtitleCueStyle = useMemo(() => createSubtitleCueStyle(subtitleSettings), [subtitleSettings])
 
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
@@ -99,10 +132,10 @@ function WatchPage({
   const revealControls = useCallback(() => {
     setShowControls(true)
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying) {
+    if (isPlaying && !isSubtitlePanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isPlaying])
+  }, [isPlaying, isSubtitlePanelOpen])
 
   const seekBy = useCallback((seconds) => {
     const player = playerRef.current
@@ -143,23 +176,78 @@ function WatchPage({
   }, [])
 
   const toggleCaptions = useCallback(() => {
-    const shouldEnable = !isCaptionsEnabled
-    if (!setTextTrackMode(playerRef.current, shouldEnable ? 'showing' : 'hidden')) return
-    setIsCaptionsEnabled(shouldEnable)
+    if (!subtitleUrl) return
+    setSubtitleSettings((currentSettings) => ({
+      ...currentSettings,
+      enabled: !currentSettings.enabled,
+    }))
     revealControls()
-  }, [isCaptionsEnabled, revealControls])
+  }, [revealControls, subtitleUrl])
+
+  const setSubtitleTrackRef = useCallback((element) => {
+    if (element?.track) element.track.mode = 'hidden'
+  }, [])
+
+  const clearStreamStallTimeout = useCallback(() => {
+    window.clearTimeout(streamStallTimeoutRef.current)
+    streamStallTimeoutRef.current = null
+  }, [])
+
+  const switchToFallbackStream = useCallback(() => {
+    const fallbackUrl = fallbackStreamUrlRef.current
+    if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
+
+    clearStreamStallTimeout()
+    hasUsedStreamFallbackRef.current = true
+    setPlayerError('')
+    setIsBuffering(true)
+    setStreamUrl(fallbackUrl)
+    return true
+  }, [clearStreamStallTimeout, streamUrl])
+
+  const armStreamStallFallback = useCallback(() => {
+    clearStreamStallTimeout()
+    if (!fallbackStreamUrlRef.current || hasUsedStreamFallbackRef.current) return
+
+    streamStallTimeoutRef.current = window.setTimeout(() => {
+      switchToFallbackStream()
+    }, STREAM_STALL_FALLBACK_DELAY_MS)
+  }, [clearStreamStallTimeout, switchToFallbackStream])
+
+  const handleBuffering = useCallback(() => {
+    setIsBuffering(true)
+    armStreamStallFallback()
+  }, [armStreamStallFallback])
+
+  const handlePlaying = useCallback(() => {
+    clearStreamStallTimeout()
+    setIsBuffering(false)
+  }, [clearStreamStallTimeout])
 
   useEffect(() => {
     progressContextRef.current = { item, profileId, video }
   }, [item, profileId, video])
 
+  useEffect(() => clearStreamStallTimeout, [clearStreamStallTimeout])
+
+  useEffect(() => {
+    writeSubtitleSettings(subtitleSettings)
+  }, [subtitleSettings])
+
   useEffect(() => {
     let ignore = false
     let nextSubtitleUrl = ''
 
+    clearStreamStallTimeout()
+    fallbackStreamUrlRef.current = ''
+    hasUsedStreamFallbackRef.current = false
+
     fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
-      .then((url) => {
-        if (!ignore) setStreamUrl(url)
+      .then(({ fallbackUrl, url }) => {
+        if (!ignore) {
+          fallbackStreamUrlRef.current = fallbackUrl
+          setStreamUrl(url)
+        }
       })
       .catch((error) => {
         if (!ignore) {
@@ -172,16 +260,24 @@ function WatchPage({
       if (!ignore) setMarkers(nextMarkers)
     })
 
-    fetchSubtitleTrack(subtitlePath).then((url) => {
+    fetchSubtitleTrack(subtitlePath).then(({ cues, url }) => {
       nextSubtitleUrl = url
-      if (!ignore) setSubtitleUrl(url)
+      if (!ignore) {
+        setSubtitleCues(createSubtitleCues(cues))
+        setSubtitleUrl(url)
+      }
+    }).catch(() => {
+      if (!ignore) {
+        setSubtitleCues([])
+        setSubtitleUrl('')
+      }
     })
 
     return () => {
       ignore = true
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, markerFolderName, subtitlePath, videoName, videoOriginalName, videoPath])
+  }, [authToken, clearStreamStallTimeout, markerFolderName, subtitlePath, videoName, videoOriginalName, videoPath])
 
   useEffect(() => {
     const player = playerRef.current
@@ -205,11 +301,14 @@ function WatchPage({
         return
       }
 
-      hls = new Hls()
+      hls = new Hls({
+        backBufferLength: 30,
+        maxBufferLength: 60,
+      })
       hls.loadSource(streamUrl)
       hls.attachMedia(player)
       hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data.fatal) {
+        if (data.fatal && !switchToFallbackStream()) {
           setPlayerError('The HLS stream could not be loaded.')
           setIsBuffering(false)
         }
@@ -226,8 +325,9 @@ function WatchPage({
       hls?.destroy()
       player.removeAttribute('src')
       player.load()
+      clearStreamStallTimeout()
     }
-  }, [isHlsVideo, streamUrl])
+  }, [clearStreamStallTimeout, isHlsVideo, streamUrl, switchToFallbackStream])
 
   useEffect(() => {
     const handleFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement))
@@ -267,16 +367,17 @@ function WatchPage({
 
   useEffect(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying) {
+    if (isPlaying && !isSubtitlePanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
     return () => window.clearTimeout(controlsTimeoutRef.current)
-  }, [isPlaying])
+  }, [isPlaying, isSubtitlePanelOpen])
 
   function handleLoadedMetadata() {
     const player = playerRef.current
     if (!player) return
 
+    clearStreamStallTimeout()
     setDuration(player.duration || 0)
     setIsBuffering(false)
     if (!restoredPositionRef.current) {
@@ -287,7 +388,7 @@ function WatchPage({
       }
       restoredPositionRef.current = true
     }
-    if (subtitleUrl) setTextTrackMode(player, 'showing')
+    setTextTracksHidden(player)
     player.play().catch(() => setShowControls(true))
   }
 
@@ -320,6 +421,34 @@ function WatchPage({
     if (playerRef.current) playerRef.current.playbackRate = Number(event.target.value)
   }
 
+  function handleSubtitleSetting(event) {
+    const { name, value } = event.target
+    setSubtitleSettings((currentSettings) => ({ ...currentSettings, [name]: value }))
+  }
+
+  function handleSubtitleDelayInput(event) {
+    const rawValue = event.target.value
+    setSubtitleDelayInput(rawValue)
+    if (rawValue === '') return
+
+    const numericValue = Number(rawValue)
+    if (!Number.isFinite(numericValue)) return
+
+    const nextDelay = clampSubtitleDelay(numericValue)
+    setSubtitleSettings((currentSettings) => ({ ...currentSettings, delaySeconds: nextDelay }))
+    if (nextDelay !== numericValue) setSubtitleDelayInput(formatSubtitleDelay(nextDelay))
+  }
+
+  function handleSubtitleDelayBlur() {
+    setSubtitleDelay(subtitleSettings.delaySeconds)
+  }
+
+  function setSubtitleDelay(value) {
+    const nextDelay = clampSubtitleDelay(value)
+    setSubtitleDelayInput(formatSubtitleDelay(nextDelay))
+    setSubtitleSettings((currentSettings) => ({ ...currentSettings, delaySeconds: nextDelay }))
+  }
+
   function handleOpenNext() {
     if (!nextVideo) return
     persistProgress({ complete: true, force: true })
@@ -348,10 +477,12 @@ function WatchPage({
           setShowControls(true)
         }}
         onError={() => {
+          if (switchToFallbackStream()) return
           if (streamUrl) setPlayerError('The browser could not play this video format.')
           setIsBuffering(false)
         }}
         onLoadedMetadata={handleLoadedMetadata}
+        onLoadStart={handleBuffering}
         onPause={() => {
           setIsPlaying(false)
           persistProgress({ force: true })
@@ -360,15 +491,37 @@ function WatchPage({
           setIsPlaying(true)
           setIsBuffering(false)
         }}
-        onPlaying={() => setIsBuffering(false)}
+        onPlaying={handlePlaying}
         onTimeUpdate={handleTimeUpdate}
-        onWaiting={() => setIsBuffering(true)}
+        onWaiting={handleBuffering}
         playsInline
-        preload="metadata"
+        preload="auto"
         ref={playerRef}
       >
-        {subtitleUrl && <track default kind="subtitles" label="Subtitle" src={subtitleUrl} srcLang="id" />}
+        {subtitleUrl && (
+          <track
+            key={subtitleUrl}
+            kind="subtitles"
+            label="Subtitle"
+            ref={setSubtitleTrackRef}
+            src={subtitleUrl}
+            srcLang="id"
+          />
+        )}
       </video>
+
+      {activeSubtitleCues.length > 0 && (
+        <div
+          aria-hidden="true"
+          className={`watch-subtitles position-${subtitleSettings.position}`}
+        >
+          {activeSubtitleCues.map((cue) => (
+            <p className="watch-subtitle-cue" key={`${cue.startTime}-${cue.endTime}-${cue.text}`} style={subtitleCueStyle}>
+              {cue.lines.map((line, index) => <span className="watch-subtitle-line" key={`${line}-${index}`}>{line}</span>)}
+            </p>
+          ))}
+        </div>
+      )}
 
       <div className="watch-topbar">
         <button aria-label="Back" className="watch-icon-button" onClick={handleBack} type="button">
@@ -411,6 +564,112 @@ function WatchPage({
       </div>
 
       <div className="watch-controls">
+        {isSubtitlePanelOpen && (
+          <section aria-label="Subtitle settings" className="watch-subtitle-panel" id="subtitle-settings">
+            <div className="watch-subtitle-panel-header">
+              <div>
+                <h2>Subtitle settings</h2>
+                <p>{subtitleUrl ? 'Customize subtitle display and timing.' : 'No subtitle is available for this video.'}</p>
+              </div>
+              <button
+                aria-label="Close subtitle settings"
+                className="watch-subtitle-close"
+                onClick={() => setIsSubtitlePanelOpen(false)}
+                type="button"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <label className="watch-subtitle-toggle">
+              <input checked={Boolean(subtitleUrl) && isCaptionsEnabled} disabled={!subtitleUrl} onChange={toggleCaptions} type="checkbox" />
+              <span>Show subtitles</span>
+            </label>
+            <div className="watch-subtitle-settings-grid">
+              <div className="watch-subtitle-setting watch-subtitle-delay-setting">
+                <span>Sync delay</span>
+                <div className="watch-subtitle-delay">
+                  <button aria-label="Slow down subtitles by 0.5 seconds" onClick={() => setSubtitleDelay(subtitleSettings.delaySeconds - SUBTITLE_DELAY_STEP_SECONDS)} type="button">-</button>
+                  <label>
+                    <input
+                      aria-label="Subtitle sync delay in seconds"
+                      max={SUBTITLE_DELAY_LIMIT_SECONDS}
+                      min={-SUBTITLE_DELAY_LIMIT_SECONDS}
+                      onBlur={handleSubtitleDelayBlur}
+                      onChange={handleSubtitleDelayInput}
+                      step="0.1"
+                      type="number"
+                      value={subtitleDelayInput}
+                    />
+                    <span>s</span>
+                  </label>
+                  <button aria-label="Speed up subtitles by 0.5 seconds" onClick={() => setSubtitleDelay(subtitleSettings.delaySeconds + SUBTITLE_DELAY_STEP_SECONDS)} type="button">+</button>
+                </div>
+                <small>- slower, + faster. Maximum 50 seconds.</small>
+              </div>
+              <label className="watch-subtitle-setting">
+                <span>Font</span>
+                <select name="fontFamily" onChange={handleSubtitleSetting} value={subtitleSettings.fontFamily}>
+                  <option value="sans">Sans serif</option>
+                  <option value="serif">Serif</option>
+                  <option value="mono">Monospace</option>
+                  <option value="rounded">Rounded</option>
+                </select>
+              </label>
+              <label className="watch-subtitle-setting">
+                <span>Size</span>
+                <select name="fontSize" onChange={handleSubtitleSetting} value={subtitleSettings.fontSize}>
+                  <option value="small">Small</option>
+                  <option value="medium">Medium</option>
+                  <option value="large">Large</option>
+                  <option value="extra-large">Extra large</option>
+                </select>
+              </label>
+              <label className="watch-subtitle-setting">
+                <span>Font style</span>
+                <select name="fontStyle" onChange={handleSubtitleSetting} value={subtitleSettings.fontStyle}>
+                  <option value="normal">Normal</option>
+                  <option value="bold">Bold</option>
+                  <option value="italic">Italic</option>
+                  <option value="bold-italic">Bold italic</option>
+                </select>
+              </label>
+              <label className="watch-subtitle-setting">
+                <span>Text color</span>
+                <select name="color" onChange={handleSubtitleSetting} value={subtitleSettings.color}>
+                  <option value="white">White</option>
+                  <option value="yellow">Yellow</option>
+                  <option value="green">Green</option>
+                  <option value="cyan">Cyan</option>
+                </select>
+              </label>
+              <label className="watch-subtitle-setting">
+                <span>Background</span>
+                <select name="background" onChange={handleSubtitleSetting} value={subtitleSettings.background}>
+                  <option value="none">None</option>
+                  <option value="translucent">Translucent</option>
+                  <option value="solid">Solid</option>
+                </select>
+              </label>
+              <label className="watch-subtitle-setting">
+                <span>Outline</span>
+                <select name="outline" onChange={handleSubtitleSetting} value={subtitleSettings.outline}>
+                  <option value="none">None</option>
+                  <option value="uniform">Uniform</option>
+                  <option value="shadow">Drop shadow</option>
+                  <option value="raised">Raised</option>
+                </select>
+              </label>
+              <label className="watch-subtitle-setting">
+                <span>Position</span>
+                <select name="position" onChange={handleSubtitleSetting} value={subtitleSettings.position}>
+                  <option value="top">Top</option>
+                  <option value="middle">Middle</option>
+                  <option value="bottom">Bottom</option>
+                </select>
+              </label>
+            </div>
+          </section>
+        )}
         <input
           aria-label="Seek video"
           className="watch-seek"
@@ -448,16 +707,16 @@ function WatchPage({
             <span className="watch-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
           </div>
           <div className="watch-controls-group">
-            {subtitleUrl && (
-              <button
-                aria-label={isCaptionsEnabled ? 'Disable subtitles' : 'Enable subtitles'}
-                className={`watch-icon-button ${isCaptionsEnabled ? 'active' : ''}`}
-                onClick={toggleCaptions}
-                type="button"
-              >
-                <Captions size={22} />
-              </button>
-            )}
+            <button
+              aria-controls="subtitle-settings"
+              aria-expanded={isSubtitlePanelOpen}
+              aria-label="Subtitle settings"
+              className={`watch-icon-button ${subtitleUrl && isCaptionsEnabled ? 'active' : ''}`}
+              onClick={() => setIsSubtitlePanelOpen((isOpen) => !isOpen)}
+              type="button"
+            >
+              <Captions size={22} />
+            </button>
             <label className="watch-speed">
               <span>Speed</span>
               <select aria-label="Playback speed" defaultValue="1" onChange={handlePlaybackRate}>
@@ -505,11 +764,100 @@ function formatPlaybackTime(seconds) {
   return segments.map((segment) => String(segment).padStart(2, '0')).join(':')
 }
 
-function setTextTrackMode(player, mode) {
-  const track = player?.textTracks?.[0]
-  if (!track) return false
-  track.mode = mode
-  return true
+function clampSubtitleDelay(seconds) {
+  const numericSeconds = Number(seconds)
+  if (!Number.isFinite(numericSeconds)) return 0
+  return Math.min(SUBTITLE_DELAY_LIMIT_SECONDS, Math.max(-SUBTITLE_DELAY_LIMIT_SECONDS, numericSeconds))
+}
+
+function formatSubtitleDelay(seconds) {
+  return String(Number(clampSubtitleDelay(seconds).toFixed(1)))
+}
+
+function readSubtitleSettings() {
+  try {
+    const storedSettings = JSON.parse(window.localStorage.getItem(SUBTITLE_SETTINGS_STORAGE_KEY) || '{}')
+    return {
+      ...DEFAULT_SUBTITLE_SETTINGS,
+      ...storedSettings,
+      delaySeconds: clampSubtitleDelay(storedSettings.delaySeconds),
+    }
+  } catch {
+    return DEFAULT_SUBTITLE_SETTINGS
+  }
+}
+
+function writeSubtitleSettings(settings) {
+  try {
+    window.localStorage.setItem(SUBTITLE_SETTINGS_STORAGE_KEY, JSON.stringify(settings))
+  } catch {
+    // Playback settings remain usable if local storage is unavailable.
+  }
+}
+
+function setTextTracksHidden(player) {
+  Array.from(player?.textTracks || []).forEach((track) => {
+    track.mode = 'hidden'
+  })
+}
+
+function createSubtitleCues(cues) {
+  return Array.from(cues || [], (cue) => {
+    const text = cue.text
+      .replace(/<[^>]*>/g, '')
+      .replace(/\{\\[^}]*\}/g, '')
+      .trim()
+    return {
+      endTime: cue.endTime,
+      lines: text.split(/\r?\n/),
+      startTime: cue.startTime,
+      text,
+    }
+  }).filter((cue) => cue.text)
+}
+
+function createSubtitleCueStyle(settings) {
+  const fontFamilies = {
+    mono: '"Courier New", monospace',
+    rounded: '"Trebuchet MS", Arial, sans-serif',
+    sans: 'Arial, Helvetica, sans-serif',
+    serif: 'Georgia, "Times New Roman", serif',
+  }
+  const fontSizes = {
+    small: 'clamp(1rem, 1.8vw, 1.35rem)',
+    medium: 'clamp(1.15rem, 2.3vw, 1.7rem)',
+    large: 'clamp(1.35rem, 2.8vw, 2.05rem)',
+    'extra-large': 'clamp(1.55rem, 3.4vw, 2.5rem)',
+  }
+  const colors = {
+    cyan: '#67e8f9',
+    green: '#86efac',
+    white: '#ffffff',
+    yellow: '#fde047',
+  }
+  const backgrounds = {
+    none: 'transparent',
+    solid: 'rgba(0, 0, 0, 0.96)',
+    translucent: 'rgba(0, 0, 0, 0.64)',
+  }
+  const outlines = {
+    none: 'none',
+    raised: '-2px -2px 0 rgba(255, 255, 255, 0.22), 2px 2px 0 #000000',
+    shadow: '3px 3px 3px rgba(0, 0, 0, 0.96)',
+    uniform: '-2px -2px 0 #000000, 0 -2px 0 #000000, 2px -2px 0 #000000, -2px 0 0 #000000, 2px 0 0 #000000, -2px 2px 0 #000000, 0 2px 0 #000000, 2px 2px 0 #000000',
+  }
+  const isBold = settings.fontStyle === 'bold' || settings.fontStyle === 'bold-italic'
+  const isItalic = settings.fontStyle === 'italic' || settings.fontStyle === 'bold-italic'
+
+  return {
+    background: backgrounds[settings.background] || backgrounds.translucent,
+    color: colors[settings.color] || colors.white,
+    fontFamily: fontFamilies[settings.fontFamily] || fontFamilies.sans,
+    fontSize: fontSizes[settings.fontSize] || fontSizes.medium,
+    fontStyle: isItalic ? 'italic' : 'normal',
+    fontWeight: isBold ? 800 : 600,
+    textShadow: outlines[settings.outline] || outlines.uniform,
+  }
 }
 
 export default WatchPage

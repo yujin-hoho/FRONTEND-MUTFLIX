@@ -120,16 +120,17 @@ export function getRotationKey(profileId) {
 
 export function rotateItems(items, seed) {
   if (items.length < 2) return items
-  const shuffledItems = [...items]
-  let state = Math.abs(hashString(seed)) || 1
-
-  for (let index = shuffledItems.length - 1; index > 0; index -= 1) {
-    state = (state * 1664525 + 1013904223) >>> 0
-    const swapIndex = state % (index + 1)
-    ;[shuffledItems[index], shuffledItems[swapIndex]] = [shuffledItems[swapIndex], shuffledItems[index]]
-  }
-
-  return shuffledItems
+  return items
+    .map((item, index) => ({
+      index,
+      item,
+      itemKey: getRotationItemKey(item, index),
+    }))
+    .sort((a, b) => {
+      const rankDifference = getUnsignedHash(`${seed}:${a.itemKey}`) - getUnsignedHash(`${seed}:${b.itemKey}`)
+      return rankDifference || a.itemKey.localeCompare(b.itemKey) || a.index - b.index
+    })
+    .map(({ item }) => item)
 }
 
 export function preloadImage(url) {
@@ -152,6 +153,20 @@ function getTmdbImageUrl(path, size) {
   if (!path) return ''
   if (/^(?:https?:|data:|blob:)/.test(path)) return path
   return `${API_BASE_URL}/api/tmdb-image/${size}/${path.replace(/^\//, '')}`
+}
+
+function getRotationItemKey(item, index) {
+  if (!item || typeof item !== 'object') return `${typeof item}:${String(item)}`
+  if (item.genre) return `genre:${item.genre}`
+  return [
+    item.type || item.media_type || '',
+    item.source || '',
+    item.folder_name || item.name || item.title || item.id || index,
+  ].join(':')
+}
+
+function getUnsignedHash(value) {
+  return hashString(value) >>> 0
 }
 
 function escapeSvgText(value) {

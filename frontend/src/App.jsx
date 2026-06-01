@@ -170,12 +170,7 @@ function App() {
           setProfileData({ watchHistory: dashboard.history, isLoading: false, error: null })
           setCatalogData({ movies: dashboard.movies, series: dashboard.series, isLoading: false, error: null })
         }
-        enrichCatalogMetadata(authToken, dashboard, Infinity, {
-          onProgress: (enrichedDashboard) => {
-            if (ignore) return
-            setCatalogData((currentData) => mergeCatalogMetadataUpdates(currentData, enrichedDashboard))
-          },
-        }).then((enrichedDashboard) => {
+        enrichCatalogMetadata(authToken, dashboard, Infinity).then((enrichedDashboard) => {
           if (ignore) return
           setCatalogData((currentData) => {
             const nextData = mergeCatalogMetadataUpdates(currentData, enrichedDashboard)
@@ -543,16 +538,22 @@ async function preloadDashboardHero(featuredKeys, profileId, movies, series) {
 }
 
 function getFeaturedItemKey(featuredKeys, profileId, movies, series) {
-  const currentKey = featuredKeys.get(profileId)
-  if (currentKey) return currentKey
-
+  const rotationKey = getRotationKey(profileId)
   const catalogItems = [...movies, ...series]
+  const currentFeatured = featuredKeys.get(profileId)
+  if (
+    currentFeatured?.rotationKey === rotationKey
+    && catalogItems.some((item) => getItemKey(item) === currentFeatured.itemKey)
+  ) {
+    return currentFeatured.itemKey
+  }
+
   const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
   const posterItems = catalogItems.filter((item) => getPosterUrl(item))
   const heroItems = backdropItems.length ? backdropItems : posterItems.length ? posterItems : catalogItems
-  const heroItem = rotateItems(heroItems, `${getRotationKey(profileId)}-hero`)[0]
+  const heroItem = rotateItems(heroItems, `${rotationKey}-hero`)[0]
   const itemKey = heroItem ? getItemKey(heroItem) : ''
-  if (itemKey) featuredKeys.set(profileId, itemKey)
+  if (itemKey) featuredKeys.set(profileId, { itemKey, rotationKey })
   return itemKey
 }
 

@@ -25,7 +25,7 @@ export const CatalogRow = memo(function CatalogRow({ emptyMessage, items, onOpen
       </div>
       <div className={`catalog-scroller ${ranked ? 'ranked-scroller' : ''}`}>
         {(showAll ? items : items.slice(0, 15)).map((item, index) => (
-          <CatalogCard item={item} key={`${getItemKey(item)}-${index}`} onOpenDetail={onOpenDetail} rank={ranked ? index + 1 : null} />
+          <CatalogCard item={item} key={getItemKey(item)} onOpenDetail={onOpenDetail} rank={ranked ? index + 1 : null} />
         ))}
       </div>
     </section>

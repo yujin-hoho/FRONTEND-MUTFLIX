@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../config'
+import { API_BASE_URL, CLOUDFLARE_STREAM_PROXY_URL } from '../config'
 import {
   getBackdropUrl,
   getGenres,
@@ -98,7 +98,7 @@ export async function fetchDashboardData(authToken, profileId) {
 
 export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   if (!mediaPath) throw new Error('No media file was selected.')
-  if (/^https?:\/\//i.test(mediaPath)) return mediaPath
+  if (/^https?:\/\//i.test(mediaPath)) return { fallbackUrl: '', url: mediaPath }
   if (!mediaPath.startsWith('gdrive/')) {
     throw new Error('This media source is not available in the web player.')
   }
@@ -110,11 +110,20 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the video stream.')
 
   const fileName = video.original_name || video.name || mediaPath
-  const streamPath = /\.m3u8(?:$|\?)/i.test(fileName)
+  const isHlsStream = /\.m3u8(?:$|\?)/i.test(fileName)
+  const gdriveToken = String(data.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
+  const fileId = mediaPath.split('/', 2)[1]
+  const streamPath = isHlsStream
     ? data.hls_manifest_url
-    : data.stream_url
+    : gdriveToken && fileId
+      ? `${CLOUDFLARE_STREAM_PROXY_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(gdriveToken)}`
+      : data.stream_url
+  const fallbackPath = isHlsStream ? '' : data.stream_url
   if (!streamPath) throw new Error('The server did not return a playable stream.')
-  return resolvePublicPath(streamPath)
+  return {
+    fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
+    url: resolvePublicPath(streamPath),
+  }
 }
 
 export async function fetchPlaybackMarkers(authToken, folderName) {
@@ -141,20 +150,50 @@ export async function fetchPlaybackMarkers(authToken, folderName) {
 }
 
 export async function fetchSubtitleTrack(subtitlePath) {
-  if (!subtitlePath) return ''
+  if (!subtitlePath) return { cues: [], url: '' }
 
   const response = await fetch(
     /^https?:\/\//i.test(subtitlePath)
       ? subtitlePath
       : `/subtitle/${encodeServerPath(subtitlePath)}`,
   )
-  if (!response.ok) return ''
+  if (!response.ok) return { cues: [], url: '' }
 
   const subtitleText = await response.text()
   const webVtt = /^\s*WEBVTT/i.test(subtitleText)
     ? subtitleText
     : `WEBVTT\n\n${subtitleText.replace(/\r/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2')}`
-  return URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' }))
+  return {
+    cues: parseSubtitleCues(webVtt),
+    url: URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })),
+  }
+}
+
+function parseSubtitleCues(webVtt) {
+  return webVtt
+    .replace(/^\uFEFF/, '')
+    .replace(/\r/g, '')
+    .split(/\n{2,}/)
+    .flatMap((block) => {
+      const lines = block.trim().split('\n')
+      const timingIndex = lines.findIndex((line) => line.includes('-->'))
+      if (timingIndex < 0) return []
+
+      const [startTimestamp, endTimestampWithSettings] = lines[timingIndex].split('-->')
+      const startTime = parseSubtitleTimestamp(startTimestamp)
+      const endTime = parseSubtitleTimestamp(endTimestampWithSettings?.trim().split(/\s+/, 1)[0])
+      const text = lines.slice(timingIndex + 1).join('\n').trim()
+      if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || !text) return []
+
+      return [{ endTime, startTime, text }]
+    })
+}
+
+function parseSubtitleTimestamp(timestamp) {
+  const segments = String(timestamp || '').trim().replace(',', '.').split(':').map(Number)
+  if (segments.length === 3) return segments[0] * 3600 + segments[1] * 60 + segments[2]
+  if (segments.length === 2) return segments[0] * 60 + segments[1]
+  return Number.NaN
 }
 
 export async function saveWatchProgress(authToken, payload) {
