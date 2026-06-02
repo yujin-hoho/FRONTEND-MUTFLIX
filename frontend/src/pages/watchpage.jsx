@@ -9,6 +9,7 @@ import {
   Play,
   RotateCcw,
   RotateCw,
+  SkipBack,
   SkipForward,
   Volume2,
   VolumeX,
@@ -86,6 +87,7 @@ function WatchPage({
 
   const queue = useMemo(() => videos?.length ? videos : [video], [video, videos])
   const currentIndex = queue.findIndex((entry) => entry.path === video.path)
+  const previousVideo = currentIndex > 0 ? queue[currentIndex - 1] : null
   const nextVideo = currentIndex >= 0 ? queue[currentIndex + 1] : null
   const markerFolderName = item.folder_name || item.name || getItemPath(item)
   const videoName = video.name || ''
@@ -517,10 +519,10 @@ function WatchPage({
     setSubtitleSettings((currentSettings) => ({ ...currentSettings, delaySeconds: nextDelay }))
   }
 
-  function handleOpenNext() {
-    if (!nextVideo) return
-    persistProgress({ complete: true, force: true })
-    onOpenVideo(nextVideo)
+  function handleOpenEpisode(nextEpisode, { complete = false } = {}) {
+    if (!nextEpisode) return
+    persistProgress({ complete, force: true })
+    onOpenVideo(nextEpisode)
   }
 
   function handleBack() {
@@ -626,7 +628,7 @@ function WatchPage({
           </button>
         )}
         {showNextEpisode && (
-          <button onClick={handleOpenNext} type="button">
+          <button onClick={() => handleOpenEpisode(nextVideo, { complete: true })} type="button">
             Next episode
             <SkipForward size={18} />
           </button>
@@ -780,6 +782,24 @@ function WatchPage({
             <span className="watch-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
           </div>
           <div className="watch-controls-group">
+            <button
+              aria-label="Previous episode"
+              className="watch-icon-button"
+              disabled={!previousVideo}
+              onClick={() => handleOpenEpisode(previousVideo)}
+              type="button"
+            >
+              <SkipBack size={20} />
+            </button>
+            <button
+              aria-label="Next episode"
+              className="watch-icon-button"
+              disabled={!nextVideo}
+              onClick={() => handleOpenEpisode(nextVideo, { complete: true })}
+              type="button"
+            >
+              <SkipForward size={20} />
+            </button>
             {subtitleUrl && (
               <button
                 aria-controls="subtitle-settings"

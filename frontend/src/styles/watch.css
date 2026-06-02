@@ -118,6 +118,17 @@
   color: #02140a;
 }
 
+.watch-icon-button:disabled {
+  color: #64748b;
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.watch-icon-button:disabled:hover {
+  background: rgba(15, 23, 42, 0.68);
+  color: #64748b;
+}
+
 .watch-center-state {
   position: absolute;
   inset: 0;
@@ -356,6 +367,10 @@
 .watch-controls .watch-icon-button:hover,
 .watch-controls .watch-icon-button.active {
   color: #7cf2ad;
+}
+
+.watch-controls .watch-icon-button:disabled:hover {
+  color: #64748b;
 }
 
 .watch-volume {

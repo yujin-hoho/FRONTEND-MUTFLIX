@@ -334,9 +334,23 @@ function App() {
     })
   }
 
-  function handleResumeHistory(historyEntry) {
-    const video = historyEntryToVideo(historyEntry)
-    handleOpenWatch(historyEntryToItem(historyEntry), video, [video])
+  async function handleResumeHistory(historyEntry) {
+    const historyVideo = historyEntryToVideo(historyEntry)
+    const historyItem = historyEntryToItem(historyEntry)
+    if (!historyEntry.series_title) {
+      handleOpenWatch(historyItem, historyVideo, [historyVideo])
+      return
+    }
+
+    const catalogItem = findCatalogItemForHistory(historyEntry, catalogData.series) || historyItem
+    try {
+      const detail = await fetchDetailData(authToken, catalogItem)
+      const videos = detail.videos.length ? detail.videos : [historyVideo]
+      const video = findHistoryVideo(historyEntry, videos) || historyVideo
+      handleOpenWatch(detail.item, video, videos)
+    } catch {
+      handleOpenWatch(catalogItem, historyVideo, [historyVideo])
+    }
   }
 
   function handleWatchBack() {
@@ -619,6 +633,23 @@ function historyEntryToItem(entry) {
     media_type: isSeries ? 'tv' : 'movie',
     type: isSeries ? 'series' : 'movie',
   }
+}
+
+function findCatalogItemForHistory(historyEntry, series) {
+  const historyTitle = String(historyEntry.series_title || '').toLowerCase()
+  return series.find((item) => (
+    [getTitle(item), item.name, item.folder_name]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase() === historyTitle)
+  ))
+}
+
+function findHistoryVideo(historyEntry, videos) {
+  return videos.find((video) => video.path === historyEntry.media_path)
+    || videos.find((video) => (
+      Number(video.season || 1) === Number(historyEntry.season || 1)
+      && Number(video.episode || 1) === Number(historyEntry.episode || 1)
+    ))
 }
 
 function mergeWatchHistory(history, payload) {
