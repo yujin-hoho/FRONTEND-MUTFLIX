@@ -5,6 +5,7 @@ import {
   MAX_CACHED_PROFILES,
   PROFILES_CACHE_KEY,
 } from '../config'
+import { normalizeWatchHistory } from './media'
 
 export function readDashboardCache(profileId) {
   try {
@@ -14,6 +15,7 @@ export function readDashboardCache(profileId) {
     if (!Array.isArray(entry.movies) || !Array.isArray(entry.series)) return null
     return {
       ...entry,
+      history: normalizeWatchHistory(entry.history),
       movies: entry.movies.map((item) => ({ ...item, media_type: 'movie', type: 'movie' })),
       series: entry.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' })),
     }
@@ -34,7 +36,7 @@ export function writeDashboardCache(profileId, { history, movies, series }) {
     const nextCache = Object.fromEntries(entries)
     nextCache[profileId] = {
       cachedAt: Date.now(),
-      history: Array.isArray(history) ? history.slice(0, 20) : [],
+      history: normalizeWatchHistory(history).slice(0, 20),
       movies: movies.slice(0, MAX_CACHED_ITEMS_PER_TYPE),
       series: series.slice(0, MAX_CACHED_ITEMS_PER_TYPE),
     }

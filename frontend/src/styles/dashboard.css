@@ -104,15 +104,18 @@
 }
 
 .dashboard-nav button,
+.dashboard-nav a,
 .profile-menu-trigger,
 .profile-menu-dropdown button {
   border: 0;
   background: transparent;
   color: #d1d5db;
   cursor: pointer;
+  text-decoration: none;
 }
 
-.dashboard-nav button {
+.dashboard-nav button,
+.dashboard-nav a {
   position: relative;
   padding: 8px 0 10px;
   color: #f8fafc;
@@ -121,7 +124,8 @@
   transition: color 180ms ease;
 }
 
-.dashboard-nav button::after {
+.dashboard-nav button::after,
+.dashboard-nav a::after {
   content: '';
   position: absolute;
   right: 0;
@@ -135,27 +139,33 @@
   transition: transform 220ms ease;
 }
 
-.dashboard-nav button.active {
+.dashboard-nav button.active,
+.dashboard-nav a.active {
   color: #00dc64;
 }
 
-.dashboard-nav button:hover {
+.dashboard-nav button:hover,
+.dashboard-nav a:hover {
   color: #7cf2ad;
 }
 
-.dashboard-nav button:hover::after {
+.dashboard-nav button:hover::after,
+.dashboard-nav a:hover::after {
   transform: scaleX(0.58);
 }
 
-.dashboard-nav button.active::after {
+.dashboard-nav button.active::after,
+.dashboard-nav a.active::after {
   transform: scaleX(1);
 }
 
-.dashboard-nav button.active:hover {
+.dashboard-nav button.active:hover,
+.dashboard-nav a.active:hover {
   color: #39ee8a;
 }
 
 .dashboard-nav button:hover,
+.dashboard-nav a:hover,
 .profile-menu-trigger:hover,
 .profile-menu-dropdown button:hover {
   color: #f8fafc;

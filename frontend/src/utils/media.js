@@ -62,6 +62,25 @@ export function getWatchUrl(mediaPath) {
   return `/watch/${encodeURIComponent(mediaPath)}`
 }
 
+export function normalizeMediaPath(mediaPath) {
+  const path = String(mediaPath || '').trim().replace(/\\/g, '/')
+  const match = path.match(/^\/?(gdrive|telegram)\/(.+?)\/?$/i)
+  if (!match) return path
+
+  const suffix = match[2].replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '')
+  return suffix ? `${match[1].toLowerCase()}/${suffix}` : ''
+}
+
+export function normalizeWatchHistory(history) {
+  const seenPaths = new Set()
+  return (Array.isArray(history) ? history : []).flatMap((item) => {
+    const mediaPath = normalizeMediaPath(item.media_path)
+    if (!mediaPath || seenPaths.has(mediaPath)) return []
+    seenPaths.add(mediaPath)
+    return [{ ...item, media_path: mediaPath }]
+  })
+}
+
 export function getProfileAvatarUrl(profile) {
   const avatarUrl = profile.avatar_url || profile.avatar || profile.image_url
   if (avatarUrl) return avatarUrl

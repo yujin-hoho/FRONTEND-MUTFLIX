@@ -42,6 +42,8 @@ import {
   getStillUrl,
   getTitle,
   getWatchUrl,
+  normalizeMediaPath,
+  normalizeWatchHistory,
   preloadImages,
   rotateItems,
 } from './utils/media'
@@ -371,8 +373,7 @@ function App() {
   }
 
   function handleOpenSearch(query, { replace = false } = {}) {
-    const normalizedQuery = query.trim()
-    const searchUrl = normalizedQuery ? `/search?q=${encodeURIComponent(normalizedQuery)}` : '/search'
+    const searchUrl = buildSearchUrl(query, isSearchRoute ? readCatalogFilter(location.search) : null)
     navigate(searchUrl, {
       replace,
       state: replace && isSearchRoute
@@ -384,8 +385,17 @@ function App() {
     })
   }
 
-  function handleSearchBack() {
-    navigateBackToStoredRoute(navigate, location.state)
+  function handleOpenCatalogFilter(filter, { replace = false } = {}) {
+    const query = isSearchRoute ? new URLSearchParams(location.search).get('q') || '' : ''
+    navigate(buildSearchUrl(query, filter), {
+      replace,
+      state: replace && isSearchRoute
+        ? location.state
+        : {
+            from: getCurrentRoute(location),
+            fromState: location.state,
+          },
+    })
   }
 
   function handleOpenMyList() {
@@ -395,10 +405,6 @@ function App() {
         fromState: location.state,
       },
     })
-  }
-
-  function handleMyListBack() {
-    navigateBackToStoredRoute(navigate, location.state)
   }
 
   async function handleAddProfile(event) {
@@ -487,7 +493,7 @@ function App() {
   if (currentUser && selectedProfile) {
     if (isWatchRoute) {
       const mediaPath = decodeRouteValue(location.pathname.slice('/watch/'.length))
-      const historyEntry = profileData.watchHistory.find((entry) => entry.media_path === mediaPath)
+      const historyEntry = profileData.watchHistory.find((entry) => normalizeMediaPath(entry.media_path) === normalizeMediaPath(mediaPath))
       const video = location.state?.video || historyEntryToVideo(historyEntry || { media_path: mediaPath })
       const item = location.state?.item || historyEntryToItem(historyEntry || {})
       const videos = location.state?.videos?.length ? location.state.videos : [video]
@@ -528,16 +534,22 @@ function App() {
     }
     if (catalogData.isLoading) return <DashboardSkeleton />
     if (isSearchRoute) {
+      const searchFilter = readCatalogFilter(location.search)
       return (
         <SearchResultsPage
-          key={new URLSearchParams(location.search).get('q') || '__empty__'}
+          key={location.search || '__empty__'}
           catalogData={catalogData}
+          initialFilter={searchFilter}
           initialQuery={new URLSearchParams(location.search).get('q') || ''}
-          onBack={handleSearchBack}
+          onChangeProfile={handleChangeProfile}
+          onFilterSelect={(filter) => handleOpenCatalogFilter(filter, { replace: true })}
           onHydrateItems={hydrateCatalogItems}
+          onLogout={handleLogout}
           onOpenDetail={handleOpenDetail}
+          onOpenMyList={handleOpenMyList}
           onQueryChange={(query) => handleOpenSearch(query, { replace: true })}
           onSearchCatalog={handleSearchCatalog}
+          selectedProfile={selectedProfile}
         />
       )
     }
@@ -546,9 +558,15 @@ function App() {
         <MyListPage
           authToken={authToken}
           catalogData={catalogData}
-          onBack={handleMyListBack}
+          onChangeProfile={handleChangeProfile}
+          onFilterSelect={handleOpenCatalogFilter}
+          onHydrateItems={hydrateCatalogItems}
+          onLogout={handleLogout}
           onOpenDetail={handleOpenDetail}
+          onOpenSearch={handleOpenSearch}
+          onSearchCatalog={handleSearchCatalog}
           profileId={selectedProfile.id}
+          selectedProfile={selectedProfile}
         />
       )
     }
@@ -559,6 +577,7 @@ function App() {
         onChangeProfile={handleChangeProfile}
         onLogout={handleLogout}
         onHydrateItems={hydrateCatalogItems}
+        onOpenCatalogFilter={handleOpenCatalogFilter}
         onOpenMyList={handleOpenMyList}
         onOpenDetail={handleOpenDetail}
         onPlayHistory={handleResumeHistory}
@@ -619,6 +638,31 @@ async function preloadDashboardAssets(featuredKeys, profileId, { history = [], m
 
 function getCurrentRoute(location) {
   return `${location.pathname}${location.search}`
+}
+
+function buildSearchUrl(query, filter) {
+  const params = new URLSearchParams()
+  const normalizedQuery = String(query || '').trim()
+  if (normalizedQuery) params.set('q', normalizedQuery)
+  if (filter?.type && filter.value) {
+    params.set('filter', filter.type)
+    params.set('value', filter.value)
+    if (filter.label) params.set('label', filter.label)
+  }
+  const search = params.toString()
+  return search ? `/search?${search}` : '/search'
+}
+
+function readCatalogFilter(search) {
+  const params = new URLSearchParams(search)
+  const type = params.get('filter')
+  const value = params.get('value')
+  if (!['category', 'genre', 'type'].includes(type) || !value) return null
+  return {
+    label: params.get('label') || value,
+    type,
+    value,
+  }
 }
 
 function navigateBackToStoredRoute(navigate, routeState) {
@@ -700,7 +744,7 @@ function normalizeHistoryLookupValue(value) {
 }
 
 function findHistoryVideo(historyEntry, videos) {
-  return videos.find((video) => video.path === historyEntry.media_path)
+  return videos.find((video) => normalizeMediaPath(video.path) === normalizeMediaPath(historyEntry.media_path))
     || videos.find((video) => (
       Number(video.season || 1) === Number(historyEntry.season || 1)
       && Number(video.episode || 1) === Number(historyEntry.episode || 1)
@@ -708,17 +752,19 @@ function findHistoryVideo(historyEntry, videos) {
 }
 
 function mergeWatchHistory(history, payload) {
-  const remainingHistory = history.filter((entry) => entry.media_path !== payload.media_path)
+  const normalizedPayload = { ...payload, media_path: normalizeMediaPath(payload.media_path) }
+  const remainingHistory = normalizeWatchHistory(history)
+    .filter((entry) => entry.media_path !== normalizedPayload.media_path)
   const isCompleted = payload.duration_ms > 0 && payload.position_ms >= payload.duration_ms * 0.9
   if (isCompleted) return remainingHistory
-  return [
+  return normalizeWatchHistory([
     {
-      ...payload,
+      ...normalizedPayload,
       is_hidden: 0,
       last_watched: new Date().toISOString(),
     },
     ...remainingHistory,
-  ].slice(0, 20)
+  ]).slice(0, 20)
 }
 
 function appendMissingCatalogItems(items, additions) {

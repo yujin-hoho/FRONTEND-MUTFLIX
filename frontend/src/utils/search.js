@@ -1,4 +1,4 @@
-import { getCatalogIdentityKey, getGenres, getRating } from './media'
+import { getCatalogIdentityKey, getGenres, getMediaType, getRating } from './media'
 
 export function normalizeSearchQuery(value) {
   return String(value || '')
@@ -23,6 +23,50 @@ export function prepareSearchCatalog(items) {
     item,
     rating: getRating(item),
   }))
+}
+
+export function getCatalogFilters(items) {
+  const mediaTypes = new Set(items.map(getMediaType))
+  const genres = new Map()
+  const hasVarietyShows = items.some(isVarietyShow)
+
+  items.forEach((item) => {
+    getGenres(item).forEach((genre) => {
+      const normalizedGenre = normalizeSearchQuery(genre)
+      if (normalizedGenre && !genres.has(normalizedGenre)) genres.set(normalizedGenre, genre)
+    })
+  })
+
+  return [
+    mediaTypes.has('movie') ? { label: 'Movies', type: 'type', value: 'movie' } : null,
+    mediaTypes.has('series') ? { label: 'Series', type: 'type', value: 'series' } : null,
+    hasVarietyShows ? { label: 'Variety Show', type: 'category', value: 'variety-show' } : null,
+    ...[...genres.entries()]
+      .sort(([, firstLabel], [, secondLabel]) => firstLabel.localeCompare(secondLabel))
+      .map(([value, label]) => ({ label, type: 'genre', value })),
+  ].filter(Boolean)
+}
+
+export function filterCatalogItems(items, filter) {
+  if (!filter?.type || !filter.value) return items
+  const normalizedValue = normalizeSearchQuery(filter.value)
+
+  if (filter.type === 'type') {
+    return items.filter((item) => getMediaType(item) === normalizedValue)
+  }
+  if (filter.type === 'genre') {
+    return items.filter((item) => getGenres(item).some((genre) => normalizeSearchQuery(genre) === normalizedValue))
+  }
+  if (filter.type === 'category' && normalizedValue === 'variety show') {
+    return items.filter(isVarietyShow)
+  }
+  return items
+}
+
+function isVarietyShow(item) {
+  if (getMediaType(item) !== 'series') return false
+  const genres = getGenres(item).map(normalizeSearchQuery)
+  return genres.some((genre) => ['reality', 'talk', 'variety show'].includes(genre))
 }
 
 export function searchCatalog(entries, query, { limit = Infinity } = {}) {

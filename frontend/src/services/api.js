@@ -5,6 +5,8 @@ import {
   getGenres,
   getItemPath,
   getMediaType,
+  normalizeMediaPath,
+  normalizeWatchHistory,
   getPosterUrl,
 } from '../utils/media'
 
@@ -93,7 +95,7 @@ export async function fetchDashboardData(authToken, profileId) {
     ? catalog.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' }))
     : []
 
-  return { history: Array.isArray(historyData) ? historyData : [], movies, series }
+  return { history: normalizeWatchHistory(historyData), movies, series }
 }
 
 export async function fetchMyList(authToken, profileId) {
@@ -343,18 +345,19 @@ function parseSubtitleTimestamp(timestamp) {
 }
 
 export async function saveWatchProgress(authToken, payload) {
+  const normalizedPayload = { ...payload, media_path: normalizeMediaPath(payload.media_path) }
   const response = await fetch(`${API_BASE_URL}/api/history/save`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'x-access-token': authToken,
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(normalizedPayload),
     keepalive: true,
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to save watch progress.')
-  return payload
+  return normalizedPayload
 }
 
 export async function enrichCatalogMetadata(authToken, catalog, maxItemsPerType = Infinity, { batchSize = 20, onProgress } = {}) {

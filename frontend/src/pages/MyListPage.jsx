@@ -1,11 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Bookmark } from 'lucide-react'
+import { Bookmark, ChevronDown, LogOut, UsersRound } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
+import SearchBox from '../components/search/SearchBox'
 import { fetchMyList } from '../services/api'
-import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../utils/media'
+import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle } from '../utils/media'
 
-function MyListPage({ authToken, catalogData, onBack, onOpenDetail, profileId }) {
+function MyListPage({
+  authToken,
+  catalogData,
+  onChangeProfile,
+  onFilterSelect,
+  onHydrateItems,
+  onLogout,
+  onOpenDetail,
+  onOpenSearch,
+  onSearchCatalog,
+  profileId,
+  selectedProfile,
+}) {
   const [activeStatus, setActiveStatus] = useState('plan_to_watch')
+  const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [myList, setMyList] = useState([])
   const [status, setStatus] = useState('loading')
   const [error, setError] = useState('')
@@ -57,14 +71,53 @@ function MyListPage({ authToken, catalogData, onBack, onOpenDetail, profileId })
 
   return (
     <main className="my-list-page">
-      <header className="my-list-page-header">
-        <button aria-label="Kembali ke dashboard" className="my-list-back" onClick={onBack} type="button">
-          <ArrowLeft size={22} />
-        </button>
-        <a className="brand-mark my-list-brand" href="/dashboard" aria-label="Mutflix dashboard">
+      <nav className="dashboard-topbar my-list-topbar" aria-label="My List">
+        <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
           MUTFLIX
         </a>
-      </header>
+        <div className="dashboard-nav">
+          <a href="/dashboard">Home</a>
+          <button onClick={() => onFilterSelect({ label: 'Movies', type: 'type', value: 'movie' })} type="button">Movies</button>
+          <button onClick={() => onFilterSelect({ label: 'Series', type: 'type', value: 'series' })} type="button">Series</button>
+          <button onClick={() => onFilterSelect({ label: 'Variety Show', type: 'category', value: 'variety-show' })} type="button">Variety Show</button>
+          <button className="active" type="button">My List</button>
+        </div>
+        <div className="dashboard-actions">
+          <SearchBox
+            catalogItems={catalogItems}
+            onFilterSelect={onFilterSelect}
+            onHydrateItems={onHydrateItems}
+            onOpenDetail={onOpenDetail}
+            onSearchCatalog={onSearchCatalog}
+            onSubmit={onOpenSearch}
+          />
+          <div className="profile-menu">
+            <button
+              aria-expanded={showProfileMenu}
+              className="profile-menu-trigger"
+              onClick={() => setShowProfileMenu((isOpen) => !isOpen)}
+              type="button"
+            >
+              <span className="profile-menu-avatar" aria-hidden="true">
+                <img alt="" src={getProfileAvatarUrl(selectedProfile)} />
+              </span>
+              <ChevronDown size={16} />
+            </button>
+            {showProfileMenu && (
+              <div className="profile-menu-dropdown">
+                <button onClick={onChangeProfile} type="button">
+                  <UsersRound size={17} />
+                  <span>Ganti profil</span>
+                </button>
+                <button onClick={onLogout} type="button">
+                  <LogOut size={17} />
+                  <span>Logout</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </nav>
 
       <section className="my-list-shell" aria-live="polite">
         <div className="my-list-heading">

@@ -2,15 +2,17 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, SlidersHorizontal, X } from 'lucide-react'
 import LoadableImage from '../LoadableImage'
 import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../../utils/media'
-import { mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
+import { getCatalogFilters, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
 
 const PREVIEW_RESULT_LIMIT = 5
 
 function SearchBox({
   catalogItems,
+  activeFilter,
   defaultQuery = '',
   onHydrateItems,
   onOpenDetail,
+  onFilterSelect,
   onQueryChange,
   onSearchCatalog,
   onSubmit,
@@ -20,6 +22,7 @@ function SearchBox({
   variant = 'compact',
 }) {
   const [isFocused, setIsFocused] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
   const [internalQuery, setInternalQuery] = useState(defaultQuery)
   const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const requestedHydrationKey = useRef('')
@@ -28,6 +31,9 @@ function SearchBox({
   const deferredQuery = useDeferredValue(query)
   const normalizedQuery = normalizeSearchQuery(deferredQuery)
   const searchIndex = useMemo(() => prepareSearchCatalog(catalogItems), [catalogItems])
+  const catalogFilters = useMemo(() => getCatalogFilters(catalogItems), [catalogItems])
+  const featuredFilters = useMemo(() => catalogFilters.filter((filter) => filter.type !== 'genre'), [catalogFilters])
+  const genreFilters = useMemo(() => catalogFilters.filter((filter) => filter.type === 'genre'), [catalogFilters])
   const localPreviewResults = useMemo(
     () => searchCatalog(searchIndex, deferredQuery, { limit: PREVIEW_RESULT_LIMIT }),
     [deferredQuery, searchIndex],
@@ -85,24 +91,40 @@ function SearchBox({
     event.preventDefault()
     if (!normalizeSearchQuery(query)) return
     setIsFocused(false)
+    setShowFilters(false)
     onSubmit(query.trim())
   }
 
   function handleSearchAll() {
     setIsFocused(false)
+    setShowFilters(false)
     onSubmit(query.trim())
   }
 
   function handleOpenDetail(item) {
     setIsFocused(false)
+    setShowFilters(false)
     onOpenDetail(item)
+  }
+
+  function handleFilterSelect(filter) {
+    setIsFocused(false)
+    setShowFilters(false)
+    onFilterSelect?.(filter)
+  }
+
+  function isActiveFilter(filter) {
+    return activeFilter?.type === filter.type && activeFilter.value === filter.value
   }
 
   return (
     <div
       className={`search-box search-box-${variant}`}
       onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget)) setIsFocused(false)
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          setIsFocused(false)
+          setShowFilters(false)
+        }
       }}
       onFocus={() => setIsFocused(true)}
     >
@@ -121,10 +143,75 @@ function SearchBox({
             <X size={16} />
           </button>
         )}
-        <span className="search-filter-icon" aria-hidden="true">
+        <button
+          aria-expanded={showFilters}
+          aria-label="Filter katalog"
+          className={`search-filter-trigger${activeFilter ? ' active' : ''}`}
+          onClick={() => {
+            setIsFocused(false)
+            setShowFilters((isOpen) => !isOpen)
+          }}
+          type="button"
+        >
           <SlidersHorizontal size={variant === 'page' ? 19 : 17} />
-        </span>
+        </button>
       </form>
+
+      {showFilters && (
+        <div className="search-filter-menu" aria-label="Filter katalog" role="dialog">
+          <div className="search-filter-heading">
+            <div>
+              <span>Jelajahi</span>
+              <strong>Katalog Mutflix</strong>
+            </div>
+            <button aria-label="Tutup filter katalog" onClick={() => setShowFilters(false)} type="button">
+              <X size={15} />
+            </button>
+          </div>
+          <div className="search-filter-body">
+            <p>Pilih kategori untuk menampilkan semua tontonan yang tersedia.</p>
+            <div className="search-filter-featured">
+              {featuredFilters.map((filter) => (
+                <button
+                  className={isActiveFilter(filter) ? 'active' : ''}
+                  key={`${filter.type}-${filter.value}`}
+                  onClick={() => handleFilterSelect(filter)}
+                  type="button"
+                >
+                  <strong>{filter.label}</strong>
+                  <small>{filter.type === 'type' ? 'Koleksi' : 'Pilihan khusus'}</small>
+                </button>
+              ))}
+            </div>
+            {genreFilters.length > 0 && (
+              <div className="search-filter-genres">
+                <div className="search-filter-section-heading">
+                  <strong>Genre</strong>
+                  <span>{genreFilters.length} tersedia</span>
+                </div>
+                <div className="search-filter-chip-grid">
+                  {genreFilters.map((filter) => (
+                    <button
+                      className={isActiveFilter(filter) ? 'active' : ''}
+                      key={`${filter.type}-${filter.value}`}
+                      onClick={() => handleFilterSelect(filter)}
+                      type="button"
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          {activeFilter && (
+            <button className="search-filter-reset" onClick={() => handleFilterSelect(null)} type="button">
+              <X size={14} />
+              <span>Hapus filter {activeFilter.label}</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {shouldShowPreview && (
         <div className="search-preview" aria-label={`Preview hasil pencarian untuk ${query}`}>

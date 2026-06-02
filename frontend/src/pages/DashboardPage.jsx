@@ -22,6 +22,7 @@ function DashboardPage({
   onChangeProfile,
   onHydrateItems,
   onLogout,
+  onOpenCatalogFilter,
   onOpenMyList,
   onOpenDetail,
   onPlayHistory,
@@ -30,7 +31,6 @@ function DashboardPage({
   profileData,
   selectedProfile,
 }) {
-  const [activeNav, setActiveNav] = useState('home')
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const dashboardView = useMemo(() => buildDashboardView(catalogData, selectedProfile, featuredItemKey), [catalogData, featuredItemKey, selectedProfile])
 
@@ -41,16 +41,17 @@ function DashboardPage({
           MUTFLIX
         </a>
         <div className="dashboard-nav">
-          <button className={activeNav === 'home' ? 'active' : ''} onClick={() => setActiveNav('home')} type="button">Home</button>
-          <button className={activeNav === 'movies' ? 'active' : ''} onClick={() => setActiveNav('movies')} type="button">Movies</button>
-          <button className={activeNav === 'series' ? 'active' : ''} onClick={() => setActiveNav('series')} type="button">Series</button>
-          <button className={activeNav === 'variety' ? 'active' : ''} onClick={() => setActiveNav('variety')} type="button">Variety Show</button>
+          <button className="active" type="button">Home</button>
+          <button onClick={() => onOpenCatalogFilter({ label: 'Movies', type: 'type', value: 'movie' })} type="button">Movies</button>
+          <button onClick={() => onOpenCatalogFilter({ label: 'Series', type: 'type', value: 'series' })} type="button">Series</button>
+          <button onClick={() => onOpenCatalogFilter({ label: 'Variety Show', type: 'category', value: 'variety-show' })} type="button">Variety Show</button>
           <button onClick={onOpenMyList} type="button">My List</button>
         </div>
         <div className="dashboard-actions">
           <SearchBox
             catalogItems={dashboardView.catalogItems}
             onHydrateItems={onHydrateItems}
+            onFilterSelect={onOpenCatalogFilter}
             onOpenDetail={onOpenDetail}
             onSearchCatalog={onSearchCatalog}
             onSubmit={onOpenSearch}

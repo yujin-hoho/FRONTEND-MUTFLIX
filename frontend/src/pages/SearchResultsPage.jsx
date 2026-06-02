@@ -1,22 +1,43 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Search } from 'lucide-react'
+import { ChevronDown, LogOut, Search, UsersRound } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../utils/media'
-import { mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
+import { getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle } from '../utils/media'
+import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
-function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, onOpenDetail, onQueryChange, onSearchCatalog }) {
+function SearchResultsPage({
+  catalogData,
+  initialFilter,
+  initialQuery,
+  onChangeProfile,
+  onFilterSelect,
+  onHydrateItems,
+  onLogout,
+  onOpenDetail,
+  onOpenMyList,
+  onQueryChange,
+  onSearchCatalog,
+  selectedProfile,
+}) {
   const [query, setQuery] = useState(initialQuery)
+  const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const requestedHydrationKey = useRef('')
   const deferredQuery = useDeferredValue(query)
-  const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
-  const searchIndex = useMemo(() => prepareSearchCatalog(catalogItems), [catalogItems])
-  const localResults = useMemo(() => searchCatalog(searchIndex, deferredQuery), [deferredQuery, searchIndex])
   const normalizedQuery = normalizeSearchQuery(deferredQuery)
+  const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
+  const filteredCatalogItems = useMemo(() => filterCatalogItems(catalogItems, initialFilter), [catalogItems, initialFilter])
+  const searchIndex = useMemo(() => prepareSearchCatalog(filteredCatalogItems), [filteredCatalogItems])
+  const localResults = useMemo(
+    () => normalizedQuery ? searchCatalog(searchIndex, deferredQuery) : filteredCatalogItems,
+    [deferredQuery, filteredCatalogItems, normalizedQuery, searchIndex],
+  )
   const results = useMemo(
-    () => mergeSearchResults(localResults, serverSearch.query === normalizedQuery ? serverSearch.results : []),
-    [localResults, normalizedQuery, serverSearch],
+    () => mergeSearchResults(
+      localResults,
+      serverSearch.query === normalizedQuery ? filterCatalogItems(serverSearch.results, initialFilter) : [],
+    ),
+    [initialFilter, localResults, normalizedQuery, serverSearch],
   )
   const isServerSearchPending = normalizedQuery.length >= 2
     && (serverSearch.query !== normalizedQuery || serverSearch.status === 'loading')
@@ -46,7 +67,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
   }, [deferredQuery, normalizedQuery, onSearchCatalog])
 
   useEffect(() => {
-    if (!normalizedQuery || !hydrationKey || hydrationKey === requestedHydrationKey.current) return
+    if (!hydrationKey || hydrationKey === requestedHydrationKey.current) return
 
     const timeoutId = window.setTimeout(() => {
       requestedHydrationKey.current = hydrationKey
@@ -54,7 +75,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
     }, 100)
 
     return () => window.clearTimeout(timeoutId)
-  }, [hydrationItems, hydrationKey, normalizedQuery, onHydrateItems])
+  }, [hydrationItems, hydrationKey, onHydrateItems])
 
   function handleQueryChange(nextQuery) {
     setQuery(nextQuery)
@@ -62,39 +83,71 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
 
   return (
     <main className="search-page">
-      <header className="search-page-header">
-        <button aria-label="Kembali ke dashboard" className="search-back" onClick={onBack} type="button">
-          <ArrowLeft size={22} />
-        </button>
-        <a className="brand-mark search-brand" href="/dashboard" aria-label="Mutflix dashboard">
+      <nav className="dashboard-topbar search-topbar" aria-label="Katalog">
+        <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
           MUTFLIX
         </a>
-        <SearchBox
-          catalogItems={catalogItems}
-          defaultQuery={initialQuery}
-          onHydrateItems={onHydrateItems}
-          onOpenDetail={onOpenDetail}
-          onQueryChange={handleQueryChange}
-          onSearchCatalog={onSearchCatalog}
-          onSubmit={(nextQuery) => {
-            setQuery(nextQuery)
-            onQueryChange(nextQuery)
-          }}
-          placeholder="Cari film, series, atau genre"
-          query={query}
-          showPreview={false}
-          variant="page"
-        />
-      </header>
+        <div className="dashboard-nav">
+          <a href="/dashboard">Home</a>
+          <button className={isActiveFilter(initialFilter, 'type', 'movie') ? 'active' : ''} onClick={() => onFilterSelect({ label: 'Movies', type: 'type', value: 'movie' })} type="button">Movies</button>
+          <button className={isActiveFilter(initialFilter, 'type', 'series') ? 'active' : ''} onClick={() => onFilterSelect({ label: 'Series', type: 'type', value: 'series' })} type="button">Series</button>
+          <button className={isActiveFilter(initialFilter, 'category', 'variety-show') ? 'active' : ''} onClick={() => onFilterSelect({ label: 'Variety Show', type: 'category', value: 'variety-show' })} type="button">Variety Show</button>
+          <button onClick={onOpenMyList} type="button">My List</button>
+        </div>
+        <div className="dashboard-actions">
+          <SearchBox
+            catalogItems={catalogItems}
+            activeFilter={initialFilter}
+            defaultQuery={initialQuery}
+            onHydrateItems={onHydrateItems}
+            onOpenDetail={onOpenDetail}
+            onFilterSelect={onFilterSelect}
+            onQueryChange={handleQueryChange}
+            onSearchCatalog={onSearchCatalog}
+            onSubmit={(nextQuery) => {
+              setQuery(nextQuery)
+              onQueryChange(nextQuery)
+            }}
+            placeholder="Cari film, series, atau genre"
+            query={query}
+            showPreview={false}
+          />
+          <div className="profile-menu">
+            <button
+              aria-expanded={showProfileMenu}
+              className="profile-menu-trigger"
+              onClick={() => setShowProfileMenu((isOpen) => !isOpen)}
+              type="button"
+            >
+              <span className="profile-menu-avatar" aria-hidden="true">
+                <img alt="" src={getProfileAvatarUrl(selectedProfile)} />
+              </span>
+              <ChevronDown size={16} />
+            </button>
+            {showProfileMenu && (
+              <div className="profile-menu-dropdown">
+                <button onClick={onChangeProfile} type="button">
+                  <UsersRound size={17} />
+                  <span>Ganti profil</span>
+                </button>
+                <button onClick={onLogout} type="button">
+                  <LogOut size={17} />
+                  <span>Logout</span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </nav>
 
       <section className="search-results-shell" aria-live="polite">
         <div className="search-results-heading">
-          <p>Search</p>
-          <h1>{normalizedQuery ? `Hasil untuk "${deferredQuery.trim()}"` : 'Cari tontonan kamu'}</h1>
-          <span>{normalizedQuery ? `${results.length} judul ditemukan` : 'Ketik keyword untuk menampilkan hasil.'}</span>
+          <p>{initialFilter ? 'Filter' : 'Search'}</p>
+          <h1>{getResultsTitle(initialFilter, deferredQuery)}</h1>
+          <span>{normalizedQuery || initialFilter ? `${results.length} judul ditemukan` : 'Ketik keyword untuk menampilkan hasil.'}</span>
         </div>
 
-        {!normalizedQuery && (
+        {!normalizedQuery && !initialFilter && (
           <div className="search-empty-state">
             <Search size={30} />
             <p>Mulai ketik judul atau genre di kolom pencarian.</p>
@@ -112,6 +165,13 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
           <div className="search-empty-state">
             <Search size={30} />
             <p>Tidak ada hasil yang cocok untuk &quot;{deferredQuery.trim()}&quot;.</p>
+          </div>
+        )}
+
+        {!normalizedQuery && initialFilter && results.length === 0 && (
+          <div className="search-empty-state">
+            <Search size={30} />
+            <p>Belum ada judul untuk filter {initialFilter.label}.</p>
           </div>
         )}
 
@@ -140,6 +200,17 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
       </section>
     </main>
   )
+}
+
+function isActiveFilter(filter, type, value) {
+  return filter?.type === type && filter.value === value
+}
+
+function getResultsTitle(filter, query) {
+  const trimmedQuery = query.trim()
+  if (filter && trimmedQuery) return `${filter.label}: "${trimmedQuery}"`
+  if (filter) return filter.label
+  return trimmedQuery ? `Hasil untuk "${trimmedQuery}"` : 'Cari tontonan kamu'
 }
 
 export default SearchResultsPage

@@ -23,6 +23,7 @@ import {
 import { getItemPath, getMediaType, getTitle } from '../utils/media'
 
 const SAVE_INTERVAL_MS = 10000
+const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
 const CONTROLS_HIDE_DELAY_MS = 2600
 const STREAM_STALL_FALLBACK_DELAY_MS = 10000
 const SEEK_STALL_FALLBACK_DELAY_MS = 16000
@@ -70,6 +71,7 @@ function WatchPage({
   const requestedSeekPositionRef = useRef(null)
   const lastSavedAtRef = useRef(0)
   const lastSavedPositionRef = useRef(-1)
+  const lastForcedSaveRef = useRef({ positionMs: -1, savedAt: 0 })
   const restoredPositionRef = useRef(false)
   const progressContextRef = useRef(null)
   const [streamUrl, setStreamUrl] = useState('')
@@ -136,9 +138,17 @@ function WatchPage({
     const positionMs = Math.round((complete ? player.duration : player.currentTime) * 1000)
     const durationMs = Math.round(player.duration * 1000)
     const now = Date.now()
+    if (
+      force
+      && positionMs === lastForcedSaveRef.current.positionMs
+      && now - lastForcedSaveRef.current.savedAt < FORCED_SAVE_DEDUP_WINDOW_MS
+    ) {
+      return Promise.resolve()
+    }
     if (!force && now - lastSavedAtRef.current < SAVE_INTERVAL_MS) return Promise.resolve()
     if (!force && Math.abs(positionMs - lastSavedPositionRef.current) < SAVE_INTERVAL_MS) return Promise.resolve()
 
+    if (force) lastForcedSaveRef.current = { positionMs, savedAt: now }
     lastSavedAtRef.current = now
     lastSavedPositionRef.current = positionMs
     return onSaveProgress(createHistoryPayload(context, positionMs, durationMs)).catch(() => {
