@@ -2,12 +2,12 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterFallbackUrl, getPosterUrl, getRating, getTitle } from '../utils/media'
+import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../utils/media'
 import { mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
 function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, onOpenDetail, onQueryChange, onSearchCatalog }) {
   const [query, setQuery] = useState(initialQuery)
-  const [serverSearch, setServerSearch] = useState({ query: '', results: [] })
+  const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const requestedHydrationKey = useRef('')
   const deferredQuery = useDeferredValue(query)
   const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
@@ -18,6 +18,8 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
     () => mergeSearchResults(localResults, serverSearch.query === normalizedQuery ? serverSearch.results : []),
     [localResults, normalizedQuery, serverSearch],
   )
+  const isServerSearchPending = normalizedQuery.length >= 2
+    && (serverSearch.query !== normalizedQuery || serverSearch.status === 'loading')
   const hydrationItems = useMemo(
     () => results.slice(0, 24).filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
     [results],
@@ -29,10 +31,13 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
 
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => {
+      setServerSearch({ query: normalizedQuery, results: [], status: 'loading' })
       onSearchCatalog(deferredQuery, { signal: controller.signal })
-        .then((results) => setServerSearch({ query: normalizedQuery, results }))
-        .catch(() => {})
-    }, 180)
+        .then((results) => setServerSearch({ query: normalizedQuery, results, status: 'ready' }))
+        .catch((error) => {
+          if (error.name !== 'AbortError') setServerSearch({ query: normalizedQuery, results: [], status: 'error' })
+        })
+    }, 80)
 
     return () => {
       controller.abort()
@@ -46,7 +51,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
     const timeoutId = window.setTimeout(() => {
       requestedHydrationKey.current = hydrationKey
       onHydrateItems?.(hydrationItems)
-    }, 350)
+    }, 100)
 
     return () => window.clearTimeout(timeoutId)
   }, [hydrationItems, hydrationKey, normalizedQuery, onHydrateItems])
@@ -96,7 +101,14 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
           </div>
         )}
 
-        {normalizedQuery && results.length === 0 && (
+        {normalizedQuery && results.length === 0 && isServerSearchPending && (
+          <div className="search-empty-state">
+            <Search size={30} />
+            <p>Mencari &quot;{deferredQuery.trim()}&quot; di katalog...</p>
+          </div>
+        )}
+
+        {normalizedQuery && results.length === 0 && !isServerSearchPending && (
           <div className="search-empty-state">
             <Search size={30} />
             <p>Tidak ada hasil yang cocok untuk &quot;{deferredQuery.trim()}&quot;.</p>
@@ -113,7 +125,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
               return (
                 <button className="search-result-card" key={getItemKey(item)} onClick={() => onOpenDetail(item)} type="button">
                   <span className="search-result-poster">
-                    <LoadableImage alt={getTitle(item)} fallbackSrc={getPosterFallbackUrl(item)} key={poster} src={poster} />
+                    <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
                     {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
                   </span>
                   <span className="search-result-copy">

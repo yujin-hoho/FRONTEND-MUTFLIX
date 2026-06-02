@@ -20,6 +20,8 @@ from collections import defaultdict
 from urllib.parse import quote
 import unicodedata
 from time import monotonic as _monotonic
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # --- HIGH-PERFORMANCE LIBRARIES (HuggingFace Optimized) ---
 import orjson
@@ -214,6 +216,11 @@ CACHE_DURATION_FOLDERS = 86400   # 24 hours - folder response cache
 CACHE_DURATION_VIDEOS  = 86400   # 24 hours - video response cache
 CACHE_DURATION_EMPTY   = 1800     # 30 min - empty results retry lebih cepat
 TMDB_CACHE_TTL_SECONDS = int(os.environ.get('TMDB_CACHE_TTL_SECONDS', '86400'))  # 24 jam default
+TMDB_META_WORKERS = max(1, int(os.environ.get('TMDB_META_WORKERS', '8')))
+TMDB_META_BULK_MAX_ITEMS = max(1, int(os.environ.get('TMDB_META_BULK_MAX_ITEMS', '40')))
+TMDB_HTTP_RETRIES = max(0, int(os.environ.get('TMDB_HTTP_RETRIES', '1')))
+TMDB_HTTP_BACKOFF_SECONDS = max(0.0, float(os.environ.get('TMDB_HTTP_BACKOFF_SECONDS', '0.35')))
+SEARCH_RESPONSE_CACHE_TTL_SECONDS = 30
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
@@ -286,9 +293,8 @@ _mem_lock = threading.Lock()
 # 24 workers — handles parallel GDrive calls, subtitle fetches, DB queries
 # Cost: ~24MB RAM (1MB stack per thread) — negligible
 _global_executor = ThreadPoolExecutor(max_workers=24)
-_tmdb_meta_executor = ThreadPoolExecutor(
-    max_workers=int(os.environ.get('TMDB_META_WORKERS', '64'))
-)
+_tmdb_meta_executor = ThreadPoolExecutor(max_workers=TMDB_META_WORKERS)
+_tmdb_http_local = threading.local()
 
 # === JWT DECODE CACHE ===
 # Cache decoded JWT payloads keyed by token string — avoids ~0.5ms decode per auth request
@@ -389,6 +395,12 @@ _user_data_lock = threading.Lock()
 def _invalidate_response_cache(*keys):
     with _response_lock:
         for key in keys:
+            _response_cache.pop(key, None)
+            _response_cache_ts.pop(key, None)
+
+def _invalidate_response_cache_prefix(prefix):
+    with _response_lock:
+        for key in [key for key in _response_cache if key.startswith(prefix)]:
             _response_cache.pop(key, None)
             _response_cache_ts.pop(key, None)
 
@@ -1316,6 +1328,29 @@ def _tmdb_bool(value):
         return value.strip().lower() in ('1', 'true', 'yes', 'on')
     return False
 
+def _get_tmdb_http_session():
+    """Return a per-thread TMDB session with small, bounded transient retries."""
+    session = getattr(_tmdb_http_local, 'session', None)
+    if session is not None:
+        return session
+
+    retry = Retry(
+        total=TMDB_HTTP_RETRIES,
+        connect=TMDB_HTTP_RETRIES,
+        read=TMDB_HTTP_RETRIES,
+        status=TMDB_HTTP_RETRIES,
+        backoff_factor=TMDB_HTTP_BACKOFF_SECONDS,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset({'GET'}),
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=2, pool_maxsize=2)
+    session = requests.Session()
+    session.mount('https://', adapter)
+    _tmdb_http_local.session = session
+    return session
+
 def _fetch_tmdb_json_server(tmdb_path, params=None, timeout=10):
     params = dict(params or {})
     params.pop('api_key', None)
@@ -1330,11 +1365,15 @@ def _fetch_tmdb_json_server(tmdb_path, params=None, timeout=10):
     upstream_params = dict(params)
     upstream_params['api_key'] = TMDB_API_KEY
     try:
-        response = requests.get(
+        started_at = _monotonic()
+        response = _get_tmdb_http_session().get(
             f'https://api.themoviedb.org/3/{tmdb_path}',
             params=upstream_params,
             timeout=timeout,
         )
+        elapsed_ms = int((_monotonic() - started_at) * 1000)
+        if response.status_code == 429 or response.status_code >= 500:
+            print(f"[TMDB-UPSTREAM] path={tmdb_path} status={response.status_code} elapsed_ms={elapsed_ms}", flush=True)
         _set_tmdb_proxy_cache(cache_key, response)
         try:
             data = response.json()
@@ -1483,56 +1522,94 @@ def search_trailer(current_user):
 @app.route('/api/tmdb-meta/bulk', methods=['POST'])
 @token_required(check_expiry=False)
 def bulk_tmdb_meta(current_user):
-    """Resolve many folder metadata records aggressively in one request."""
-    if not TMDB_API_KEY:
-        return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
+    """Resolve many folder metadata records with bounded upstream concurrency."""
+    request_id = request.headers.get('X-Request-ID') or uuid.uuid4().hex[:12]
+    started_at = _monotonic()
 
-    data = request.get_json(silent=True) or {}
-    raw_items = data.get('items') or []
-    if not isinstance(raw_items, list):
-        return orjson_jsonify({'error': 'items must be a list'}, 400)
+    def _response(payload, status=200):
+        resp = orjson_jsonify(payload, status)
+        resp.headers['X-TMDB-Bulk-Request-ID'] = request_id
+        return resp
 
-    unique_items = []
-    seen = set()
-    for raw in raw_items:
-        if not isinstance(raw, dict):
-            continue
-        media_type = str(raw.get('media_type') or raw.get('type') or '').strip().lower()
-        if media_type == 'series':
-            media_type = 'tv'
-        folder_name = str(raw.get('folder_name') or raw.get('name') or '').strip()
-        key = (media_type, folder_name)
-        if media_type not in ('tv', 'movie') or not folder_name or key in seen:
-            continue
-        seen.add(key)
-        unique_items.append({'media_type': media_type, 'folder_name': folder_name})
+    try:
+        if not TMDB_API_KEY:
+            return _response({'error': 'TMDB_API_KEY is not configured on server'}, 503)
 
-    def _resolve_item(item):
-        status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(
-            item['media_type'],
-            item['folder_name'],
-        )
-        return {
-            'media_type': item['media_type'],
-            'folder_name': item['folder_name'],
-            'status': status,
-            'cache': cache_status or 'MISS',
-            'payload': payload,
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return _response({'error': 'JSON body must be an object'}, 400)
+
+        raw_items = data.get('items') or []
+        if not isinstance(raw_items, list):
+            return _response({'error': 'items must be a list'}, 400)
+        if len(raw_items) > TMDB_META_BULK_MAX_ITEMS:
+            return _response({
+                'error': 'Too many TMDB metadata items',
+                'max_items': TMDB_META_BULK_MAX_ITEMS,
+            }, 413)
+
+        unique_items = []
+        seen = set()
+        for raw in raw_items:
+            if not isinstance(raw, dict):
+                continue
+            media_type = str(raw.get('media_type') or raw.get('type') or '').strip().lower()
+            if media_type == 'series':
+                media_type = 'tv'
+            folder_name = str(raw.get('folder_name') or raw.get('name') or '').strip()
+            key = (media_type, folder_name)
+            if media_type not in ('tv', 'movie') or not folder_name or key in seen:
+                continue
+            seen.add(key)
+            unique_items.append({'media_type': media_type, 'folder_name': folder_name})
+
+        def _resolve_item(item):
+            status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(
+                item['media_type'],
+                item['folder_name'],
+            )
+            return {
+                'media_type': item['media_type'],
+                'folder_name': item['folder_name'],
+                'status': status,
+                'cache': cache_status or 'MISS',
+                'payload': payload,
+            }
+
+        futures = {
+            _tmdb_meta_executor.submit(_resolve_item, item): item
+            for item in unique_items
         }
+        results = []
+        for future in as_completed(futures):
+            item = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as e:
+                print(f"[TMDB-BULK] request_id={request_id} item={item!r} failed: {e}", flush=True)
+                results.append({
+                    'media_type': item['media_type'],
+                    'folder_name': item['folder_name'],
+                    'status': 500,
+                    'cache': 'ERROR',
+                    'payload': {'error': 'TMDB metadata item failed'},
+                })
 
-    futures = [_tmdb_meta_executor.submit(_resolve_item, item) for item in unique_items]
-    results = []
-    for future in as_completed(futures):
-        try:
-            results.append(future.result())
-        except Exception as e:
-            results.append({
-                'status': 500,
-                'cache': 'ERROR',
-                'payload': {'error': str(e)},
-            })
-
-    return orjson_jsonify({'results': results, 'count': len(results)})
+        status_counts = defaultdict(int)
+        cache_counts = defaultdict(int)
+        for result in results:
+            status_counts[result['status']] += 1
+            cache_counts[result['cache']] += 1
+        elapsed_ms = int((_monotonic() - started_at) * 1000)
+        print(
+            f"[TMDB-BULK] request_id={request_id} items={len(results)} elapsed_ms={elapsed_ms} "
+            f"statuses={dict(status_counts)} caches={dict(cache_counts)}",
+            flush=True,
+        )
+        return _response({'results': results, 'count': len(results)})
+    except Exception as e:
+        print(f"[TMDB-BULK] request_id={request_id} route failed: {e}\n{traceback.format_exc()}", flush=True)
+        return _response({'error': 'TMDB bulk metadata request failed', 'request_id': request_id}, 500)
 
 def _tmdb_image_cache_key(size, image_path):
     raw = json.dumps({'v': 1, 'size': size, 'path': image_path}, sort_keys=True, separators=(',', ':'))
@@ -2948,6 +3025,7 @@ def build_search_index():
         _search_index.clear()
         _search_index.update(new_index)
         _search_index_built = True
+    _invalidate_response_cache_prefix('resp_search_v2_')
     
 
 
@@ -4167,8 +4245,11 @@ def search_content(current_user):
     normalized_query = _normalize_search_string(query)
     resp_key = "resp_search_v2_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
     cached_bytes = _response_cache.get(resp_key)
-    if cached_bytes:
+    cached_at = _response_cache_ts.get(resp_key, 0)
+    if cached_bytes and (time.time() - cached_at) < SEARCH_RESPONSE_CACHE_TTL_SECONDS:
         return add_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200), max_age=30)
+    if cached_bytes:
+        _invalidate_response_cache(resp_key)
     
     words = _normalize_text(query)
     if not words:
@@ -4348,6 +4429,13 @@ def get_content_releases(current_user):
     _response_cache.pop('resp_releases', None)
     return add_cache_headers(orjson_jsonify(releases, cache_key='resp_releases'), max_age=300)
 
+def _refresh_content_releases_cache():
+    releases = _load_releases()
+    mem_set('content_releases', releases)
+    redis_set("releases:all", releases, ttl_seconds=300)
+    _invalidate_response_cache('resp_releases', 'resp_folders_merged')
+    build_search_index()
+
 @app.route("/api/content-releases", methods=["POST"])
 @token_required(check_expiry=False)
 def set_content_release(current_user):
@@ -4358,12 +4446,7 @@ def set_content_release(current_user):
     
     folder_name = data['folder_name']
     _save_release(folder_name, data)
-    # Invalidate content_releases cache
-    _mem_cache.pop('content_releases', None)
-    _mem_cache_ts.pop('content_releases', None)
-    _response_cache.pop('resp_releases', None)
-    redis_delete("releases:all")
-    _invalidate_response_cache('resp_folders_merged')
+    _refresh_content_releases_cache()
     return orjson_jsonify({"success": True, "status": data.get('status', 'published')})
 
 @app.route("/api/content-releases/<path:folder_name>", methods=["DELETE"])
@@ -4371,12 +4454,7 @@ def set_content_release(current_user):
 def delete_content_release(current_user, folder_name):
     """Delete a content release."""
     _delete_release(folder_name)
-    # Invalidate content_releases cache
-    _mem_cache.pop('content_releases', None)
-    _mem_cache_ts.pop('content_releases', None)
-    _response_cache.pop('resp_releases', None)
-    redis_delete("releases:all")
-    _invalidate_response_cache('resp_folders_merged')
+    _refresh_content_releases_cache()
     return orjson_jsonify({"success": True})
 
 

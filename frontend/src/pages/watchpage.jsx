@@ -28,6 +28,10 @@ const STREAM_STALL_FALLBACK_DELAY_MS = 10000
 const SEEK_STALL_FALLBACK_DELAY_MS = 16000
 const SUBTITLE_DELAY_LIMIT_SECONDS = 50
 const SUBTITLE_DELAY_STEP_SECONDS = 0.5
+const SUBTITLE_FONT_SIZE_MAX_PX = 48
+const SUBTITLE_FONT_SIZE_MIN_PX = 14
+const SUBTITLE_OUTLINE_MAX_PX = 5
+const SUBTITLE_OUTLINE_MIN_PX = 0
 const SUBTITLE_POSITION_MIN_PERCENT = 8
 const SUBTITLE_POSITION_MAX_PERCENT = 90
 const SUBTITLE_SETTINGS_STORAGE_KEY = 'mutflix.subtitle-settings'
@@ -37,9 +41,9 @@ const DEFAULT_SUBTITLE_SETTINGS = {
   delaySeconds: 0,
   enabled: true,
   fontFamily: 'sans',
-  fontSize: 'medium',
+  fontSizePx: 26,
   fontStyle: 'normal',
-  outline: 'uniform',
+  outlineWidth: 2,
   positionPercent: 82,
 }
 
@@ -693,20 +697,29 @@ function WatchPage({
               <label className="watch-subtitle-setting">
                 <span>Font</span>
                 <select name="fontFamily" onChange={handleSubtitleSetting} value={subtitleSettings.fontFamily}>
-                  <option value="sans">Sans serif</option>
+                  <option value="sans">Arial</option>
+                  <option value="system">System UI</option>
+                  <option value="verdana">Verdana</option>
+                  <option value="helvetica">Helvetica</option>
+                  <option value="tahoma">Tahoma</option>
                   <option value="serif">Serif</option>
+                  <option value="times">Times New Roman</option>
                   <option value="mono">Monospace</option>
                   <option value="rounded">Rounded</option>
+                  <option value="condensed">Condensed</option>
                 </select>
               </label>
-              <label className="watch-subtitle-setting">
-                <span>Size</span>
-                <select name="fontSize" onChange={handleSubtitleSetting} value={subtitleSettings.fontSize}>
-                  <option value="small">Small</option>
-                  <option value="medium">Medium</option>
-                  <option value="large">Large</option>
-                  <option value="extra-large">Extra large</option>
-                </select>
+              <label className="watch-subtitle-setting watch-subtitle-range-setting">
+                <span>Font size: {subtitleSettings.fontSizePx}px</span>
+                <input
+                  max={SUBTITLE_FONT_SIZE_MAX_PX}
+                  min={SUBTITLE_FONT_SIZE_MIN_PX}
+                  name="fontSizePx"
+                  onChange={handleSubtitleSetting}
+                  step="1"
+                  type="range"
+                  value={subtitleSettings.fontSizePx}
+                />
               </label>
               <label className="watch-subtitle-setting">
                 <span>Font style</span>
@@ -734,16 +747,19 @@ function WatchPage({
                   <option value="solid">Solid</option>
                 </select>
               </label>
-              <label className="watch-subtitle-setting">
-                <span>Outline</span>
-                <select name="outline" onChange={handleSubtitleSetting} value={subtitleSettings.outline}>
-                  <option value="none">None</option>
-                  <option value="uniform">Uniform</option>
-                  <option value="shadow">Drop shadow</option>
-                  <option value="raised">Raised</option>
-                </select>
+              <label className="watch-subtitle-setting watch-subtitle-range-setting">
+                <span>Outline thickness: {subtitleSettings.outlineWidth}px</span>
+                <input
+                  max={SUBTITLE_OUTLINE_MAX_PX}
+                  min={SUBTITLE_OUTLINE_MIN_PX}
+                  name="outlineWidth"
+                  onChange={handleSubtitleSetting}
+                  step="0.5"
+                  type="range"
+                  value={subtitleSettings.outlineWidth}
+                />
               </label>
-              <label className="watch-subtitle-setting watch-subtitle-position-setting">
+              <label className="watch-subtitle-setting watch-subtitle-range-setting">
                 <span>Vertical position: {subtitleSettings.positionPercent}%</span>
                 <input
                   max={SUBTITLE_POSITION_MAX_PERCENT}
@@ -888,6 +904,18 @@ function clampSubtitlePosition(positionPercent) {
   return Math.min(SUBTITLE_POSITION_MAX_PERCENT, Math.max(SUBTITLE_POSITION_MIN_PERCENT, numericPosition))
 }
 
+function clampSubtitleOutline(outlineWidth) {
+  const numericOutlineWidth = Number(outlineWidth)
+  if (!Number.isFinite(numericOutlineWidth)) return DEFAULT_SUBTITLE_SETTINGS.outlineWidth
+  return Math.min(SUBTITLE_OUTLINE_MAX_PX, Math.max(SUBTITLE_OUTLINE_MIN_PX, numericOutlineWidth))
+}
+
+function clampSubtitleFontSize(fontSizePx) {
+  const numericFontSize = Number(fontSizePx)
+  if (!Number.isFinite(numericFontSize)) return DEFAULT_SUBTITLE_SETTINGS.fontSizePx
+  return Math.min(SUBTITLE_FONT_SIZE_MAX_PX, Math.max(SUBTITLE_FONT_SIZE_MIN_PX, numericFontSize))
+}
+
 function readSubtitleSettings() {
   try {
     const storedSettings = JSON.parse(window.localStorage.getItem(SUBTITLE_SETTINGS_STORAGE_KEY) || '{}')
@@ -896,10 +924,24 @@ function readSubtitleSettings() {
       middle: 50,
       bottom: DEFAULT_SUBTITLE_SETTINGS.positionPercent,
     }[storedSettings.position]
+    const legacyOutlineWidth = {
+      none: 0,
+      raised: 2,
+      shadow: 2,
+      uniform: DEFAULT_SUBTITLE_SETTINGS.outlineWidth,
+    }[storedSettings.outline]
+    const legacyFontSizePx = {
+      small: 20,
+      medium: DEFAULT_SUBTITLE_SETTINGS.fontSizePx,
+      large: 34,
+      'extra-large': 42,
+    }[storedSettings.fontSize]
     return {
       ...DEFAULT_SUBTITLE_SETTINGS,
       ...storedSettings,
       delaySeconds: clampSubtitleDelay(storedSettings.delaySeconds),
+      fontSizePx: clampSubtitleFontSize(storedSettings.fontSizePx ?? legacyFontSizePx),
+      outlineWidth: clampSubtitleOutline(storedSettings.outlineWidth ?? legacyOutlineWidth),
       positionPercent: clampSubtitlePosition(storedSettings.positionPercent ?? legacyPositionPercent),
     }
   } catch {
@@ -938,16 +980,16 @@ function createSubtitleCues(cues) {
 
 function createSubtitleCueStyle(settings) {
   const fontFamilies = {
+    condensed: 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif',
+    helvetica: '"Helvetica Neue", Helvetica, Arial, sans-serif',
     mono: '"Courier New", monospace',
     rounded: '"Trebuchet MS", Arial, sans-serif',
     sans: 'Arial, Helvetica, sans-serif',
     serif: 'Georgia, "Times New Roman", serif',
-  }
-  const fontSizes = {
-    small: 'clamp(1rem, 1.8vw, 1.35rem)',
-    medium: 'clamp(1.15rem, 2.3vw, 1.7rem)',
-    large: 'clamp(1.35rem, 2.8vw, 2.05rem)',
-    'extra-large': 'clamp(1.55rem, 3.4vw, 2.5rem)',
+    system: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    tahoma: 'Tahoma, Verdana, sans-serif',
+    times: '"Times New Roman", Times, serif',
+    verdana: 'Verdana, Geneva, sans-serif',
   }
   const colors = {
     cyan: '#67e8f9',
@@ -960,12 +1002,6 @@ function createSubtitleCueStyle(settings) {
     solid: 'rgba(0, 0, 0, 0.96)',
     translucent: 'rgba(0, 0, 0, 0.64)',
   }
-  const outlines = {
-    none: 'none',
-    raised: '-2px -2px 0 rgba(255, 255, 255, 0.22), 2px 2px 0 #000000',
-    shadow: '3px 3px 3px rgba(0, 0, 0, 0.96)',
-    uniform: '-2px -2px 0 #000000, 0 -2px 0 #000000, 2px -2px 0 #000000, -2px 0 0 #000000, 2px 0 0 #000000, -2px 2px 0 #000000, 0 2px 0 #000000, 2px 2px 0 #000000',
-  }
   const isBold = settings.fontStyle === 'bold' || settings.fontStyle === 'bold-italic'
   const isItalic = settings.fontStyle === 'italic' || settings.fontStyle === 'bold-italic'
 
@@ -973,11 +1009,23 @@ function createSubtitleCueStyle(settings) {
     background: backgrounds[settings.background] || backgrounds.translucent,
     color: colors[settings.color] || colors.white,
     fontFamily: fontFamilies[settings.fontFamily] || fontFamilies.sans,
-    fontSize: fontSizes[settings.fontSize] || fontSizes.medium,
+    fontSize: `${clampSubtitleFontSize(settings.fontSizePx)}px`,
     fontStyle: isItalic ? 'italic' : 'normal',
     fontWeight: isBold ? 800 : 600,
-    textShadow: outlines[settings.outline] || outlines.uniform,
+    textShadow: createSubtitleOutline(settings.outlineWidth),
   }
+}
+
+function createSubtitleOutline(outlineWidth) {
+  const width = clampSubtitleOutline(outlineWidth)
+  if (!width) return 'none'
+
+  const shadows = []
+  for (let degrees = 0; degrees < 360; degrees += 30) {
+    const radians = degrees * Math.PI / 180
+    shadows.push(`${(Math.cos(radians) * width).toFixed(2)}px ${(Math.sin(radians) * width).toFixed(2)}px 0 #000000`)
+  }
+  return shadows.join(', ')
 }
 
 export default WatchPage

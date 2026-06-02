@@ -6,6 +6,7 @@ import DashboardSkeleton from './components/DashboardSkeleton'
 import AuthPage from './pages/AuthPage'
 import DashboardPage from './pages/DashboardPage'
 import DetailPage from './pages/DetailPage'
+import MyListPage from './pages/MyListPage'
 import ProfilePage from './pages/ProfilePage'
 import SearchResultsPage from './pages/SearchResultsPage'
 import WatchPage from './pages/watchpage'
@@ -30,6 +31,7 @@ import {
 import {
   createProfileId,
   getBackdropUrl,
+  getCatalogIdentityKey,
   getDetailArtworkUrl,
   getDetailUrl,
   getItemKey,
@@ -56,6 +58,7 @@ function App() {
   const location = useLocation()
   const navigate = useNavigate()
   const isDetailRoute = location.pathname.startsWith('/detail/')
+  const isMyListRoute = location.pathname === '/my-list'
   const isSearchRoute = location.pathname === '/search'
   const isWatchRoute = location.pathname.startsWith('/watch/')
   const [mode, setMode] = useState('login')
@@ -215,12 +218,12 @@ function App() {
 
   const hydrateCatalogItems = useCallback(async (items) => {
     const pendingItems = items.filter((item) => {
-      const itemKey = getItemKey(item)
+      const itemKey = getCatalogIdentityKey(item)
       return !getPosterUrl(item) && !item.tmdb_metadata_resolved && !pendingMetadataKeys.current.has(itemKey)
     })
     if (!pendingItems.length) return
 
-    pendingItems.forEach((item) => pendingMetadataKeys.current.add(getItemKey(item)))
+    pendingItems.forEach((item) => pendingMetadataKeys.current.add(getCatalogIdentityKey(item)))
 
     try {
       const enrichedItems = await enrichCatalogMetadata(authToken, {
@@ -229,14 +232,19 @@ function App() {
         series: pendingItems.filter((item) => getMediaType(item) !== 'movie'),
       })
       setCatalogData((currentData) => {
-        const nextData = mergeCatalogMetadataUpdates(currentData, enrichedItems)
+        const mergedData = mergeCatalogMetadataUpdates(currentData, enrichedItems)
+        const nextData = {
+          ...mergedData,
+          movies: appendMissingCatalogItems(mergedData.movies, enrichedItems.movies),
+          series: appendMissingCatalogItems(mergedData.series, enrichedItems.series),
+        }
         if (selectedProfile) {
           writeDashboardCache(selectedProfile.id, { history: profileData.watchHistory, movies: nextData.movies, series: nextData.series })
         }
         return nextData
       })
     } finally {
-      pendingItems.forEach((item) => pendingMetadataKeys.current.delete(getItemKey(item)))
+      pendingItems.forEach((item) => pendingMetadataKeys.current.delete(getCatalogIdentityKey(item)))
     }
   }, [authToken, profileData.watchHistory, selectedProfile])
 
@@ -380,6 +388,19 @@ function App() {
     navigateBackToStoredRoute(navigate, location.state)
   }
 
+  function handleOpenMyList() {
+    navigate('/my-list', {
+      state: {
+        from: getCurrentRoute(location),
+        fromState: location.state,
+      },
+    })
+  }
+
+  function handleMyListBack() {
+    navigateBackToStoredRoute(navigate, location.state)
+  }
+
   async function handleAddProfile(event) {
     event.preventDefault()
     const profileName = newProfileName.trim()
@@ -520,6 +541,17 @@ function App() {
         />
       )
     }
+    if (isMyListRoute) {
+      return (
+        <MyListPage
+          authToken={authToken}
+          catalogData={catalogData}
+          onBack={handleMyListBack}
+          onOpenDetail={handleOpenDetail}
+          profileId={selectedProfile.id}
+        />
+      )
+    }
 
     return (
       <DashboardPage
@@ -527,6 +559,7 @@ function App() {
         onChangeProfile={handleChangeProfile}
         onLogout={handleLogout}
         onHydrateItems={hydrateCatalogItems}
+        onOpenMyList={handleOpenMyList}
         onOpenDetail={handleOpenDetail}
         onPlayHistory={handleResumeHistory}
         onOpenSearch={handleOpenSearch}
@@ -686,6 +719,14 @@ function mergeWatchHistory(history, payload) {
     },
     ...remainingHistory,
   ].slice(0, 20)
+}
+
+function appendMissingCatalogItems(items, additions) {
+  const itemKeys = new Set(items.map(getCatalogIdentityKey))
+  return [
+    ...items,
+    ...additions.filter((item) => !itemKeys.has(getCatalogIdentityKey(item))),
+  ]
 }
 
 export default App

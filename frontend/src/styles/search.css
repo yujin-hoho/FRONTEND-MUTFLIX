@@ -71,6 +71,14 @@
   color: #f8fafc;
 }
 
+.search-filter-icon {
+  height: 26px;
+  flex: 0 0 26px;
+  display: grid;
+  place-items: center;
+  color: #94a3b8;
+}
+
 .search-preview {
   position: absolute;
   top: calc(100% + 8px);
@@ -137,7 +145,7 @@
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .search-preview-copy {
@@ -266,7 +274,7 @@
 
 .search-results-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
+  grid-template-columns: repeat(auto-fill, var(--catalog-poster-width));
   gap: clamp(16px, 2vw, 24px);
   margin-top: 32px;
 }
@@ -350,7 +358,6 @@
   }
 
   .search-results-grid {
-    grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
     gap: 16px 12px;
   }
 }

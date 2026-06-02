@@ -39,6 +39,15 @@ export function getItemKey(item) {
   return `${item.type || item.media_type || 'item'}-${item.source || ''}-${item.folder_name || item.name || getTitle(item)}`
 }
 
+export function getCatalogIdentityKey(item) {
+  const source = String(item.source || '').trim().toLowerCase()
+  const title = String(item.folder_name || item.name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+  return `${getMediaType(item)}:${title || source || String(getTitle(item)).trim().toLowerCase()}`
+}
+
 export function getItemPath(item) {
   const source = item.source || ''
   if (/^(?:gdrive|gdrive_folder|telegram)\//.test(source)) return source

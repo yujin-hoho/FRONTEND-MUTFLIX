@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+:root {
+  --catalog-poster-width: 168px;
+}
+
 * {
   box-sizing: border-box;
 }

@@ -285,7 +285,7 @@
 
 .watch-subtitle-setting select,
 .watch-subtitle-delay input,
-.watch-subtitle-position-setting input {
+.watch-subtitle-range-setting input {
   width: 100%;
   min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.4);
@@ -295,11 +295,11 @@
   padding: 7px 8px;
 }
 
-.watch-subtitle-position-setting {
+.watch-subtitle-range-setting {
   grid-column: 1 / -1;
 }
 
-.watch-subtitle-position-setting input {
+.watch-subtitle-range-setting input {
   height: 18px;
   padding: 0;
   accent-color: #00dc64;

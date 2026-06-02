@@ -67,7 +67,7 @@
 .dashboard-skeleton-row > div {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: clamp(132px, 13vw, 190px);
+  grid-auto-columns: var(--catalog-poster-width);
   gap: 12px;
   overflow: hidden;
   padding-right: clamp(20px, 4vw, 54px);
@@ -374,7 +374,7 @@
 .catalog-scroller {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: clamp(132px, 13vw, 190px);
+  grid-auto-columns: var(--catalog-poster-width);
   gap: 12px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -403,7 +403,7 @@
 }
 
 .catalog-card:hover {
-  transform: scale(1.045);
+  transform: translateY(-4px);
 }
 
 .poster-frame {
@@ -430,7 +430,7 @@
 }
 
 .ranked-scroller {
-  grid-auto-columns: clamp(172px, 17vw, 246px);
+  grid-auto-columns: calc(var(--catalog-poster-width) + 72px);
   gap: 18px;
 }
 
@@ -440,7 +440,7 @@
   min-height: 284px;
   display: grid;
   align-content: end;
-  padding-left: clamp(52px, 6vw, 86px);
+  padding-left: 72px;
 }
 
 .ranked-number {
@@ -464,6 +464,7 @@
   background: #0f172a;
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.32);
   contain: paint;
+  width: var(--catalog-poster-width);
 }
 
 .ranked-card h3 {
@@ -475,7 +476,7 @@
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: cover;
   object-position: center;
 }
 
@@ -537,7 +538,7 @@
 
 .poster-frame img {
   display: block;
-  object-fit: contain;
+  object-fit: cover;
   object-position: center;
 }
 

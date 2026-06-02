@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, X } from 'lucide-react'
+import { Search, SlidersHorizontal, X } from 'lucide-react'
 import LoadableImage from '../LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterFallbackUrl, getPosterUrl, getRating, getTitle } from '../../utils/media'
+import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../../utils/media'
 import { mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
 
 const PREVIEW_RESULT_LIMIT = 5
@@ -21,7 +21,7 @@ function SearchBox({
 }) {
   const [isFocused, setIsFocused] = useState(false)
   const [internalQuery, setInternalQuery] = useState(defaultQuery)
-  const [serverSearch, setServerSearch] = useState({ query: '', results: [] })
+  const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const requestedHydrationKey = useRef('')
   const isControlled = controlledQuery !== undefined
   const query = isControlled ? controlledQuery : internalQuery
@@ -40,6 +40,8 @@ function SearchBox({
     [localPreviewResults, normalizedQuery, serverSearch],
   )
   const shouldShowPreview = showPreview && isFocused && normalizedQuery
+  const isServerSearchPending = normalizedQuery.length >= 2
+    && (serverSearch.query !== normalizedQuery || serverSearch.status === 'loading')
   const hydrationKey = previewResults
     .filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved)
     .map(getItemKey)
@@ -50,10 +52,13 @@ function SearchBox({
 
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => {
+      setServerSearch({ query: normalizedQuery, results: [], status: 'loading' })
       onSearchCatalog(deferredQuery, { signal: controller.signal })
-        .then((results) => setServerSearch({ query: normalizedQuery, results }))
-        .catch(() => {})
-    }, 180)
+        .then((results) => setServerSearch({ query: normalizedQuery, results, status: 'ready' }))
+        .catch((error) => {
+          if (error.name !== 'AbortError') setServerSearch({ query: normalizedQuery, results: [], status: 'error' })
+        })
+    }, 90)
 
     return () => {
       controller.abort()
@@ -66,7 +71,7 @@ function SearchBox({
     const timeoutId = window.setTimeout(() => {
       requestedHydrationKey.current = hydrationKey
       onHydrateItems?.(previewResults)
-    }, 450)
+    }, 100)
 
     return () => window.clearTimeout(timeoutId)
   }, [hydrationKey, onHydrateItems, previewResults])
@@ -79,6 +84,11 @@ function SearchBox({
   function handleSubmit(event) {
     event.preventDefault()
     if (!normalizeSearchQuery(query)) return
+    setIsFocused(false)
+    onSubmit(query.trim())
+  }
+
+  function handleSearchAll() {
     setIsFocused(false)
     onSubmit(query.trim())
   }
@@ -111,43 +121,44 @@ function SearchBox({
             <X size={16} />
           </button>
         )}
+        <span className="search-filter-icon" aria-hidden="true">
+          <SlidersHorizontal size={variant === 'page' ? 19 : 17} />
+        </span>
       </form>
 
       {shouldShowPreview && (
         <div className="search-preview" aria-label={`Preview hasil pencarian untuk ${query}`}>
           <div className="search-preview-heading">
             <span>Preview hasil</span>
-            <strong>{previewResults.length ? `${previewResults.length} teratas` : 'Tidak ditemukan'}</strong>
+            <strong>{previewResults.length ? `${previewResults.length} teratas` : isServerSearchPending ? 'Mencari...' : 'Tidak ditemukan'}</strong>
           </div>
           {previewResults.length > 0 ? (
-            <>
-              <div className="search-preview-list">
-                {previewResults.map((item) => {
-                  const poster = getPosterUrl(item)
-                  const genres = getGenres(item)
-                  const rating = getRating(item)
+            <div className="search-preview-list">
+              {previewResults.map((item) => {
+                const poster = getPosterUrl(item)
+                const genres = getGenres(item)
+                const rating = getRating(item)
 
-                  return (
-                    <button className="search-preview-card" key={`${getMediaType(item)}-${item.folder_name || getTitle(item)}`} onClick={() => handleOpenDetail(item)} type="button">
-                      <span className="search-preview-poster">
-                        <LoadableImage alt="" fallbackSrc={getPosterFallbackUrl(item)} key={poster} src={poster} />
-                      </span>
-                      <span className="search-preview-copy">
-                        <strong>{getTitle(item)}</strong>
-                        <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
-                      </span>
-                      {rating > 0 && <span className="search-preview-rating">{rating.toFixed(1)}</span>}
-                    </button>
-                  )
-                })}
-              </div>
-              <button className="search-preview-all" onClick={() => onSubmit(query.trim())} type="button">
-                Lihat semua hasil untuk &quot;{query.trim()}&quot;
-              </button>
-            </>
+                return (
+                  <button className="search-preview-card" key={`${getMediaType(item)}-${item.folder_name || getTitle(item)}`} onClick={() => handleOpenDetail(item)} type="button">
+                    <span className="search-preview-poster">
+                      <LoadableImage alt="" key={poster} src={poster} />
+                    </span>
+                    <span className="search-preview-copy">
+                      <strong>{getTitle(item)}</strong>
+                      <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
+                    </span>
+                    {rating > 0 && <span className="search-preview-rating">{rating.toFixed(1)}</span>}
+                  </button>
+                )
+              })}
+            </div>
           ) : (
-            <p className="search-preview-empty">Tidak ada judul yang cocok.</p>
+            <p className="search-preview-empty">{isServerSearchPending ? 'Mencari di katalog...' : 'Tidak ada judul yang cocok di preview.'}</p>
           )}
+          <button className="search-preview-all" onClick={handleSearchAll} type="button">
+            Cari semua hasil untuk &quot;{query.trim()}&quot;
+          </button>
         </div>
       )}
     </div>

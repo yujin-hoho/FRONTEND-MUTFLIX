@@ -22,6 +22,7 @@ function DashboardPage({
   onChangeProfile,
   onHydrateItems,
   onLogout,
+  onOpenMyList,
   onOpenDetail,
   onPlayHistory,
   onOpenSearch,
@@ -44,6 +45,7 @@ function DashboardPage({
           <button className={activeNav === 'movies' ? 'active' : ''} onClick={() => setActiveNav('movies')} type="button">Movies</button>
           <button className={activeNav === 'series' ? 'active' : ''} onClick={() => setActiveNav('series')} type="button">Series</button>
           <button className={activeNav === 'variety' ? 'active' : ''} onClick={() => setActiveNav('variety')} type="button">Variety Show</button>
+          <button onClick={onOpenMyList} type="button">My List</button>
         </div>
         <div className="dashboard-actions">
           <SearchBox

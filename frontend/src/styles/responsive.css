@@ -104,16 +104,8 @@
     font-size: 2.35rem;
   }
 
-  .catalog-scroller {
-    grid-auto-columns: 132px;
-  }
-
   .history-scroller {
     grid-auto-columns: 240px;
-  }
-
-  .ranked-scroller {
-    grid-auto-columns: 188px;
   }
 
   .episode-card {

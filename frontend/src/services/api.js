@@ -1,8 +1,8 @@
 import { API_BASE_URL, CLOUDFLARE_STREAM_PROXY_URL } from '../config'
 import {
   getBackdropUrl,
+  getCatalogIdentityKey,
   getGenres,
-  getItemKey,
   getItemPath,
   getMediaType,
   getPosterUrl,
@@ -94,6 +94,15 @@ export async function fetchDashboardData(authToken, profileId) {
     : []
 
   return { history: Array.isArray(historyData) ? historyData : [], movies, series }
+}
+
+export async function fetchMyList(authToken, profileId) {
+  const response = await fetch(`${API_BASE_URL}/api/mylist?profile_id=${encodeURIComponent(profileId)}`, {
+    headers: { 'x-access-token': authToken },
+  })
+  const data = await response.json().catch(() => [])
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to load My List.')
+  return Array.isArray(data) ? data.map(normalizeMyListItem) : []
 }
 
 export async function fetchCatalogSearch(authToken, query, { signal } = {}) {
@@ -348,7 +357,7 @@ export async function saveWatchProgress(authToken, payload) {
   return payload
 }
 
-export async function enrichCatalogMetadata(authToken, catalog, maxItemsPerType = Infinity, { batchSize = 40, onProgress } = {}) {
+export async function enrichCatalogMetadata(authToken, catalog, maxItemsPerType = Infinity, { batchSize = 20, onProgress } = {}) {
   let movies = catalog.movies
   let series = catalog.series
   const headers = { 'x-access-token': authToken }
@@ -385,7 +394,10 @@ export async function fetchDetailData(authToken, item) {
   }
 
   const headers = { 'x-access-token': authToken }
-  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, { headers })
+  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, {
+    cache: 'no-store',
+    headers,
+  })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to load title details.')
 
@@ -554,9 +566,9 @@ async function fetchMetadataBatch(headers, items) {
 }
 
 function mergeItemsByKey(items, updates) {
-  const updatesByKey = new Map(updates.map((item) => [getItemKey(item), item]))
+  const updatesByKey = new Map(updates.map((item) => [getCatalogIdentityKey(item), item]))
   return items.map((item) => {
-    const update = updatesByKey.get(getItemKey(item))
+    const update = updatesByKey.get(getCatalogIdentityKey(item))
     return update ? mergeMeaningfulValues(item, update) : item
   })
 }
@@ -599,4 +611,18 @@ function encodeServerPath(path) {
 function resolvePublicPath(path) {
   if (/^(?:https?:|blob:)/i.test(path)) return path
   return path.startsWith('/') ? path : `/${path}`
+}
+
+function normalizeMyListItem(item) {
+  const metadata = item.meta_json && typeof item.meta_json === 'object' ? item.meta_json : {}
+  const mediaType = String(item.media_type || metadata.media_type || metadata.type || '').toLowerCase()
+  const isMovie = mediaType === 'movie'
+
+  return {
+    ...metadata,
+    folder_name: item.folder_name || metadata.folder_name || metadata.name || '',
+    media_type: isMovie ? 'movie' : 'tv',
+    my_list_status: item.status || 'plan_to_watch',
+    type: isMovie ? 'movie' : 'series',
+  }
 }

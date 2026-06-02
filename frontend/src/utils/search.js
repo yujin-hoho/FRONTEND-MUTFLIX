@@ -1,4 +1,4 @@
-import { getGenres, getRating, getTitle } from './media'
+import { getCatalogIdentityKey, getGenres, getRating } from './media'
 
 export function normalizeSearchQuery(value) {
   return String(value || '')
@@ -40,7 +40,7 @@ export function searchCatalog(entries, query, { limit = Infinity } = {}) {
 export function mergeSearchResults(primaryItems, fallbackItems) {
   const seen = new Set()
   return [...primaryItems, ...fallbackItems].filter((item) => {
-    const key = `${item.type || item.media_type || ''}:${item.folder_name || item.name || getTitle(item)}`
+    const key = getCatalogIdentityKey(item)
     if (seen.has(key)) return false
     seen.add(key)
     return true
