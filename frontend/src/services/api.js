@@ -142,6 +142,9 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   const audioTranscodeUrl = needsAudioTranscode && data.audio_transcode_url
     ? resolveApiPath(data.audio_transcode_url)
     : ''
+  const audioTranscodeStartUrl = needsAudioTranscode && data.audio_transcode_start_url
+    ? resolveApiPath(data.audio_transcode_start_url)
+    : ''
   const streamPath = audioTranscodeUrl
     ? audioTranscodeUrl
     : isHlsStream
@@ -152,6 +155,7 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   const fallbackPath = isHlsStream ? '' : data.stream_url
   if (!streamPath) throw new Error('The server did not return a playable stream.')
   return {
+    audioTranscodeStartUrl,
     audioTranscodeUrl,
     durationMs: Number(data.duration_ms || 0),
     embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
@@ -160,9 +164,23 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   }
 }
 
-export function getTimestampedAudioTranscodeUrl(audioTranscodeUrl, startSeconds) {
+export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeconds, { signal } = {}) {
+  const requestedStart = Math.max(0, Number(startSeconds) || 0)
+  if (!audioTranscodeStartUrl || requestedStart <= 0) return requestedStart
+
+  const url = new URL(audioTranscodeStartUrl, window.location.origin)
+  url.searchParams.set('start_seconds', String(requestedStart))
+  const response = await fetch(url, { signal })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the playback position.')
+
+  return Math.min(requestedStart, Math.max(0, Number(data.start_seconds) || 0))
+}
+
+export function getTimestampedAudioTranscodeUrl(audioTranscodeUrl, startSeconds, requestId = 0) {
   const url = new URL(audioTranscodeUrl, window.location.origin)
   url.searchParams.set('start_seconds', String(Math.max(0, Number(startSeconds) || 0)))
+  if (requestId) url.searchParams.set('stream_request', String(requestId))
   return url.toString()
 }
 
@@ -210,30 +228,24 @@ export async function fetchSubtitleTrack(subtitlePath) {
   }
 }
 
-export async function fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, { onTrack } = {}) {
-  if (!embeddedSubtitlesUrl) return { cues: [], url: '' }
+export async function fetchEmbeddedSubtitleTracks(embeddedSubtitlesUrl) {
+  if (!embeddedSubtitlesUrl) return []
 
   for (const delayMs of [0, 1500, 3000, 5000, 8000, 12000, 20000, 20000, 20000, 20000, 20000]) {
     if (delayMs) await new Promise((resolve) => window.setTimeout(resolve, delayMs))
 
     const response = await fetch(embeddedSubtitlesUrl)
     const data = await response.json().catch(() => ({}))
-    if (!response.ok) return { cues: [], url: '' }
+    if (!response.ok) return []
 
     const tracks = Array.isArray(data.tracks) ? data.tracks : []
-    const selectedTrack = tracks.find((track) => track.default)
-      || tracks.find((track) => ['id', 'ind', 'indonesian'].includes(String(track.language || '').toLowerCase()))
-      || tracks.find((track) => ['en', 'eng', 'english'].includes(String(track.language || '').toLowerCase()))
-      || tracks[0]
-    if (selectedTrack?.url) {
-      const track = { ...selectedTrack, url: resolveApiPath(selectedTrack.url) }
-      onTrack?.(track)
-      return { cues: [], trackUrl: track.url, url: '' }
-    }
-    if (!data.probing) return { cues: [], url: '' }
+      .filter((track) => track.url)
+      .map((track) => ({ ...track, url: resolveApiPath(track.url) }))
+    if (tracks.length) return tracks
+    if (!data.probing) return []
   }
 
-  return { cues: [], url: '' }
+  return []
 }
 
 export async function fetchEmbeddedSubtitleWindow(subtitleTrackUrl, startSeconds, durationSeconds, { onCues } = {}) {
@@ -521,6 +533,28 @@ export async function fetchDetailData(authToken, item) {
     ),
     videos,
     credits,
+  }
+}
+
+export async function fetchVideoQueue(authToken, item) {
+  const detailItem = { ...item, media_type: getMediaType(item) }
+  const itemPath = getItemPath(detailItem)
+  if (!itemPath || !navigator.onLine) return { item: detailItem, videos: [] }
+
+  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, {
+    cache: 'no-store',
+    headers: { 'x-access-token': authToken },
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to load video queue.')
+
+  return {
+    item: mergeMeaningfulValues(
+      detailItem,
+      data.catalog_item || {},
+      { media_type: detailItem.media_type },
+    ),
+    videos: Array.isArray(data.videos) ? data.videos : [],
   }
 }
 

@@ -227,6 +227,8 @@ WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed serv
 AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
+AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
+AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
 EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS = max(300, int(os.environ.get('EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS', str(7 * 24 * 60 * 60))))
 EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS', '300')))
 EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS', '300')))
@@ -3989,6 +3991,7 @@ def get_gdrive_stream_details(current_user,file_path):
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
             "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "audio_transcode_start_url": f"/api/gdrive-audio-transcode-start/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "embedded_subtitles_url": f"/api/gdrive-embedded-subtitles/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "file_name": file_name,
@@ -4271,7 +4274,9 @@ def gdrive_audio_transcode(fid):
         "-headers", ffmpeg_headers,
     ]
     if start_seconds > 0:
-        command.extend(["-ss", str(start_seconds)])
+        # Video stays stream-copied, so preserve the same keyframe preroll for
+        # transcoded audio instead of discarding it with FFmpeg's accurate seek.
+        command.extend(["-ss", str(start_seconds), "-noaccurate_seek"])
     command.extend([
         "-i", media_url,
         "-map", "0:v:0?",
@@ -4331,12 +4336,73 @@ def gdrive_audio_transcode(fid):
         direct_passthrough=True,
     )
 
+@app.route("/api/gdrive-audio-transcode-start/<fid>", methods=["GET"])
+def get_gdrive_audio_transcode_start(fid):
+    if not _verify_stream_token(fid, request.args.get('stream_token')):
+        return orjson_jsonify({"error": "Unauthorized stream"}, 401)
+
+    requested_start = _clamp_audio_transcode_start(request.args.get('start_seconds'))
+    return orjson_jsonify({
+        "start_seconds": _resolve_gdrive_audio_transcode_start(fid, requested_start),
+    })
+
 def _clamp_audio_transcode_start(value):
     try:
         numeric_value = float(value)
     except (TypeError, ValueError):
         return 0
     return round(min(24 * 60 * 60, max(0, numeric_value)), 3)
+
+def _resolve_gdrive_audio_transcode_start(fid, requested_start):
+    """Resolve the keyframe FFmpeg will use for stream-copy video seeking."""
+    if requested_start <= 0 or not shutil.which("ffprobe"):
+        return requested_start
+
+    cache_key = f"audio_transcode_keyframe_v1_{fid}_{requested_start:g}"
+    cached_start = disk_cache.get(cache_key)
+    if cached_start is not None:
+        return float(cached_start)
+
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return requested_start
+
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-headers", ffprobe_headers,
+        "-read_intervals", f"{requested_start}%+0.1",
+        "-select_streams", "v:0",
+        "-skip_frame", "nokey",
+        "-show_entries", "frame=best_effort_timestamp_time",
+        "-of", "csv=p=0",
+        media_url,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
+        )
+        timestamps = [
+            float(match.group(0))
+            for line in (result.stdout or '').splitlines()
+            if (match := re.search(r'-?\d+(?:\.\d+)?', line))
+        ]
+        valid_timestamps = [
+            timestamp
+            for timestamp in timestamps
+            if 0 <= timestamp <= requested_start
+        ]
+        resolved_start = max(valid_timestamps) if valid_timestamps else requested_start
+        disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
+        return resolved_start
+    except Exception:
+        return requested_start
 
 @app.route("/api/gdrive-embedded-subtitles/<fid>")
 @rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-list', cors=True)

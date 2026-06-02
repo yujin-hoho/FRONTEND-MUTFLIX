@@ -16,8 +16,9 @@ import {
   X,
 } from 'lucide-react'
 import {
+  fetchAudioTranscodeStart,
   fetchEmbeddedSubtitleWindow,
-  fetchEmbeddedSubtitleTrack,
+  fetchEmbeddedSubtitleTracks,
   fetchPlaybackMarkers,
   fetchPlaybackSource,
   fetchSubtitleTrack,
@@ -30,6 +31,7 @@ const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
 const CONTROLS_HIDE_DELAY_MS = 2600
 const STREAM_STALL_FALLBACK_DELAY_MS = 10000
 const SEEK_STALL_FALLBACK_DELAY_MS = 16000
+const AUDIO_TRANSCODE_SEEK_DEBOUNCE_MS = 120
 const SUBTITLE_DELAY_LIMIT_SECONDS = 50
 const SUBTITLE_DELAY_STEP_SECONDS = 0.5
 const SUBTITLE_FONT_SIZE_MAX_PX = 48
@@ -74,10 +76,16 @@ function WatchPage({
   const sourceDurationRef = useRef(0)
   const audioTranscodeBaseUrlRef = useRef('')
   const audioTranscodeOffsetRef = useRef(0)
+  const audioTranscodeStartUrlRef = useRef('')
+  const audioTranscodeStartRequestRef = useRef({ controller: null, id: 0 })
+  const audioTranscodeStartTimeoutRef = useRef(null)
   const pendingAudioTranscodeOffsetRef = useRef(0)
   const pendingAudioTranscodeAutoplayRef = useRef(null)
+  const embeddedSubtitleTracksRef = useRef([])
   const embeddedSubtitleTrackUrlRef = useRef('')
   const embeddedSubtitleWindowRequestsRef = useRef(new Set())
+  const externalSubtitleCuesRef = useRef([])
+  const selectedSubtitleIdRef = useRef('')
   const hasUsedStreamFallbackRef = useRef(false)
   const isSeekingRef = useRef(false)
   const pendingInitialSeekRef = useRef(false)
@@ -100,8 +108,9 @@ function WatchPage({
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
   const [subtitleDelayInput, setSubtitleDelayInput] = useState(() => formatSubtitleDelay(subtitleSettings.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
-  const [hasEmbeddedSubtitleTrack, setHasEmbeddedSubtitleTrack] = useState(false)
+  const [embeddedSubtitleTracks, setEmbeddedSubtitleTracks] = useState([])
   const [embeddedSubtitleTrackUrl, setEmbeddedSubtitleTrackUrl] = useState('')
+  const [selectedSubtitleId, setSelectedSubtitleId] = useState('')
   const [isSubtitlePanelOpen, setIsSubtitlePanelOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [playerError, setPlayerError] = useState('')
@@ -116,7 +125,14 @@ function WatchPage({
   const videoPath = video.path
   const subtitlePath = video.subtitle_path || ''
   const isCaptionsEnabled = subtitleSettings.enabled
-  const hasSubtitleTrack = Boolean(subtitleUrl || hasEmbeddedSubtitleTrack)
+  const subtitleTracks = useMemo(() => [
+    ...(subtitleUrl ? [{ id: 'external', label: 'Eksternal' }] : []),
+    ...embeddedSubtitleTracks.map((track) => ({
+      id: getEmbeddedSubtitleTrackId(track),
+      label: getEmbeddedSubtitleTrackLabel(track),
+    })),
+  ], [embeddedSubtitleTracks, subtitleUrl])
+  const hasSubtitleTrack = subtitleTracks.length > 0
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
   const episodeLabel = isSeries
@@ -246,12 +262,39 @@ function WatchPage({
     if (element?.track) element.track.mode = 'hidden'
   }, [])
 
+  const selectSubtitleTrack = useCallback((subtitleId, tracks = embeddedSubtitleTracksRef.current) => {
+    selectedSubtitleIdRef.current = subtitleId
+    setSelectedSubtitleId(subtitleId)
+    embeddedSubtitleWindowRequestsRef.current.clear()
+
+    if (subtitleId === 'external') {
+      embeddedSubtitleTrackUrlRef.current = ''
+      setEmbeddedSubtitleTrackUrl('')
+      setSubtitleCues(externalSubtitleCuesRef.current)
+      return
+    }
+
+    const selectedTrack = tracks.find((track) => getEmbeddedSubtitleTrackId(track) === subtitleId)
+    const trackUrl = selectedTrack?.url || ''
+    embeddedSubtitleTrackUrlRef.current = trackUrl
+    setEmbeddedSubtitleTrackUrl(trackUrl)
+    setSubtitleCues([])
+  }, [])
+
   const clearStreamStallTimeout = useCallback(() => {
     window.clearTimeout(streamStallTimeoutRef.current)
     streamStallTimeoutRef.current = null
   }, [])
 
-  const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay } = {}) => {
+  const cancelAudioTranscodeStartRequest = useCallback(() => {
+    const request = audioTranscodeStartRequestRef.current
+    window.clearTimeout(audioTranscodeStartTimeoutRef.current)
+    audioTranscodeStartTimeoutRef.current = null
+    request.controller?.abort()
+    audioTranscodeStartRequestRef.current = { controller: null, id: request.id + 1 }
+  }, [])
+
+  const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, immediate = false } = {}) => {
     const audioTranscodeUrl = audioTranscodeBaseUrlRef.current
     if (!audioTranscodeUrl) return false
 
@@ -261,8 +304,13 @@ function WatchPage({
       sourceDuration > 0 ? Math.max(0, sourceDuration - 0.1) : Number.MAX_SAFE_INTEGER,
       Math.max(0, Number(targetSeconds) || 0),
     )
-    pendingAudioTranscodeOffsetRef.current = boundedTarget
     pendingAudioTranscodeAutoplayRef.current = autoplay ?? !player?.paused
+    player?.pause()
+    cancelAudioTranscodeStartRequest()
+    const requestId = audioTranscodeStartRequestRef.current.id
+    const controller = new AbortController()
+    audioTranscodeStartRequestRef.current = { controller, id: requestId }
+    pendingAudioTranscodeOffsetRef.current = 0
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
@@ -271,9 +319,24 @@ function WatchPage({
     setPlayerError('')
     setCurrentTime(boundedTarget)
     setIsBuffering(true)
-    setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, boundedTarget))
+    const resolveStreamStart = () => {
+      audioTranscodeStartTimeoutRef.current = null
+      fetchAudioTranscodeStart(audioTranscodeStartUrlRef.current, boundedTarget, { signal: controller.signal })
+        .catch((error) => error.name === 'AbortError' ? null : boundedTarget)
+        .then((resolvedStart) => {
+          if (resolvedStart === null || audioTranscodeStartRequestRef.current.id !== requestId) return
+          pendingAudioTranscodeOffsetRef.current = resolvedStart
+          setCurrentTime(resolvedStart)
+          setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, resolvedStart, requestId))
+        })
+    }
+    if (immediate) {
+      resolveStreamStart()
+    } else {
+      audioTranscodeStartTimeoutRef.current = window.setTimeout(resolveStreamStart, AUDIO_TRANSCODE_SEEK_DEBOUNCE_MS)
+    }
     return true
-  }, [clearStreamStallTimeout])
+  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout])
 
   const seekToPlaybackTime = useCallback((targetSeconds) => {
     const player = playerRef.current
@@ -305,6 +368,8 @@ function WatchPage({
       ? requestedSeekPositionRef.current
       : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : null
     audioTranscodeBaseUrlRef.current = ''
+    audioTranscodeStartUrlRef.current = ''
+    cancelAudioTranscodeStartRequest()
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeAutoplayRef.current = null
     clearStreamStallTimeout()
@@ -316,7 +381,7 @@ function WatchPage({
     setIsBuffering(true)
     setStreamUrl(fallbackUrl)
     return true
-  }, [clearStreamStallTimeout, streamUrl])
+  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, streamUrl])
 
   const armStreamStallFallback = useCallback((delayMs = STREAM_STALL_FALLBACK_DELAY_MS) => {
     clearStreamStallTimeout()
@@ -383,6 +448,8 @@ function WatchPage({
     sourceDurationRef.current = 0
     audioTranscodeBaseUrlRef.current = ''
     audioTranscodeOffsetRef.current = 0
+    audioTranscodeStartUrlRef.current = ''
+    cancelAudioTranscodeStartRequest()
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeAutoplayRef.current = null
     hasUsedStreamFallbackRef.current = false
@@ -394,20 +461,25 @@ function WatchPage({
       if (!ignore) {
         setSubtitleCues([])
         setSubtitleUrl('')
-        setHasEmbeddedSubtitleTrack(false)
+        setEmbeddedSubtitleTracks([])
         setEmbeddedSubtitleTrackUrl('')
+        setSelectedSubtitleId('')
       }
     })
+    embeddedSubtitleTracksRef.current = []
     embeddedSubtitleTrackUrlRef.current = ''
     embeddedSubtitleWindowRequestsRef.current.clear()
+    externalSubtitleCuesRef.current = []
+    selectedSubtitleIdRef.current = ''
 
     const playbackSourcePromise = fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
     playbackSourcePromise
-      .then(({ audioTranscodeUrl, durationMs, fallbackUrl, url }) => {
+      .then(({ audioTranscodeStartUrl, audioTranscodeUrl, durationMs, fallbackUrl, url }) => {
         if (!ignore) {
           const sourceDurationSeconds = Number(durationMs || 0) / 1000
           sourceDurationRef.current = sourceDurationSeconds
           audioTranscodeBaseUrlRef.current = audioTranscodeUrl
+          audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
           fallbackStreamUrlRef.current = fallbackUrl
           if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
           setStreamUrl(url)
@@ -424,45 +496,49 @@ function WatchPage({
       if (!ignore) setMarkers(nextMarkers)
     })
 
-    async function loadSubtitleTrack() {
+    async function loadExternalSubtitleTrack() {
       try {
         const externalTrack = await fetchSubtitleTrack(subtitlePath)
-        if (externalTrack.url) return externalTrack
+        if (ignore) {
+          if (externalTrack.url) URL.revokeObjectURL(externalTrack.url)
+          return
+        }
+        nextSubtitleUrl = externalTrack.url
+        externalSubtitleCuesRef.current = createSubtitleCues(externalTrack.cues)
+        setSubtitleUrl(externalTrack.url)
+        if (externalTrack.url && !selectedSubtitleIdRef.current) {
+          selectSubtitleTrack('external')
+        }
       } catch {
-        // Fall back to embedded text subtitles when an external track cannot be loaded.
+        // Embedded subtitle discovery continues when an external track is unavailable.
       }
-      const { embeddedSubtitlesUrl } = await playbackSourcePromise
-      return fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, {
-        onTrack: (track) => {
-          if (!ignore) {
-            embeddedSubtitleTrackUrlRef.current = track.url
-            setEmbeddedSubtitleTrackUrl(track.url)
-            setHasEmbeddedSubtitleTrack(true)
-          }
-        },
-      })
     }
 
-    loadSubtitleTrack().then(({ cues, url }) => {
-      if (ignore) {
-        if (url) URL.revokeObjectURL(url)
-        return
+    const externalSubtitlePromise = loadExternalSubtitleTrack()
+
+    async function loadEmbeddedSubtitleTracks() {
+      const { embeddedSubtitlesUrl } = await playbackSourcePromise
+      const tracks = await fetchEmbeddedSubtitleTracks(embeddedSubtitlesUrl)
+      await externalSubtitlePromise
+      if (ignore) return
+
+      embeddedSubtitleTracksRef.current = tracks
+      setEmbeddedSubtitleTracks(tracks)
+      if (!selectedSubtitleIdRef.current && tracks.length) {
+        selectSubtitleTrack(getEmbeddedSubtitleTrackId(getPreferredEmbeddedSubtitleTrack(tracks)), tracks)
       }
-      nextSubtitleUrl = url
-      if (cues.length || url) setSubtitleCues(createSubtitleCues(cues))
-      setSubtitleUrl(url)
-    }).catch(() => {
-      if (!ignore) {
-        setSubtitleCues([])
-        setSubtitleUrl('')
-      }
+    }
+
+    loadEmbeddedSubtitleTracks().catch(() => {
+      // External subtitles remain usable if embedded track discovery fails.
     })
 
     return () => {
       ignore = true
+      cancelAudioTranscodeStartRequest()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, clearStreamStallTimeout, markerFolderName, subtitlePath, videoName, videoOriginalName, videoPath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearStreamStallTimeout, markerFolderName, selectSubtitleTrack, subtitlePath, videoName, videoOriginalName, videoPath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -606,7 +682,7 @@ function WatchPage({
         ? fallbackSeconds
         : Number(resumeEntry?.position_ms || 0) / 1000
       if (targetSeconds > 0 && targetSeconds < playbackDuration - 2) {
-        if (restartAudioTranscodeAt(targetSeconds, { autoplay: true })) return
+        if (restartAudioTranscodeAt(targetSeconds, { autoplay: true, immediate: true })) return
         isSeekingRef.current = true
         pendingInitialSeekRef.current = true
         requestedSeekPositionRef.current = targetSeconds
@@ -657,6 +733,10 @@ function WatchPage({
   function handleSubtitleSetting(event) {
     const { name, value } = event.target
     setSubtitleSettings((currentSettings) => ({ ...currentSettings, [name]: value }))
+  }
+
+  function handleSubtitleTrackChange(event) {
+    selectSubtitleTrack(event.target.value)
   }
 
   function handleSubtitlePosition(event) {
@@ -736,11 +816,11 @@ function WatchPage({
         preload="auto"
         ref={playerRef}
       >
-        {subtitleUrl && (
+        {subtitleUrl && selectedSubtitleId === 'external' && (
           <track
             key={subtitleUrl}
             kind="subtitles"
-            label="Subtitle"
+            label="Eksternal"
             ref={setSubtitleTrackRef}
             src={subtitleUrl}
             srcLang="id"
@@ -822,6 +902,12 @@ function WatchPage({
               <span>Show subtitles</span>
             </label>
             <div className="watch-subtitle-settings-grid">
+              <label className="watch-subtitle-setting">
+                <span>Subtitle</span>
+                <select aria-label="Subtitle track" onChange={handleSubtitleTrackChange} value={selectedSubtitleId}>
+                  {subtitleTracks.map((track) => <option key={track.id} value={track.id}>{track.label}</option>)}
+                </select>
+              </label>
               <div className="watch-subtitle-setting watch-subtitle-delay-setting">
                 <span>Sync delay</span>
                 <div className="watch-subtitle-delay">
@@ -1115,6 +1201,21 @@ function writeSubtitleSettings(settings) {
   } catch {
     // Playback settings remain usable if local storage is unavailable.
   }
+}
+
+function getPreferredEmbeddedSubtitleTrack(tracks) {
+  return tracks.find((track) => track.default)
+    || tracks.find((track) => ['id', 'ind', 'indonesian'].includes(String(track.language || '').toLowerCase()))
+    || tracks.find((track) => ['en', 'eng', 'english'].includes(String(track.language || '').toLowerCase()))
+    || tracks[0]
+}
+
+function getEmbeddedSubtitleTrackId(track) {
+  return `embedded:${track.stream_index}`
+}
+
+function getEmbeddedSubtitleTrackLabel(track) {
+  return track.label || track.language || `Subtitle ${track.stream_index}`
 }
 
 function setTextTracksHidden(player) {

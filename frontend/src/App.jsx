@@ -19,6 +19,7 @@ import {
   fetchDashboardData,
   fetchDetailData,
   fetchProfiles,
+  fetchVideoQueue,
   mergeCatalogMetadataUpdates,
   saveWatchProgress,
 } from './services/api'
@@ -95,6 +96,7 @@ function App() {
   })
   const [detailData, setDetailData] = useState(EMPTY_DETAIL_DATA)
   const featuredItemKeys = useRef(new Map())
+  const historyQueueRequestId = useRef(0)
   const pendingMetadataKeys = useRef(new Set())
   const catalogDataRef = useRef(catalogData)
 
@@ -349,7 +351,7 @@ function App() {
     })
   }
 
-  async function handleResumeHistory(historyEntry) {
+  function handleResumeHistory(historyEntry) {
     const historyVideo = historyEntryToVideo(historyEntry)
     const historyItem = historyEntryToItem(historyEntry)
     if (!historyEntry.series_title) {
@@ -358,14 +360,36 @@ function App() {
     }
 
     const catalogItem = findCatalogItemForHistory(historyEntry, catalogData.series) || historyItem
-    try {
-      const detail = await fetchDetailData(authToken, catalogItem)
-      const videos = detail.videos.length ? detail.videos : [historyVideo]
-      const video = findHistoryVideo(historyEntry, videos) || historyVideo
-      handleOpenWatch(detail.item, video, videos)
-    } catch {
-      handleOpenWatch(catalogItem, historyVideo, [historyVideo])
-    }
+    const requestId = ++historyQueueRequestId.current
+    const from = getCurrentRoute(location)
+    const fromState = location.state
+    handleOpenWatch(catalogItem, historyVideo, [historyVideo])
+
+    window.setTimeout(() => {
+      fetchVideoQueue(authToken, catalogItem).then((detail) => {
+        if (requestId !== historyQueueRequestId.current) return
+        const activePath = decodeRouteValue(window.location.pathname.slice('/watch/'.length))
+        if (normalizeMediaPath(activePath) !== normalizeMediaPath(historyVideo.path)) return
+
+        const matchedVideo = findHistoryVideo(historyEntry, detail.videos)
+        const video = historyVideo
+        const videos = matchedVideo
+          ? detail.videos.map((entry) => (entry === matchedVideo ? video : entry))
+          : [video]
+        navigate(getWatchUrl(video.path), {
+          replace: true,
+          state: {
+            from,
+            fromState,
+            item: catalogItem,
+            video,
+            videos,
+          },
+        })
+      }).catch(() => {
+        // The local history entry is enough to keep playback usable.
+      })
+    }, 0)
   }
 
   function handleWatchBack() {
