@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   ArrowLeft,
   Captions,
   Loader2,
@@ -107,6 +108,7 @@ function WatchPage({
   const [isPlaying, setIsPlaying] = useState(false)
   const [isBuffering, setIsBuffering] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [needsAudioTranscode, setNeedsAudioTranscode] = useState(false)
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
   const [subtitleDelayInput, setSubtitleDelayInput] = useState(() => formatSubtitleDelay(subtitleSettings.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
@@ -472,6 +474,7 @@ function WatchPage({
     queueMicrotask(() => {
       if (!ignore) {
         setStreamUrl('')
+        setNeedsAudioTranscode(false)
         setSubtitleCues([])
         setSubtitleUrl('')
         setEmbeddedSubtitleTracks([])
@@ -494,6 +497,7 @@ function WatchPage({
           audioTranscodeBaseUrlRef.current = audioTranscodeUrl
           audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
           fallbackStreamUrlRef.current = fallbackUrl
+          setNeedsAudioTranscode(Boolean(audioTranscodeUrl))
           if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
           if (audioTranscodeUrl) {
             const resumeSeconds = initialResumePositionRef.current
@@ -863,7 +867,15 @@ function WatchPage({
         </button>
         <div>
           <p>{episodeLabel}</p>
-          <h1>{isSeries ? getTitle(item) : video.name || getTitle(item)}</h1>
+          <div className="watch-title-row">
+            <h1>{isSeries ? getTitle(item) : video.name || getTitle(item)}</h1>
+            {needsAudioTranscode && (
+              <aside className="watch-transcode-notice">
+                <AlertTriangle aria-hidden="true" size={15} />
+                <span>Audio video ini perlu ditranscode. Untuk pengalaman terbaik, gunakan aplikasi Mutflix.</span>
+              </aside>
+            )}
+          </div>
           {isSeries && <span>{video.name}</span>}
         </div>
       </div>

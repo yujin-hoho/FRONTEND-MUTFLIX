@@ -92,6 +92,32 @@
   font-size: clamp(1.15rem, 2.4vw, 1.8rem);
 }
 
+.watch-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.watch-transcode-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(560px, 72vw);
+  border: 1px solid rgba(251, 191, 36, 0.42);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(120, 53, 15, 0.48);
+  color: #fde68a;
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.watch-transcode-notice svg {
+  flex: 0 0 auto;
+}
+
 .watch-topbar span {
   display: block;
   margin-top: 4px;
@@ -409,6 +435,16 @@
   .watch-topbar span,
   .watch-speed span {
     display: none;
+  }
+
+  .watch-transcode-notice {
+    display: flex;
+    max-width: min(100%, 520px);
+    border-radius: 8px;
+  }
+
+  .watch-transcode-notice span {
+    display: block;
   }
 
   .watch-controls {
