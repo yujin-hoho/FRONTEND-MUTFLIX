@@ -166,7 +166,9 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
 
 export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeconds, { signal } = {}) {
   const requestedStart = Math.max(0, Number(startSeconds) || 0)
-  if (!audioTranscodeStartUrl || requestedStart <= 0) return requestedStart
+  if (!audioTranscodeStartUrl || requestedStart <= 0) {
+    return { streamStartSeconds: requestedStart, timelineOffsetSeconds: requestedStart }
+  }
 
   const url = new URL(audioTranscodeStartUrl, window.location.origin)
   url.searchParams.set('start_seconds', String(requestedStart))
@@ -174,7 +176,10 @@ export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeco
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the playback position.')
 
-  return Math.min(requestedStart, Math.max(0, Number(data.start_seconds) || 0))
+  return {
+    streamStartSeconds: Math.max(0, Number(data.stream_start_seconds) || requestedStart),
+    timelineOffsetSeconds: Math.min(requestedStart, Math.max(0, Number(data.timeline_offset_seconds) || 0)),
+  }
 }
 
 export function getTimestampedAudioTranscodeUrl(audioTranscodeUrl, startSeconds, requestId = 0) {

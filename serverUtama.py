@@ -226,6 +226,7 @@ SEARCH_RESPONSE_CACHE_TTL_SECONDS = 30
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
 AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
+AUDIO_TRANSCODE_SLOT_WAIT_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_SLOT_WAIT_SECONDS', '3')))
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
 AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
@@ -4255,7 +4256,7 @@ def gdrive_audio_transcode(fid):
         return jsonify({"error": "Unauthorized stream"}), 401
     if not shutil.which("ffmpeg"):
         return jsonify({"error": "FFmpeg unavailable"}), 503
-    if not _audio_transcode_slots.acquire(blocking=False):
+    if not _audio_transcode_slots.acquire(timeout=AUDIO_TRANSCODE_SLOT_WAIT_SECONDS):
         return jsonify({"error": "Audio transcoder busy"}), 503
 
     token = _get_fresh_gdrive_token()
@@ -4343,7 +4344,8 @@ def get_gdrive_audio_transcode_start(fid):
 
     requested_start = _clamp_audio_transcode_start(request.args.get('start_seconds'))
     return orjson_jsonify({
-        "start_seconds": _resolve_gdrive_audio_transcode_start(fid, requested_start),
+        "stream_start_seconds": requested_start,
+        "timeline_offset_seconds": _resolve_gdrive_audio_transcode_start(fid, requested_start),
     })
 
 def _clamp_audio_transcode_start(value):

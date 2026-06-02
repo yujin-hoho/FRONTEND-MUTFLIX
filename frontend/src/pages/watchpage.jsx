@@ -80,6 +80,7 @@ function WatchPage({
   const audioTranscodeStartRequestRef = useRef({ controller: null, id: 0 })
   const audioTranscodeStartTimeoutRef = useRef(null)
   const pendingAudioTranscodeOffsetRef = useRef(0)
+  const pendingAudioTranscodeTargetRef = useRef(null)
   const pendingAudioTranscodeAutoplayRef = useRef(null)
   const embeddedSubtitleTracksRef = useRef([])
   const embeddedSubtitleTrackUrlRef = useRef('')
@@ -94,6 +95,7 @@ function WatchPage({
   const lastSavedPositionRef = useRef(-1)
   const lastForcedSaveRef = useRef({ positionMs: -1, savedAt: 0 })
   const restoredPositionRef = useRef(false)
+  const initialResumePositionRef = useRef(Number(resumeEntry?.position_ms || 0) / 1000)
   const progressContextRef = useRef(null)
   const [streamUrl, setStreamUrl] = useState('')
   const [subtitleUrl, setSubtitleUrl] = useState('')
@@ -163,7 +165,7 @@ function WatchPage({
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
     const context = progressContextRef.current
-    const playbackDuration = getPlaybackDuration(player?.duration, sourceDurationRef.current)
+    const playbackDuration = getPlaybackDuration(player?.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current)
     if (!player || !context || playbackDuration <= 0) {
       return Promise.resolve()
     }
@@ -304,13 +306,16 @@ function WatchPage({
       sourceDuration > 0 ? Math.max(0, sourceDuration - 0.1) : Number.MAX_SAFE_INTEGER,
       Math.max(0, Number(targetSeconds) || 0),
     )
-    pendingAudioTranscodeAutoplayRef.current = autoplay ?? !player?.paused
+    pendingAudioTranscodeAutoplayRef.current = autoplay
+      ?? pendingAudioTranscodeAutoplayRef.current
+      ?? !player?.paused
     player?.pause()
     cancelAudioTranscodeStartRequest()
     const requestId = audioTranscodeStartRequestRef.current.id
     const controller = new AbortController()
     audioTranscodeStartRequestRef.current = { controller, id: requestId }
     pendingAudioTranscodeOffsetRef.current = 0
+    pendingAudioTranscodeTargetRef.current = boundedTarget
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
@@ -322,12 +327,14 @@ function WatchPage({
     const resolveStreamStart = () => {
       audioTranscodeStartTimeoutRef.current = null
       fetchAudioTranscodeStart(audioTranscodeStartUrlRef.current, boundedTarget, { signal: controller.signal })
-        .catch((error) => error.name === 'AbortError' ? null : boundedTarget)
-        .then((resolvedStart) => {
-          if (resolvedStart === null || audioTranscodeStartRequestRef.current.id !== requestId) return
-          pendingAudioTranscodeOffsetRef.current = resolvedStart
-          setCurrentTime(resolvedStart)
-          setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, resolvedStart, requestId))
+        .catch((error) => error.name === 'AbortError'
+          ? null
+          : { streamStartSeconds: boundedTarget, timelineOffsetSeconds: boundedTarget })
+        .then((start) => {
+          if (start === null || audioTranscodeStartRequestRef.current.id !== requestId) return
+          pendingAudioTranscodeOffsetRef.current = start.timelineOffsetSeconds
+          setCurrentTime(start.timelineOffsetSeconds)
+          setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, start.streamStartSeconds, requestId))
         })
     }
     if (immediate) {
@@ -364,14 +371,16 @@ function WatchPage({
     if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
 
     const player = playerRef.current
-    fallbackPositionRef.current = Number.isFinite(requestedSeekPositionRef.current)
-      ? requestedSeekPositionRef.current
-      : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : null
+    fallbackPositionRef.current = Number.isFinite(pendingAudioTranscodeTargetRef.current)
+      ? pendingAudioTranscodeTargetRef.current
+      : Number.isFinite(requestedSeekPositionRef.current)
+        ? requestedSeekPositionRef.current
+        : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : null
     audioTranscodeBaseUrlRef.current = ''
     audioTranscodeStartUrlRef.current = ''
     cancelAudioTranscodeStartRequest()
     pendingAudioTranscodeOffsetRef.current = 0
-    pendingAudioTranscodeAutoplayRef.current = null
+    pendingAudioTranscodeTargetRef.current = null
     clearStreamStallTimeout()
     hasUsedStreamFallbackRef.current = true
     isSeekingRef.current = false
@@ -425,6 +434,8 @@ function WatchPage({
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
+    pendingAudioTranscodeTargetRef.current = null
+    pendingAudioTranscodeAutoplayRef.current = null
     setIsBuffering(false)
   }, [clearStreamStallTimeout])
 
@@ -451,6 +462,7 @@ function WatchPage({
     audioTranscodeStartUrlRef.current = ''
     cancelAudioTranscodeStartRequest()
     pendingAudioTranscodeOffsetRef.current = 0
+    pendingAudioTranscodeTargetRef.current = null
     pendingAudioTranscodeAutoplayRef.current = null
     hasUsedStreamFallbackRef.current = false
     isSeekingRef.current = false
@@ -459,6 +471,7 @@ function WatchPage({
     restoredPositionRef.current = false
     queueMicrotask(() => {
       if (!ignore) {
+        setStreamUrl('')
         setSubtitleCues([])
         setSubtitleUrl('')
         setEmbeddedSubtitleTracks([])
@@ -482,6 +495,11 @@ function WatchPage({
           audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
           fallbackStreamUrlRef.current = fallbackUrl
           if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
+          if (audioTranscodeUrl) {
+            const resumeSeconds = initialResumePositionRef.current
+            restartAudioTranscodeAt(resumeSeconds, { autoplay: true, immediate: true })
+            return
+          }
           setStreamUrl(url)
         }
       })
@@ -538,7 +556,7 @@ function WatchPage({
       cancelAudioTranscodeStartRequest()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, cancelAudioTranscodeStartRequest, clearStreamStallTimeout, markerFolderName, selectSubtitleTrack, subtitlePath, videoName, videoOriginalName, videoPath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearStreamStallTimeout, markerFolderName, restartAudioTranscodeAt, selectSubtitleTrack, subtitlePath, videoName, videoOriginalName, videoPath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -619,8 +637,6 @@ function WatchPage({
     return () => {
       ignore = true
       hls?.destroy()
-      player.removeAttribute('src')
-      player.load()
       clearStreamStallTimeout()
     }
   }, [clearStreamStallTimeout, isHlsVideo, streamUrl, switchToFallbackStream])
@@ -674,7 +690,7 @@ function WatchPage({
     if (!player) return
 
     clearStreamStallTimeout()
-    const playbackDuration = getPlaybackDuration(player.duration, sourceDurationRef.current)
+    const playbackDuration = getPlaybackDuration(player.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current)
     setDuration(playbackDuration)
     if (!restoredPositionRef.current) {
       const fallbackSeconds = fallbackPositionRef.current
@@ -700,7 +716,6 @@ function WatchPage({
     setIsBuffering(false)
     setTextTracksHidden(player)
     const shouldAutoplay = pendingAudioTranscodeAutoplayRef.current
-    pendingAudioTranscodeAutoplayRef.current = null
     if (shouldAutoplay !== false) player.play().catch(() => setShowControls(true))
   }
 
@@ -708,7 +723,7 @@ function WatchPage({
     const player = playerRef.current
     if (!player) return
     setCurrentTime(getPlaybackPosition(player, audioTranscodeOffsetRef.current))
-    setDuration(getPlaybackDuration(player.duration, sourceDurationRef.current))
+    setDuration(getPlaybackDuration(player.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current))
     persistProgress()
   }
 
@@ -1123,9 +1138,13 @@ function formatPlaybackTime(seconds) {
   return segments.map((segment) => String(segment).padStart(2, '0')).join(':')
 }
 
-function getPlaybackDuration(playerDuration, sourceDuration) {
-  const durations = [Number(playerDuration), Number(sourceDuration)]
+function getPlaybackDuration(playerDuration, sourceDuration, sourceOffset = 0) {
+  const numericPlayerDuration = Number(playerDuration)
+  const durations = [Number(sourceDuration)]
     .filter((value) => Number.isFinite(value) && value > 0)
+  if (Number.isFinite(numericPlayerDuration) && numericPlayerDuration > 0) {
+    durations.push(numericPlayerDuration + Math.max(0, Number(sourceOffset) || 0))
+  }
   return durations.length ? Math.max(...durations) : 0
 }
 
