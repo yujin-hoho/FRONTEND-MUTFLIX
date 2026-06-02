@@ -393,6 +393,18 @@
   scrollbar-width: none;
   overscroll-behavior-inline: contain;
   -webkit-overflow-scrolling: touch;
+  cursor: grab;
+}
+
+.catalog-scroller.is-dragging {
+  cursor: grabbing;
+  scroll-snap-type: none;
+  user-select: none;
+}
+
+.catalog-scroller img {
+  -webkit-user-drag: none;
+  user-select: none;
 }
 
 .catalog-scroller::-webkit-scrollbar {

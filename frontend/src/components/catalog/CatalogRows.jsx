@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useRef, useState } from 'react'
 import LoadableImage from '../LoadableImage'
 import {
   getItemKey,
@@ -23,11 +23,11 @@ export const CatalogRow = memo(function CatalogRow({ emptyMessage, items, onOpen
           {showAll ? 'Show less' : 'See more'}
         </button>
       </div>
-      <div className={`catalog-scroller ${ranked ? 'ranked-scroller' : ''}`}>
+      <DraggableScroller className={`catalog-scroller ${ranked ? 'ranked-scroller' : ''}`}>
         {(showAll ? items : items.slice(0, 15)).map((item, index) => (
           <CatalogCard item={item} key={getItemKey(item)} onOpenDetail={onOpenDetail} rank={ranked ? index + 1 : null} />
         ))}
-      </div>
+      </DraggableScroller>
     </section>
   )
 })
@@ -62,7 +62,7 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
           {showAll ? 'Show less' : 'See more'}
         </button>
       </div>
-      <div className="catalog-scroller history-scroller">
+      <DraggableScroller className="catalog-scroller history-scroller">
         {(showAll ? items : items.slice(0, 15)).map((item) => (
           <button className="catalog-card history-card" key={item.media_path} onClick={() => onPlay(item)} type="button">
             <div className="history-frame">
@@ -75,7 +75,70 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
             <h3>{item.media_title || item.series_title || 'Continue Watching'}</h3>
           </button>
         ))}
-      </div>
+      </DraggableScroller>
     </section>
   )
 })
+
+function DraggableScroller({ children, className }) {
+  const dragStateRef = useRef(null)
+  const suppressClickRef = useRef(false)
+  const [isDragging, setIsDragging] = useState(false)
+
+  function handlePointerDown(event) {
+    if (event.pointerType !== 'mouse' || event.button !== 0) return
+
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      scrollLeft: event.currentTarget.scrollLeft,
+      startX: event.clientX,
+    }
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }
+
+  function handlePointerMove(event) {
+    const dragState = dragStateRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+
+    const distance = event.clientX - dragState.startX
+    if (!isDragging && Math.abs(distance) < 5) return
+
+    suppressClickRef.current = true
+    setIsDragging(true)
+    event.preventDefault()
+    event.currentTarget.scrollLeft = dragState.scrollLeft - distance
+  }
+
+  function handlePointerEnd(event) {
+    const dragState = dragStateRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+
+    dragStateRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    setIsDragging(false)
+    window.setTimeout(() => {
+      suppressClickRef.current = false
+    }, 0)
+  }
+
+  function handleClickCapture(event) {
+    if (!suppressClickRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+  }
+
+  return (
+    <div
+      className={`${className} ${isDragging ? 'is-dragging' : ''}`}
+      onClickCapture={handleClickCapture}
+      onPointerCancel={handlePointerEnd}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerEnd}
+    >
+      {children}
+    </div>
+  )
+}
