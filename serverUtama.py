@@ -4262,12 +4262,17 @@ def gdrive_audio_transcode(fid):
 
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    start_seconds = _clamp_audio_transcode_start(request.args.get('start_seconds'))
     command = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
         "-nostdin",
         "-headers", ffmpeg_headers,
+    ]
+    if start_seconds > 0:
+        command.extend(["-ss", str(start_seconds)])
+    command.extend([
         "-i", media_url,
         "-map", "0:v:0?",
         "-map", "0:a:0?",
@@ -4277,10 +4282,11 @@ def gdrive_audio_transcode(fid):
         "-c:a", "aac",
         "-ac", "2",
         "-b:a", AUDIO_TRANSCODE_AUDIO_BITRATE,
+        "-avoid_negative_ts", "make_zero",
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4",
         "pipe:1",
-    ]
+    ])
     try:
         process = subprocess.Popen(
             command,
@@ -4325,6 +4331,13 @@ def gdrive_audio_transcode(fid):
         direct_passthrough=True,
     )
 
+def _clamp_audio_transcode_start(value):
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return round(min(24 * 60 * 60, max(0, numeric_value)), 3)
+
 @app.route("/api/gdrive-embedded-subtitles/<fid>")
 @rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-list', cors=True)
 def list_gdrive_embedded_subtitles(fid):
@@ -4355,7 +4368,9 @@ def serve_gdrive_embedded_subtitle(fid, stream_index):
     if not any(track['stream_index'] == stream_index for track in tracks):
         return _embedded_subtitle_json_response({"error": "Text subtitle track not found"}, 404)
 
-    cache_key = _embedded_subtitle_vtt_cache_key(fid, stream_index)
+    start_seconds = _clamp_embedded_subtitle_time(request.args.get('start_seconds'), default=0, maximum=24 * 60 * 60)
+    duration_seconds = _clamp_embedded_subtitle_time(request.args.get('duration_seconds'), default=0, maximum=10 * 60)
+    cache_key = _embedded_subtitle_vtt_cache_key(fid, stream_index, start_seconds, duration_seconds)
     cached_content = disk_cache.get(cache_key)
     if cached_content:
         return _embedded_subtitle_vtt_response(cached_content)
@@ -4373,7 +4388,12 @@ def serve_gdrive_embedded_subtitle(fid, stream_index):
         release_lock(cache_key)
         return _embedded_subtitle_json_response({"error": "Subtitle extractor busy"}, 503)
 
-    process = _start_gdrive_embedded_subtitle_extract(fid, stream_index)
+    process = _start_gdrive_embedded_subtitle_extract(
+        fid,
+        stream_index,
+        start_seconds=start_seconds,
+        duration_seconds=duration_seconds,
+    )
     if not process:
         _embedded_subtitle_slots.release()
         release_lock(cache_key)
@@ -4519,7 +4539,7 @@ def _cache_gdrive_embedded_subtitle_tracks(cache_key, tracks):
     ttl = EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS if tracks else EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS
     disk_cache.set(cache_key, tracks, expire=ttl)
 
-def _start_gdrive_embedded_subtitle_extract(fid, stream_index):
+def _start_gdrive_embedded_subtitle_extract(fid, stream_index, *, start_seconds=0, duration_seconds=0):
     if not shutil.which("ffmpeg"):
         return None
     token = _get_fresh_gdrive_token()
@@ -4534,7 +4554,15 @@ def _start_gdrive_embedded_subtitle_extract(fid, stream_index):
         "-loglevel", "error",
         "-nostdin",
         "-headers", ffmpeg_headers,
+    ]
+    if start_seconds > 0:
+        command.extend(["-ss", str(start_seconds)])
+    command.extend([
         "-i", media_url,
+    ])
+    if duration_seconds > 0:
+        command.extend(["-t", str(duration_seconds)])
+    command.extend([
         "-map", f"0:{stream_index}",
         "-vn",
         "-an",
@@ -4543,7 +4571,7 @@ def _start_gdrive_embedded_subtitle_extract(fid, stream_index):
         "-flush_packets", "1",
         "-f", "webvtt",
         "pipe:1",
-    ]
+    ])
     try:
         return subprocess.Popen(
             command,
@@ -4554,8 +4582,15 @@ def _start_gdrive_embedded_subtitle_extract(fid, stream_index):
     except Exception:
         return None
 
-def _embedded_subtitle_vtt_cache_key(fid, stream_index):
-    return f"embedded_subtitle_vtt_v1_{fid}_{stream_index}"
+def _clamp_embedded_subtitle_time(value, *, default, maximum):
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return default
+    return round(min(maximum, max(0, numeric_value)), 3)
+
+def _embedded_subtitle_vtt_cache_key(fid, stream_index, start_seconds=0, duration_seconds=0):
+    return f"embedded_subtitle_vtt_v2_{fid}_{stream_index}_{start_seconds:g}_{duration_seconds:g}"
 
 def _embedded_subtitle_json_response(payload, status=200):
     response = orjson_jsonify(payload, status)

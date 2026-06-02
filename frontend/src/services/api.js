@@ -139,8 +139,11 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   const needsAudioTranscode = !isHlsStream && hasUnsupportedBrowserAudio(fileName)
   const gdriveToken = String(data.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
   const fileId = mediaPath.split('/', 2)[1]
-  const streamPath = needsAudioTranscode && data.audio_transcode_url
+  const audioTranscodeUrl = needsAudioTranscode && data.audio_transcode_url
     ? resolveApiPath(data.audio_transcode_url)
+    : ''
+  const streamPath = audioTranscodeUrl
+    ? audioTranscodeUrl
     : isHlsStream
       ? data.hls_manifest_url
       : gdriveToken && fileId
@@ -149,11 +152,18 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   const fallbackPath = isHlsStream ? '' : data.stream_url
   if (!streamPath) throw new Error('The server did not return a playable stream.')
   return {
+    audioTranscodeUrl,
     durationMs: Number(data.duration_ms || 0),
     embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
     url: resolvePublicPath(streamPath),
   }
+}
+
+export function getTimestampedAudioTranscodeUrl(audioTranscodeUrl, startSeconds) {
+  const url = new URL(audioTranscodeUrl, window.location.origin)
+  url.searchParams.set('start_seconds', String(Math.max(0, Number(startSeconds) || 0)))
+  return url.toString()
 }
 
 export async function fetchPlaybackMarkers(authToken, folderName) {
@@ -200,7 +210,7 @@ export async function fetchSubtitleTrack(subtitlePath) {
   }
 }
 
-export async function fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, { onCues, onTrack } = {}) {
+export async function fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, { onTrack } = {}) {
   if (!embeddedSubtitlesUrl) return { cues: [], url: '' }
 
   for (const delayMs of [0, 1500, 3000, 5000, 8000, 12000, 20000, 20000, 20000, 20000, 20000]) {
@@ -216,8 +226,9 @@ export async function fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, { onCues,
       || tracks.find((track) => ['en', 'eng', 'english'].includes(String(track.language || '').toLowerCase()))
       || tracks[0]
     if (selectedTrack?.url) {
-      onTrack?.(selectedTrack)
-      return fetchProgressiveSubtitleTrack(resolveApiPath(selectedTrack.url), { onCues })
+      const track = { ...selectedTrack, url: resolveApiPath(selectedTrack.url) }
+      onTrack?.(track)
+      return { cues: [], trackUrl: track.url, url: '' }
     }
     if (!data.probing) return { cues: [], url: '' }
   }
@@ -225,10 +236,31 @@ export async function fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, { onCues,
   return { cues: [], url: '' }
 }
 
-async function fetchProgressiveSubtitleTrack(subtitlePath, { onCues } = {}) {
+export async function fetchEmbeddedSubtitleWindow(subtitleTrackUrl, startSeconds, durationSeconds, { onCues } = {}) {
+  if (!subtitleTrackUrl) return { cues: [], url: '' }
+
+  const subtitleUrl = new URL(subtitleTrackUrl, window.location.origin)
+  subtitleUrl.searchParams.set('start_seconds', String(startSeconds))
+  subtitleUrl.searchParams.set('duration_seconds', String(durationSeconds))
+  return fetchProgressiveSubtitleTrack(subtitleUrl.toString(), {
+    createObjectUrl: false,
+    cueOffsetSeconds: startSeconds,
+    onCues,
+  })
+}
+
+async function fetchProgressiveSubtitleTrack(subtitlePath, { createObjectUrl = true, cueOffsetSeconds = 0, onCues } = {}) {
   const response = await fetch(subtitlePath)
   if (!response.ok) return { cues: [], url: '' }
-  if (!response.body) return fetchSubtitleTrack(subtitlePath)
+  if (!response.body) {
+    const track = await fetchSubtitleTrack(subtitlePath)
+    if (!createObjectUrl && track.url) URL.revokeObjectURL(track.url)
+    return {
+      ...track,
+      cues: offsetSubtitleCues(track.cues, cueOffsetSeconds),
+      url: createObjectUrl ? track.url : '',
+    }
+  }
 
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8')
@@ -238,19 +270,31 @@ async function fetchProgressiveSubtitleTrack(subtitlePath, { onCues } = {}) {
     const { done, value } = await reader.read()
     if (done) break
     subtitleText += decoder.decode(value, { stream: true })
-    const cues = parseSubtitleCues(normalizeSubtitleToWebVtt(subtitleText, subtitlePath))
+    const cues = offsetSubtitleCues(
+      parseSubtitleCues(normalizeSubtitleToWebVtt(subtitleText, subtitlePath)),
+      cueOffsetSeconds,
+    )
     if (cues.length) onCues?.(cues)
   }
 
   subtitleText += decoder.decode()
   const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
-  const cues = parseSubtitleCues(webVtt)
+  const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), cueOffsetSeconds)
   if (!cues.length) return { cues: [], url: '' }
   onCues?.(cues)
   return {
     cues,
-    url: URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })),
+    url: createObjectUrl ? URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })) : '',
   }
+}
+
+function offsetSubtitleCues(cues, offsetSeconds) {
+  if (!offsetSeconds) return cues
+  return cues.map((cue) => ({
+    ...cue,
+    endTime: cue.endTime + offsetSeconds,
+    startTime: cue.startTime + offsetSeconds,
+  }))
 }
 
 function decodeSubtitleText(subtitleBytes) {
