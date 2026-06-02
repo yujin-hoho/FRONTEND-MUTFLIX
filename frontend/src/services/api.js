@@ -127,24 +127,29 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
     throw new Error('This media source is not available in the web player.')
   }
 
-  const response = await fetch(`${API_BASE_URL}/api/gdrive-stream-details/${encodeServerPath(mediaPath)}`, {
+  const fileNameQuery = video.original_name ? `?file_name=${encodeURIComponent(video.original_name)}` : ''
+  const response = await fetch(`${API_BASE_URL}/api/gdrive-stream-details/${encodeServerPath(mediaPath)}${fileNameQuery}`, {
     headers: { 'x-access-token': authToken },
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the video stream.')
 
-  const fileName = video.original_name || video.name || mediaPath
+  const fileName = video.original_name || data.file_name || video.name || mediaPath
   const isHlsStream = /\.m3u8(?:$|\?)/i.test(fileName)
+  const needsAudioTranscode = !isHlsStream && hasUnsupportedBrowserAudio(fileName)
   const gdriveToken = String(data.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
   const fileId = mediaPath.split('/', 2)[1]
-  const streamPath = isHlsStream
-    ? data.hls_manifest_url
-    : gdriveToken && fileId
-      ? `${CLOUDFLARE_STREAM_PROXY_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(gdriveToken)}`
-      : data.stream_url
+  const streamPath = needsAudioTranscode && data.audio_transcode_url
+    ? resolveApiPath(data.audio_transcode_url)
+    : isHlsStream
+      ? data.hls_manifest_url
+      : gdriveToken && fileId
+        ? `${CLOUDFLARE_STREAM_PROXY_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(gdriveToken)}`
+        : data.stream_url
   const fallbackPath = isHlsStream ? '' : data.stream_url
   if (!streamPath) throw new Error('The server did not return a playable stream.')
   return {
+    durationMs: Number(data.duration_ms || 0),
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
     url: resolvePublicPath(streamPath),
   }
@@ -614,6 +619,15 @@ function encodeServerPath(path) {
 function resolvePublicPath(path) {
   if (/^(?:https?:|blob:)/i.test(path)) return path
   return path.startsWith('/') ? path : `/${path}`
+}
+
+function resolveApiPath(path) {
+  if (/^(?:https?:|blob:)/i.test(path)) return path
+  return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function hasUnsupportedBrowserAudio(fileName) {
+  return /(?:^|[.\s_-])(?:ddp(?:[.\s_-]?5(?:[.\s_-]?1)?)?|e-?ac-?3)(?:[.\s_-]|$)/i.test(String(fileName || ''))
 }
 
 function normalizeMyListItem(item) {

@@ -14,6 +14,8 @@ import traceback
 import signal
 import uuid
 import copy
+import shutil
+import subprocess
 from functools import wraps, lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
@@ -222,6 +224,9 @@ TMDB_HTTP_RETRIES = max(0, int(os.environ.get('TMDB_HTTP_RETRIES', '1')))
 TMDB_HTTP_BACKOFF_SECONDS = max(0.0, float(os.environ.get('TMDB_HTTP_BACKOFF_SECONDS', '0.35')))
 SEARCH_RESPONSE_CACHE_TTL_SECONDS = 30
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
+AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
+AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
+AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
@@ -381,6 +386,13 @@ _gdrive_token_ts = 0       # last refresh timestamp
 _gdrive_token_ttl = 2700   # 45 minutes
 _gdrive_token_lock = threading.Lock()
 _stream_token_ttl = 24 * 60 * 60  # 24 hours; keeps binge sessions stable across GDrive token refreshes
+_gdrive_file_metadata_cache = {}
+_gdrive_file_metadata_cache_ts = {}
+_gdrive_file_metadata_cache_ttl = 24 * 60 * 60
+_gdrive_file_metadata_retry_ttl = 60
+_gdrive_file_metadata_cache_lock = threading.Lock()
+_gdrive_file_metadata_key_locks = {}
+_gdrive_file_metadata_key_locks_lock = threading.Lock()
 
 # === USER DATA RAM CACHE (profiles, mylist) ===
 # Per-user caching — eliminates DB roundtrip (~100-200ms saved per request)
@@ -3965,10 +3977,15 @@ def get_gdrive_stream_details(current_user,file_path):
                     _gdrive_token = token
                     _gdrive_token_ts = time.time()
         
+        file_metadata = _get_gdrive_file_metadata(fid)
+        file_name = request.args.get('file_name') or file_metadata.get('file_name', '')
         res = {
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
             "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "file_name": file_name,
+            "duration_ms": file_metadata.get('duration_ms', 0),
             "headers": {
                 "Authorization": f"Bearer {token}",
                 "User-Agent": "Mutflix/1.0" 
@@ -4017,6 +4034,88 @@ def _get_fresh_gdrive_token():
         _gdrive_token_ts = time.time()
         return token
 
+def _get_gdrive_file_metadata(fid):
+    now = time.time()
+    with _gdrive_file_metadata_cache_lock:
+        cached_metadata = _gdrive_file_metadata_cache.get(fid)
+        cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
+        if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
+            return cached_metadata
+
+    with _gdrive_file_metadata_key_locks_lock:
+        key_lock = _gdrive_file_metadata_key_locks.setdefault(fid, threading.Lock())
+    with key_lock:
+        now = time.time()
+        with _gdrive_file_metadata_cache_lock:
+            cached_metadata = _gdrive_file_metadata_cache.get(fid)
+            cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
+            if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
+                return cached_metadata
+
+        svc = get_gdrive_service()
+        if not svc:
+            return {}
+        try:
+            payload = svc.files().get(fileId=fid, fields="name,videoMediaMetadata(durationMillis)").execute()
+            duration_ms = int(payload.get("videoMediaMetadata", {}).get("durationMillis") or 0)
+            if duration_ms <= 0:
+                duration_ms = _probe_gdrive_duration_ms(fid)
+            metadata = {
+                "duration_ms": duration_ms,
+                "file_name": payload.get("name", ""),
+            }
+        except Exception:
+            return {}
+        with _gdrive_file_metadata_cache_lock:
+            _gdrive_file_metadata_cache[fid] = metadata
+            _gdrive_file_metadata_cache_ts[fid] = now
+        return metadata
+
+def _is_gdrive_file_metadata_cache_fresh(metadata, cached_at, now):
+    ttl = _gdrive_file_metadata_cache_ttl if metadata.get('duration_ms', 0) > 0 else _gdrive_file_metadata_retry_ttl
+    return now - cached_at < ttl
+
+def _probe_gdrive_duration_ms(fid):
+    if not shutil.which("ffprobe"):
+        return 0
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return 0
+
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-headers", ffprobe_headers,
+        "-show_entries", "format=duration:stream=duration",
+        "-of", "json",
+        media_url,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            return 0
+        payload = json.loads(result.stdout or '{}')
+        durations = [
+            payload.get('format', {}).get('duration'),
+            *[stream.get('duration') for stream in payload.get('streams', [])],
+        ]
+        numeric_durations = [
+            float(duration)
+            for duration in durations
+            if duration not in (None, '', 'N/A')
+        ]
+        return round(max(numeric_durations) * 1000) if numeric_durations else 0
+    except Exception:
+        return 0
+
 
 def _make_stream_token(fid, ttl=None):
     """Create a file-scoped token usable by <video>, where custom auth headers are not possible."""
@@ -4049,6 +4148,7 @@ def _verify_stream_token(fid, token):
 
 
 _gdrive_stream_http_local = threading.local()
+_audio_transcode_slots = threading.BoundedSemaphore(AUDIO_TRANSCODE_MAX_CONCURRENT)
 
 def _get_gdrive_stream_http_session():
     """Reuse upstream TCP/TLS connections for stream ranges and HLS segments."""
@@ -4126,6 +4226,92 @@ def gdrive_stream(fid):
     if not _verify_stream_token(fid, request.args.get('stream_token')):
         return jsonify({"error": "Unauthorized stream"}), 401
     return _proxy_gdrive_media(fid)
+
+@app.route("/api/gdrive-audio-transcode/<fid>", methods=["GET", "OPTIONS"])
+def gdrive_audio_transcode(fid):
+    """Stream browser-compatible fragmented MP4 while converting unsupported audio to AAC."""
+    if request.method == "OPTIONS":
+        return Response(status=204, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+        })
+    if not _verify_stream_token(fid, request.args.get('stream_token')):
+        return jsonify({"error": "Unauthorized stream"}), 401
+    if not shutil.which("ffmpeg"):
+        return jsonify({"error": "FFmpeg unavailable"}), 503
+    if not _audio_transcode_slots.acquire(blocking=False):
+        return jsonify({"error": "Audio transcoder busy"}), 503
+
+    token = _get_fresh_gdrive_token()
+    if not token:
+        _audio_transcode_slots.release()
+        return jsonify({"error": "GDrive token unavailable"}), 503
+
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostdin",
+        "-headers", ffmpeg_headers,
+        "-i", media_url,
+        "-map", "0:v:0?",
+        "-map", "0:a:0?",
+        "-sn",
+        "-dn",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-ac", "2",
+        "-b:a", AUDIO_TRANSCODE_AUDIO_BITRATE,
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4",
+        "pipe:1",
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+    except Exception:
+        _audio_transcode_slots.release()
+        return jsonify({"error": "Failed to start audio transcoder"}), 500
+
+    def generate():
+        try:
+            while True:
+                chunk = process.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            _audio_transcode_slots.release()
+
+    return Response(
+        stream_with_context(generate()),
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Expose-Headers": "Content-Type",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Content-Type": "video/mp4",
+            "X-Accel-Buffering": "no",
+        },
+        direct_passthrough=True,
+    )
 
 @app.route("/api/hls-manifest/<fid>")
 def get_hls_manifest(fid):

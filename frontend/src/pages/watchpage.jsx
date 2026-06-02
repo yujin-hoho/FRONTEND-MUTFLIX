@@ -65,6 +65,7 @@ function WatchPage({
   const streamStallTimeoutRef = useRef(null)
   const fallbackStreamUrlRef = useRef('')
   const fallbackPositionRef = useRef(null)
+  const sourceDurationRef = useRef(0)
   const hasUsedStreamFallbackRef = useRef(false)
   const isSeekingRef = useRef(false)
   const pendingInitialSeekRef = useRef(false)
@@ -131,12 +132,13 @@ function WatchPage({
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
     const context = progressContextRef.current
-    if (!player || !context || !Number.isFinite(player.duration) || player.duration <= 0) {
+    const playbackDuration = getPlaybackDuration(player?.duration, sourceDurationRef.current)
+    if (!player || !context || playbackDuration <= 0) {
       return Promise.resolve()
     }
 
-    const positionMs = Math.round((complete ? player.duration : player.currentTime) * 1000)
-    const durationMs = Math.round(player.duration * 1000)
+    const positionMs = Math.round((complete ? playbackDuration : player.currentTime) * 1000)
+    const durationMs = Math.round(playbackDuration * 1000)
     const now = Date.now()
     if (
       force
@@ -166,6 +168,15 @@ function WatchPage({
 
   const toggleControls = useCallback(() => {
     window.clearTimeout(controlsTimeoutRef.current)
+    if (isSubtitlePanelOpen) {
+      setIsSubtitlePanelOpen(false)
+      setShowControls(true)
+      if (isPlaying) {
+        controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
+      }
+      return
+    }
+
     if (showControls) {
       setShowControls(false)
       return
@@ -314,6 +325,7 @@ function WatchPage({
     clearStreamStallTimeout()
     fallbackStreamUrlRef.current = ''
     fallbackPositionRef.current = null
+    sourceDurationRef.current = 0
     hasUsedStreamFallbackRef.current = false
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
@@ -321,9 +333,12 @@ function WatchPage({
     restoredPositionRef.current = false
 
     fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
-      .then(({ fallbackUrl, url }) => {
+      .then(({ durationMs, fallbackUrl, url }) => {
         if (!ignore) {
+          const sourceDurationSeconds = Number(durationMs || 0) / 1000
+          sourceDurationRef.current = sourceDurationSeconds
           fallbackStreamUrlRef.current = fallbackUrl
+          if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
           setStreamUrl(url)
         }
       })
@@ -458,13 +473,14 @@ function WatchPage({
     if (!player) return
 
     clearStreamStallTimeout()
-    setDuration(player.duration || 0)
+    const playbackDuration = getPlaybackDuration(player.duration, sourceDurationRef.current)
+    setDuration(playbackDuration)
     if (!restoredPositionRef.current) {
       const fallbackSeconds = fallbackPositionRef.current
       const targetSeconds = Number.isFinite(fallbackSeconds)
         ? fallbackSeconds
         : Number(resumeEntry?.position_ms || 0) / 1000
-      if (targetSeconds > 0 && targetSeconds < player.duration - 2) {
+      if (targetSeconds > 0 && targetSeconds < playbackDuration - 2) {
         isSeekingRef.current = true
         pendingInitialSeekRef.current = true
         requestedSeekPositionRef.current = targetSeconds
@@ -488,7 +504,7 @@ function WatchPage({
     const player = playerRef.current
     if (!player) return
     setCurrentTime(player.currentTime)
-    setDuration(player.duration || 0)
+    setDuration(getPlaybackDuration(player.duration, sourceDurationRef.current))
     persistProgress()
   }
 
@@ -896,6 +912,12 @@ function formatPlaybackTime(seconds) {
   const remainingSeconds = roundedSeconds % 60
   const segments = hours > 0 ? [hours, minutes, remainingSeconds] : [minutes, remainingSeconds]
   return segments.map((segment) => String(segment).padStart(2, '0')).join(':')
+}
+
+function getPlaybackDuration(playerDuration, sourceDuration) {
+  const durations = [Number(playerDuration), Number(sourceDuration)]
+    .filter((value) => Number.isFinite(value) && value > 0)
+  return durations.length ? Math.max(...durations) : 0
 }
 
 function clampSubtitleDelay(seconds) {
