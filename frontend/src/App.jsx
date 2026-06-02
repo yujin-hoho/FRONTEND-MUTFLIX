@@ -636,6 +636,7 @@ function historyEntryToItem(entry) {
   const isSeries = Boolean(entry.series_title)
   return {
     name: entry.series_title || entry.media_title || 'Video',
+    folder_name: isSeries ? entry.series_path || '' : '',
     source: entry.source || '',
     media_type: isSeries ? 'tv' : 'movie',
     type: isSeries ? 'series' : 'movie',
@@ -643,12 +644,26 @@ function historyEntryToItem(entry) {
 }
 
 function findCatalogItemForHistory(historyEntry, series) {
-  const historyTitle = String(historyEntry.series_title || '').toLowerCase()
+  const historyPath = String(historyEntry.series_path || '').toLowerCase()
+  const historyTitle = normalizeHistoryLookupValue(historyEntry.series_title)
   return series.find((item) => (
-    [getTitle(item), item.name, item.folder_name]
+    historyPath && [getItemPath(item), item.folder_name]
       .filter(Boolean)
-      .some((value) => String(value).toLowerCase() === historyTitle)
+      .some((value) => String(value).toLowerCase() === historyPath)
+    || historyTitle && [getTitle(item), item.name, item.folder_name]
+      .filter(Boolean)
+      .map(normalizeHistoryLookupValue)
+      .some((value) => value === historyTitle || value.startsWith(`${historyTitle} `))
   ))
+}
+
+function normalizeHistoryLookupValue(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\(\d{4}\)/g, ' ')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function findHistoryVideo(historyEntry, videos) {

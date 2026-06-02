@@ -851,6 +851,7 @@ function createHistoryPayload({ item, profileId, video }, positionMs, durationMs
     media_path: video.path,
     media_title: isMovie ? getTitle(item) : video.name,
     series_title: isMovie ? null : getTitle(item),
+    series_path: isMovie ? null : getItemPath(item),
     source: video.source || item.source || '',
     still_path: video.still_path || item.tmdb_backdrop_path || item.backdrop_path || item.tmdb_poster_path || item.poster_path || '',
     subtitle_path: video.subtitle_path || '',
