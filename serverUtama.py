@@ -227,6 +227,12 @@ WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed serv
 AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
+EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS = max(300, int(os.environ.get('EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS', str(7 * 24 * 60 * 60))))
+EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS', '300')))
+EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS', '300')))
+EMBEDDED_SUBTITLE_MAX_CONCURRENT = max(1, int(os.environ.get('EMBEDDED_SUBTITLE_MAX_CONCURRENT', '2')))
+EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS = max(2, int(os.environ.get('EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS', '6')))
+EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS = max(10, int(os.environ.get('EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS', '120')))
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
@@ -3983,6 +3989,7 @@ def get_gdrive_stream_details(current_user,file_path):
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
             "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "embedded_subtitles_url": f"/api/gdrive-embedded-subtitles/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "file_name": file_name,
             "duration_ms": file_metadata.get('duration_ms', 0),
@@ -4149,6 +4156,11 @@ def _verify_stream_token(fid, token):
 
 _gdrive_stream_http_local = threading.local()
 _audio_transcode_slots = threading.BoundedSemaphore(AUDIO_TRANSCODE_MAX_CONCURRENT)
+_embedded_subtitle_slots = threading.BoundedSemaphore(EMBEDDED_SUBTITLE_MAX_CONCURRENT)
+_embedded_subtitle_probe_slots = threading.BoundedSemaphore(EMBEDDED_SUBTITLE_MAX_CONCURRENT)
+_embedded_subtitle_probe_inflight = set()
+_embedded_subtitle_probe_inflight_lock = threading.Lock()
+_embedded_text_subtitle_codecs = frozenset({'ass', 'mov_text', 'ssa', 'subrip', 'text', 'webvtt'})
 
 def _get_gdrive_stream_http_session():
     """Reuse upstream TCP/TLS connections for stream ranges and HLS segments."""
@@ -4308,6 +4320,262 @@ def gdrive_audio_transcode(fid):
             "Access-Control-Expose-Headers": "Content-Type",
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Content-Type": "video/mp4",
+            "X-Accel-Buffering": "no",
+        },
+        direct_passthrough=True,
+    )
+
+@app.route("/api/gdrive-embedded-subtitles/<fid>")
+@rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-list', cors=True)
+def list_gdrive_embedded_subtitles(fid):
+    stream_token = request.args.get('stream_token')
+    if not _verify_stream_token(fid, stream_token):
+        return _embedded_subtitle_json_response({"error": "Unauthorized stream"}, 401)
+
+    detected_tracks = _probe_gdrive_embedded_subtitles(fid)
+    tracks = []
+    for track in detected_tracks:
+        track_url = (
+            f"/api/gdrive-embedded-subtitle/{fid}/{track['stream_index']}.vtt"
+            f"?stream_token={quote(stream_token, safe='')}"
+        )
+        tracks.append({**track, "url": track_url})
+    return _embedded_subtitle_json_response({
+        "probing": _is_gdrive_embedded_subtitle_probe_inflight(fid),
+        "tracks": tracks,
+    })
+
+@app.route("/api/gdrive-embedded-subtitle/<fid>/<int:stream_index>.vtt")
+@rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-track', cors=True)
+def serve_gdrive_embedded_subtitle(fid, stream_index):
+    if not _verify_stream_token(fid, request.args.get('stream_token')):
+        return _embedded_subtitle_json_response({"error": "Unauthorized stream"}, 401)
+
+    tracks = _probe_gdrive_embedded_subtitles(fid)
+    if not any(track['stream_index'] == stream_index for track in tracks):
+        return _embedded_subtitle_json_response({"error": "Text subtitle track not found"}, 404)
+
+    cache_key = _embedded_subtitle_vtt_cache_key(fid, stream_index)
+    cached_content = disk_cache.get(cache_key)
+    if cached_content:
+        return _embedded_subtitle_vtt_response(cached_content)
+
+    if not acquire_lock(cache_key, timeout_seconds=EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS):
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            cached_content = disk_cache.get(cache_key)
+            if cached_content:
+                return _embedded_subtitle_vtt_response(cached_content)
+            time.sleep(0.2)
+        return _embedded_subtitle_json_response({"error": "Subtitle extraction is already running"}, 503)
+
+    if not _embedded_subtitle_slots.acquire(blocking=False):
+        release_lock(cache_key)
+        return _embedded_subtitle_json_response({"error": "Subtitle extractor busy"}, 503)
+
+    process = _start_gdrive_embedded_subtitle_extract(fid, stream_index)
+    if not process:
+        _embedded_subtitle_slots.release()
+        release_lock(cache_key)
+        return _embedded_subtitle_json_response({"error": "Failed to start subtitle extraction"}, 502)
+
+    def generate():
+        chunks = []
+        try:
+            while True:
+                chunk = process.stdout.readline()
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                yield chunk
+            if process.wait() == 0 and chunks:
+                disk_cache.set(cache_key, b''.join(chunks), expire=EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS)
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            _embedded_subtitle_slots.release()
+            release_lock(cache_key)
+
+    return _embedded_subtitle_vtt_stream_response(generate())
+
+def _probe_gdrive_embedded_subtitles(fid):
+    cache_key = f"embedded_subtitle_tracks_v2_{fid}"
+    cached_tracks = disk_cache.get(cache_key)
+    if cached_tracks is not None:
+        return cached_tracks
+
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return []
+
+    tracks = _run_gdrive_embedded_subtitle_probe(
+        fid,
+        token,
+        fast=True,
+        timeout=EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS,
+    )
+    if tracks is None:
+        _schedule_gdrive_embedded_subtitle_probe(fid)
+        return []
+
+    _cache_gdrive_embedded_subtitle_tracks(cache_key, tracks)
+    return tracks
+
+def _run_gdrive_embedded_subtitle_probe(fid, token, *, fast, timeout):
+    if not shutil.which("ffprobe"):
+        return []
+
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-headers", ffprobe_headers,
+    ]
+    if fast:
+        command.extend([
+            "-probesize", "2097152",
+            "-analyzeduration", "1000000",
+        ])
+    command.extend([
+        "-select_streams", "s",
+        "-show_entries", "stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced",
+        "-of", "json",
+        media_url,
+    ])
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            return None
+        tracks = []
+        for stream in json.loads(result.stdout or '{}').get('streams', []):
+            codec = str(stream.get('codec_name') or '').lower()
+            if codec not in _embedded_text_subtitle_codecs:
+                continue
+            tags = stream.get('tags') or {}
+            disposition = stream.get('disposition') or {}
+            language = str(tags.get('language') or '').lower()
+            tracks.append({
+                "codec": codec,
+                "default": bool(disposition.get('default')),
+                "forced": bool(disposition.get('forced')),
+                "label": tags.get('title') or language or f"Subtitle {len(tracks) + 1}",
+                "language": language,
+                "stream_index": int(stream['index']),
+            })
+        return tracks
+    except Exception:
+        return None
+
+def _schedule_gdrive_embedded_subtitle_probe(fid):
+    with _embedded_subtitle_probe_inflight_lock:
+        if fid in _embedded_subtitle_probe_inflight:
+            return
+        _embedded_subtitle_probe_inflight.add(fid)
+
+    def run_probe():
+        if not _embedded_subtitle_probe_slots.acquire(blocking=False):
+            with _embedded_subtitle_probe_inflight_lock:
+                _embedded_subtitle_probe_inflight.discard(fid)
+            return
+        try:
+            token = _get_fresh_gdrive_token()
+            if not token:
+                return
+            tracks = _run_gdrive_embedded_subtitle_probe(
+                fid,
+                token,
+                fast=False,
+                timeout=EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS,
+            )
+            if tracks is not None:
+                _cache_gdrive_embedded_subtitle_tracks(f"embedded_subtitle_tracks_v2_{fid}", tracks)
+        finally:
+            _embedded_subtitle_probe_slots.release()
+            with _embedded_subtitle_probe_inflight_lock:
+                _embedded_subtitle_probe_inflight.discard(fid)
+
+    _global_executor.submit(run_probe)
+
+def _is_gdrive_embedded_subtitle_probe_inflight(fid):
+    with _embedded_subtitle_probe_inflight_lock:
+        return fid in _embedded_subtitle_probe_inflight
+
+def _cache_gdrive_embedded_subtitle_tracks(cache_key, tracks):
+    ttl = EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS if tracks else EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS
+    disk_cache.set(cache_key, tracks, expire=ttl)
+
+def _start_gdrive_embedded_subtitle_extract(fid, stream_index):
+    if not shutil.which("ffmpeg"):
+        return None
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return None
+
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostdin",
+        "-headers", ffmpeg_headers,
+        "-i", media_url,
+        "-map", f"0:{stream_index}",
+        "-vn",
+        "-an",
+        "-dn",
+        "-c:s", "webvtt",
+        "-flush_packets", "1",
+        "-f", "webvtt",
+        "pipe:1",
+    ]
+    try:
+        return subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+    except Exception:
+        return None
+
+def _embedded_subtitle_vtt_cache_key(fid, stream_index):
+    return f"embedded_subtitle_vtt_v1_{fid}_{stream_index}"
+
+def _embedded_subtitle_json_response(payload, status=200):
+    response = orjson_jsonify(payload, status)
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
+
+def _embedded_subtitle_vtt_response(content):
+    response = Response(content, mimetype='text/vtt')
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
+
+def _embedded_subtitle_vtt_stream_response(content):
+    return Response(
+        stream_with_context(content),
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Content-Type": "text/vtt; charset=utf-8",
             "X-Accel-Buffering": "no",
         },
         direct_passthrough=True,

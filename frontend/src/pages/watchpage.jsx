@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import {
+  fetchEmbeddedSubtitleTrack,
   fetchPlaybackMarkers,
   fetchPlaybackSource,
   fetchSubtitleTrack,
@@ -88,6 +89,7 @@ function WatchPage({
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
   const [subtitleDelayInput, setSubtitleDelayInput] = useState(() => formatSubtitleDelay(subtitleSettings.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
+  const [hasEmbeddedSubtitleTrack, setHasEmbeddedSubtitleTrack] = useState(false)
   const [isSubtitlePanelOpen, setIsSubtitlePanelOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [playerError, setPlayerError] = useState('')
@@ -102,6 +104,7 @@ function WatchPage({
   const videoPath = video.path
   const subtitlePath = video.subtitle_path || ''
   const isCaptionsEnabled = subtitleSettings.enabled
+  const hasSubtitleTrack = Boolean(subtitleUrl || hasEmbeddedSubtitleTrack)
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
   const episodeLabel = isSeries
@@ -227,13 +230,13 @@ function WatchPage({
   }, [])
 
   const toggleCaptions = useCallback(() => {
-    if (!subtitleUrl) return
+    if (!hasSubtitleTrack) return
     setSubtitleSettings((currentSettings) => ({
       ...currentSettings,
       enabled: !currentSettings.enabled,
     }))
     revealControls()
-  }, [revealControls, subtitleUrl])
+  }, [hasSubtitleTrack, revealControls])
 
   const setSubtitleTrackRef = useCallback((element) => {
     if (element?.track) element.track.mode = 'hidden'
@@ -331,8 +334,16 @@ function WatchPage({
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
     restoredPositionRef.current = false
+    queueMicrotask(() => {
+      if (!ignore) {
+        setSubtitleCues([])
+        setSubtitleUrl('')
+        setHasEmbeddedSubtitleTrack(false)
+      }
+    })
 
-    fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
+    const playbackSourcePromise = fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
+    playbackSourcePromise
       .then(({ durationMs, fallbackUrl, url }) => {
         if (!ignore) {
           const sourceDurationSeconds = Number(durationMs || 0) / 1000
@@ -353,12 +364,32 @@ function WatchPage({
       if (!ignore) setMarkers(nextMarkers)
     })
 
-    fetchSubtitleTrack(subtitlePath).then(({ cues, url }) => {
-      nextSubtitleUrl = url
-      if (!ignore) {
-        setSubtitleCues(createSubtitleCues(cues))
-        setSubtitleUrl(url)
+    async function loadSubtitleTrack() {
+      try {
+        const externalTrack = await fetchSubtitleTrack(subtitlePath)
+        if (externalTrack.url) return externalTrack
+      } catch {
+        // Fall back to embedded text subtitles when an external track cannot be loaded.
       }
+      const { embeddedSubtitlesUrl } = await playbackSourcePromise
+      return fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, {
+        onCues: (cues) => {
+          if (!ignore) setSubtitleCues(createSubtitleCues(cues))
+        },
+        onTrack: () => {
+          if (!ignore) setHasEmbeddedSubtitleTrack(true)
+        },
+      })
+    }
+
+    loadSubtitleTrack().then(({ cues, url }) => {
+      if (ignore) {
+        if (url) URL.revokeObjectURL(url)
+        return
+      }
+      nextSubtitleUrl = url
+      setSubtitleCues(createSubtitleCues(cues))
+      setSubtitleUrl(url)
     }).catch(() => {
       if (!ignore) {
         setSubtitleCues([])
@@ -683,7 +714,7 @@ function WatchPage({
             <div className="watch-subtitle-panel-header">
               <div>
                 <h2>Subtitle settings</h2>
-                <p>{subtitleUrl ? 'Customize subtitle display and timing.' : 'No subtitle is available for this video.'}</p>
+                <p>{hasSubtitleTrack ? 'Customize subtitle display and timing.' : 'No subtitle is available for this video.'}</p>
               </div>
               <button
                 aria-label="Close subtitle settings"
@@ -695,7 +726,7 @@ function WatchPage({
               </button>
             </div>
             <label className="watch-subtitle-toggle">
-              <input checked={Boolean(subtitleUrl) && isCaptionsEnabled} disabled={!subtitleUrl} onChange={toggleCaptions} type="checkbox" />
+              <input checked={hasSubtitleTrack && isCaptionsEnabled} disabled={!hasSubtitleTrack} onChange={toggleCaptions} type="checkbox" />
               <span>Show subtitles</span>
             </label>
             <div className="watch-subtitle-settings-grid">
@@ -854,7 +885,7 @@ function WatchPage({
             >
               <SkipForward size={20} />
             </button>
-            {subtitleUrl && (
+            {hasSubtitleTrack && (
               <button
                 aria-controls="subtitle-settings"
                 aria-expanded={isSubtitlePanelOpen}

@@ -150,6 +150,7 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   if (!streamPath) throw new Error('The server did not return a playable stream.')
   return {
     durationMs: Number(data.duration_ms || 0),
+    embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
     url: resolvePublicPath(streamPath),
   }
@@ -193,6 +194,59 @@ export async function fetchSubtitleTrack(subtitlePath) {
   const cues = parseSubtitleCues(webVtt)
   if (!cues.length) return { cues: [], url: '' }
 
+  return {
+    cues,
+    url: URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })),
+  }
+}
+
+export async function fetchEmbeddedSubtitleTrack(embeddedSubtitlesUrl, { onCues, onTrack } = {}) {
+  if (!embeddedSubtitlesUrl) return { cues: [], url: '' }
+
+  for (const delayMs of [0, 1500, 3000, 5000, 8000, 12000, 20000, 20000, 20000, 20000, 20000]) {
+    if (delayMs) await new Promise((resolve) => window.setTimeout(resolve, delayMs))
+
+    const response = await fetch(embeddedSubtitlesUrl)
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) return { cues: [], url: '' }
+
+    const tracks = Array.isArray(data.tracks) ? data.tracks : []
+    const selectedTrack = tracks.find((track) => track.default)
+      || tracks.find((track) => ['id', 'ind', 'indonesian'].includes(String(track.language || '').toLowerCase()))
+      || tracks.find((track) => ['en', 'eng', 'english'].includes(String(track.language || '').toLowerCase()))
+      || tracks[0]
+    if (selectedTrack?.url) {
+      onTrack?.(selectedTrack)
+      return fetchProgressiveSubtitleTrack(resolveApiPath(selectedTrack.url), { onCues })
+    }
+    if (!data.probing) return { cues: [], url: '' }
+  }
+
+  return { cues: [], url: '' }
+}
+
+async function fetchProgressiveSubtitleTrack(subtitlePath, { onCues } = {}) {
+  const response = await fetch(subtitlePath)
+  if (!response.ok) return { cues: [], url: '' }
+  if (!response.body) return fetchSubtitleTrack(subtitlePath)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let subtitleText = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    subtitleText += decoder.decode(value, { stream: true })
+    const cues = parseSubtitleCues(normalizeSubtitleToWebVtt(subtitleText, subtitlePath))
+    if (cues.length) onCues?.(cues)
+  }
+
+  subtitleText += decoder.decode()
+  const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
+  const cues = parseSubtitleCues(webVtt)
+  if (!cues.length) return { cues: [], url: '' }
+  onCues?.(cues)
   return {
     cues,
     url: URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })),
