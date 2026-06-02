@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import LoadableImage from '../LoadableImage'
 import { getGenres, getItemKey, getMediaType, getPosterFallbackUrl, getPosterUrl, getRating, getTitle } from '../../utils/media'
-import { normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
+import { mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
 
 const PREVIEW_RESULT_LIMIT = 5
 
@@ -12,6 +12,7 @@ function SearchBox({
   onHydrateItems,
   onOpenDetail,
   onQueryChange,
+  onSearchCatalog,
   onSubmit,
   placeholder = 'Search',
   query: controlledQuery,
@@ -20,15 +21,23 @@ function SearchBox({
 }) {
   const [isFocused, setIsFocused] = useState(false)
   const [internalQuery, setInternalQuery] = useState(defaultQuery)
+  const [serverSearch, setServerSearch] = useState({ query: '', results: [] })
   const requestedHydrationKey = useRef('')
   const isControlled = controlledQuery !== undefined
   const query = isControlled ? controlledQuery : internalQuery
   const deferredQuery = useDeferredValue(query)
   const normalizedQuery = normalizeSearchQuery(deferredQuery)
   const searchIndex = useMemo(() => prepareSearchCatalog(catalogItems), [catalogItems])
-  const previewResults = useMemo(
+  const localPreviewResults = useMemo(
     () => searchCatalog(searchIndex, deferredQuery, { limit: PREVIEW_RESULT_LIMIT }),
     [deferredQuery, searchIndex],
+  )
+  const previewResults = useMemo(
+    () => mergeSearchResults(
+      localPreviewResults,
+      serverSearch.query === normalizedQuery ? serverSearch.results : [],
+    ).slice(0, PREVIEW_RESULT_LIMIT),
+    [localPreviewResults, normalizedQuery, serverSearch],
   )
   const shouldShowPreview = showPreview && isFocused && normalizedQuery
   const hydrationKey = previewResults
@@ -37,11 +46,27 @@ function SearchBox({
     .join('|')
 
   useEffect(() => {
+    if (!showPreview || !onSearchCatalog || normalizedQuery.length < 2) return undefined
+
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => {
+      onSearchCatalog(deferredQuery, { signal: controller.signal })
+        .then((results) => setServerSearch({ query: normalizedQuery, results }))
+        .catch(() => {})
+    }, 180)
+
+    return () => {
+      controller.abort()
+      window.clearTimeout(timeoutId)
+    }
+  }, [deferredQuery, normalizedQuery, onSearchCatalog, showPreview])
+
+  useEffect(() => {
     if (!hydrationKey || hydrationKey === requestedHydrationKey.current) return
     const timeoutId = window.setTimeout(() => {
       requestedHydrationKey.current = hydrationKey
       onHydrateItems?.(previewResults)
-    }, 150)
+    }, 450)
 
     return () => window.clearTimeout(timeoutId)
   }, [hydrationKey, onHydrateItems, previewResults])

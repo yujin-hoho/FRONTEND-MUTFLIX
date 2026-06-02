@@ -3,16 +3,21 @@ import { ArrowLeft, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
 import { getGenres, getItemKey, getMediaType, getPosterFallbackUrl, getPosterUrl, getRating, getTitle } from '../utils/media'
-import { normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
+import { mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
-function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, onOpenDetail, onQueryChange }) {
+function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, onOpenDetail, onQueryChange, onSearchCatalog }) {
   const [query, setQuery] = useState(initialQuery)
+  const [serverSearch, setServerSearch] = useState({ query: '', results: [] })
   const requestedHydrationKey = useRef('')
   const deferredQuery = useDeferredValue(query)
   const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
   const searchIndex = useMemo(() => prepareSearchCatalog(catalogItems), [catalogItems])
-  const results = useMemo(() => searchCatalog(searchIndex, deferredQuery), [deferredQuery, searchIndex])
+  const localResults = useMemo(() => searchCatalog(searchIndex, deferredQuery), [deferredQuery, searchIndex])
   const normalizedQuery = normalizeSearchQuery(deferredQuery)
+  const results = useMemo(
+    () => mergeSearchResults(localResults, serverSearch.query === normalizedQuery ? serverSearch.results : []),
+    [localResults, normalizedQuery, serverSearch],
+  )
   const hydrationItems = useMemo(
     () => results.slice(0, 24).filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
     [results],
@@ -20,12 +25,28 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
 
   useEffect(() => {
+    if (!onSearchCatalog || normalizedQuery.length < 2) return undefined
+
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => {
+      onSearchCatalog(deferredQuery, { signal: controller.signal })
+        .then((results) => setServerSearch({ query: normalizedQuery, results }))
+        .catch(() => {})
+    }, 180)
+
+    return () => {
+      controller.abort()
+      window.clearTimeout(timeoutId)
+    }
+  }, [deferredQuery, normalizedQuery, onSearchCatalog])
+
+  useEffect(() => {
     if (!normalizedQuery || !hydrationKey || hydrationKey === requestedHydrationKey.current) return
 
     const timeoutId = window.setTimeout(() => {
       requestedHydrationKey.current = hydrationKey
       onHydrateItems?.(hydrationItems)
-    }, 150)
+    }, 350)
 
     return () => window.clearTimeout(timeoutId)
   }, [hydrationItems, hydrationKey, normalizedQuery, onHydrateItems])
@@ -49,6 +70,7 @@ function SearchResultsPage({ catalogData, initialQuery, onBack, onHydrateItems, 
           onHydrateItems={onHydrateItems}
           onOpenDetail={onOpenDetail}
           onQueryChange={handleQueryChange}
+          onSearchCatalog={onSearchCatalog}
           onSubmit={(nextQuery) => {
             setQuery(nextQuery)
             onQueryChange(nextQuery)

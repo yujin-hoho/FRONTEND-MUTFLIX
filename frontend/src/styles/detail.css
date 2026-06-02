@@ -357,8 +357,18 @@
   contain-intrinsic-size: auto 172px;
 }
 
-.episode-card:hover {
+.episode-card[role='button'] {
+  cursor: pointer;
+}
+
+.episode-card:hover,
+.episode-card:focus-visible {
   background: rgba(148, 163, 184, 0.1);
+}
+
+.episode-card:focus-visible {
+  outline: 2px solid #00dc64;
+  outline-offset: 2px;
 }
 
 .episode-pagination {
@@ -428,7 +438,7 @@
   background: linear-gradient(135deg, #1f2937, #020617);
 }
 
-.episode-thumbnail button {
+.episode-play-icon {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -440,18 +450,17 @@
   border-radius: 50%;
   background: rgba(2, 6, 23, 0.62);
   color: #7cf2ad;
-  cursor: pointer;
   opacity: 0;
   transform: translate(-50%, -50%);
   transition: opacity 160ms ease, background 160ms ease;
 }
 
-.episode-card:hover .episode-thumbnail button,
-.episode-thumbnail button:focus-visible {
+.episode-card:hover .episode-play-icon,
+.episode-card:focus-visible .episode-play-icon {
   opacity: 1;
 }
 
-.episode-thumbnail button:hover {
+.episode-card:hover .episode-play-icon {
   background: rgba(0, 220, 100, 0.88);
   color: #02140a;
 }

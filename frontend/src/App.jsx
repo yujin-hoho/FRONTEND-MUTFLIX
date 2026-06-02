@@ -14,6 +14,7 @@ import {
   authenticate,
   createEmptyCredits,
   enrichCatalogMetadata,
+  fetchCatalogSearch,
   fetchDashboardData,
   fetchDetailData,
   fetchProfiles,
@@ -252,6 +253,10 @@ function App() {
     })
     await saveWatchProgress(authToken, payload)
   }, [authToken, selectedProfile])
+
+  const handleSearchCatalog = useCallback((query, options) => (
+    fetchCatalogSearch(authToken, query, options)
+  ), [authToken])
 
   useEffect(() => {
     if (!currentUser || !selectedProfile || !isDetailRoute) return
@@ -511,6 +516,7 @@ function App() {
           onHydrateItems={hydrateCatalogItems}
           onOpenDetail={handleOpenDetail}
           onQueryChange={(query) => handleOpenSearch(query, { replace: true })}
+          onSearchCatalog={handleSearchCatalog}
         />
       )
     }
@@ -524,6 +530,7 @@ function App() {
         onOpenDetail={handleOpenDetail}
         onPlayHistory={handleResumeHistory}
         onOpenSearch={handleOpenSearch}
+        onSearchCatalog={handleSearchCatalog}
         profileData={profileData}
         selectedProfile={selectedProfile}
         featuredItemKey={getFeaturedItemKey(featuredItemKeys.current, selectedProfile.id, catalogData.movies, catalogData.series)}

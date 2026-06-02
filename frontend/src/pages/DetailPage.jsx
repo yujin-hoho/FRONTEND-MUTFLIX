@@ -125,13 +125,25 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
                   const duration = formatDuration(video)
 
                   return (
-                    <article className="episode-card" key={`${video.path || video.name}-${index}`}>
+                    <article
+                      aria-label={`Play ${video.name || `episode ${episodeNumber}`}`}
+                      className="episode-card"
+                      key={`${video.path || video.name}-${index}`}
+                      onClick={() => onPlayVideo(video)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return
+                        event.preventDefault()
+                        onPlayVideo(video)
+                      }}
+                      role="button"
+                      tabIndex="0"
+                    >
                       <span className="episode-number">{episodeNumber}</span>
                       <div className="episode-thumbnail">
                         <LoadableImage fallbackSrc={thumbnailFallback} key={thumbnail} loading="eager" src={thumbnail} />
-                        <button aria-label={`Play ${video.name || `episode ${episodeNumber}`}`} onClick={() => onPlayVideo(video)} type="button">
+                        <span aria-hidden="true" className="episode-play-icon">
                           <Play fill="currentColor" size={20} />
-                        </button>
+                        </span>
                       </div>
                       <div className="episode-copy">
                         <div className="episode-title-row">

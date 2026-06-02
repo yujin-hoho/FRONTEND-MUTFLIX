@@ -150,6 +150,19 @@ function WatchPage({
     }
   }, [isPlaying, isSubtitlePanelOpen])
 
+  const toggleControls = useCallback(() => {
+    window.clearTimeout(controlsTimeoutRef.current)
+    if (showControls) {
+      setShowControls(false)
+      return
+    }
+
+    setShowControls(true)
+    if (isPlaying && !isSubtitlePanelOpen) {
+      controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
+    }
+  }, [isPlaying, isSubtitlePanelOpen, showControls])
+
   const seekBy = useCallback((seconds) => {
     const player = playerRef.current
     if (!player || !Number.isFinite(player.duration)) return
@@ -534,12 +547,11 @@ function WatchPage({
     <main
       className={`watch-page ${showControls ? 'controls-visible' : ''}`}
       onMouseMove={revealControls}
-      onTouchStart={revealControls}
       ref={shellRef}
     >
       <video
         className="watch-video"
-        onClick={togglePlay}
+        onClick={toggleControls}
         onEnded={() => {
           setIsPlaying(false)
           persistProgress({ complete: true, force: true })

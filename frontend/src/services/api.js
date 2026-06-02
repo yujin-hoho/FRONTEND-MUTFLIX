@@ -96,6 +96,19 @@ export async function fetchDashboardData(authToken, profileId) {
   return { history: Array.isArray(historyData) ? historyData : [], movies, series }
 }
 
+export async function fetchCatalogSearch(authToken, query, { signal } = {}) {
+  const normalizedQuery = String(query || '').trim()
+  if (!normalizedQuery) return []
+
+  const response = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(normalizedQuery)}`, {
+    headers: { 'x-access-token': authToken },
+    signal,
+  })
+  const data = await response.json().catch(() => [])
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to search the catalog.')
+  return Array.isArray(data) ? data : []
+}
+
 export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   if (!mediaPath) throw new Error('No media file was selected.')
   if (/^https?:\/\//i.test(mediaPath)) return { fallbackUrl: '', url: mediaPath }

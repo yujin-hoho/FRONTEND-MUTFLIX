@@ -25,6 +25,7 @@ function DashboardPage({
   onOpenDetail,
   onPlayHistory,
   onOpenSearch,
+  onSearchCatalog,
   profileData,
   selectedProfile,
 }) {
@@ -49,6 +50,7 @@ function DashboardPage({
             catalogItems={dashboardView.catalogItems}
             onHydrateItems={onHydrateItems}
             onOpenDetail={onOpenDetail}
+            onSearchCatalog={onSearchCatalog}
             onSubmit={onOpenSearch}
           />
           <div className="profile-menu">
