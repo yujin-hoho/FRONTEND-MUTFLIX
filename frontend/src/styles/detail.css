@@ -148,6 +148,45 @@
   line-height: 1.7;
 }
 
+.detail-watch-progress {
+  width: min(100%, 360px);
+  margin-top: 14px;
+}
+
+.detail-watch-progress-copy {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: #dbeafe;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.detail-watch-progress-copy strong {
+  color: #7cf2ad;
+}
+
+.detail-watch-progress-track,
+.episode-progress-track {
+  display: block;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.34);
+}
+
+.detail-watch-progress-track {
+  height: 5px;
+}
+
+.detail-watch-progress-track span,
+.episode-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #00dc64;
+}
+
 .detail-body {
   position: relative;
   z-index: 1;
@@ -453,6 +492,27 @@
   opacity: 0;
   transform: translate(-50%, -50%);
   transition: opacity 160ms ease, background 160ms ease;
+}
+
+.episode-progress-label {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.82);
+  color: #7cf2ad;
+  padding: 3px 6px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.episode-progress-track {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 5px;
+  border-radius: 0;
 }
 
 .episode-card:hover .episode-play-icon,

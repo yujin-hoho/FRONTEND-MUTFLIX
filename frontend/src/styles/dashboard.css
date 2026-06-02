@@ -381,6 +381,11 @@
   color: #f8fafc;
 }
 
+.catalog-scroller-shell {
+  position: relative;
+  min-width: 0;
+}
+
 .catalog-scroller {
   display: grid;
   grid-auto-flow: column;
@@ -393,22 +398,56 @@
   scrollbar-width: none;
   overscroll-behavior-inline: contain;
   -webkit-overflow-scrolling: touch;
-  cursor: grab;
-}
-
-.catalog-scroller.is-dragging {
-  cursor: grabbing;
-  scroll-snap-type: none;
-  user-select: none;
-}
-
-.catalog-scroller img {
-  -webkit-user-drag: none;
-  user-select: none;
 }
 
 .catalog-scroller::-webkit-scrollbar {
   display: none;
+}
+
+.catalog-scroll-button {
+  position: absolute;
+  top: calc(8px + (var(--catalog-poster-width) * 1.5) / 2);
+  z-index: 3;
+  width: 48px;
+  height: calc(var(--catalog-poster-width) * 1.5);
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #f8fafc;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+
+.catalog-scroll-button svg {
+  filter:
+    drop-shadow(0 0 2px rgba(2, 6, 23, 1))
+    drop-shadow(0 0 5px rgba(2, 6, 23, 0.96))
+    drop-shadow(0 2px 7px rgba(2, 6, 23, 0.92));
+}
+
+.catalog-scroller-shell:hover .catalog-scroll-button,
+.catalog-scroll-button:focus-visible {
+  opacity: 1;
+}
+
+.catalog-scroll-button:hover {
+  color: #7cf2ad;
+}
+
+.catalog-scroll-button-left {
+  left: 0;
+}
+
+.catalog-scroll-button-right {
+  right: 0;
+}
+
+.catalog-scroller-shell-history .catalog-scroll-button {
+  top: calc(8px + (clamp(210px, 24vw, 340px) * 0.5625) / 2);
+  height: calc(clamp(210px, 24vw, 340px) * 0.5625);
 }
 
 .catalog-card {

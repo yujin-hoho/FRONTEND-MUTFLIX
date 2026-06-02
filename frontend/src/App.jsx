@@ -529,6 +529,7 @@ function App() {
           detailData={detailData}
           onBack={handleDetailBack}
           onPlayVideo={(video) => handleOpenWatch(detailData.item, video, detailData.videos)}
+          watchHistory={profileData.watchHistory}
         />
       )
     }

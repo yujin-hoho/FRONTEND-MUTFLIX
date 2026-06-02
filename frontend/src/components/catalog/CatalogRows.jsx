@@ -1,4 +1,5 @@
-import { memo, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import LoadableImage from '../LoadableImage'
 import {
   getItemKey,
@@ -62,7 +63,7 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
           {showAll ? 'Show less' : 'See more'}
         </button>
       </div>
-      <DraggableScroller className="catalog-scroller history-scroller">
+      <DraggableScroller className="catalog-scroller history-scroller" variant="history">
         {(showAll ? items : items.slice(0, 15)).map((item) => (
           <button className="catalog-card history-card" key={item.media_path} onClick={() => onPlay(item)} type="button">
             <div className="history-frame">
@@ -80,65 +81,58 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
   )
 })
 
-function DraggableScroller({ children, className }) {
-  const dragStateRef = useRef(null)
-  const suppressClickRef = useRef(false)
-  const [isDragging, setIsDragging] = useState(false)
+function DraggableScroller({ children, className, variant = '' }) {
+  const scrollerRef = useRef(null)
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
 
-  function handlePointerDown(event) {
-    if (event.pointerType !== 'mouse' || event.button !== 0) return
+  const updateArrowVisibility = useCallback(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
 
-    dragStateRef.current = {
-      pointerId: event.pointerId,
-      scrollLeft: event.currentTarget.scrollLeft,
-      startX: event.clientX,
+    setCanScrollLeft(scroller.scrollLeft > 1)
+    setCanScrollRight(scroller.scrollLeft + scroller.clientWidth < scroller.scrollWidth - 1)
+  }, [])
+
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return undefined
+
+    updateArrowVisibility()
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateArrowVisibility)
+      return () => window.removeEventListener('resize', updateArrowVisibility)
     }
-    event.currentTarget.setPointerCapture(event.pointerId)
-  }
 
-  function handlePointerMove(event) {
-    const dragState = dragStateRef.current
-    if (!dragState || dragState.pointerId !== event.pointerId) return
+    const resizeObserver = new ResizeObserver(updateArrowVisibility)
+    resizeObserver.observe(scroller)
+    return () => resizeObserver.disconnect()
+  }, [children, updateArrowVisibility])
 
-    const distance = event.clientX - dragState.startX
-    if (!isDragging && Math.abs(distance) < 5) return
-
-    suppressClickRef.current = true
-    setIsDragging(true)
-    event.preventDefault()
-    event.currentTarget.scrollLeft = dragState.scrollLeft - distance
-  }
-
-  function handlePointerEnd(event) {
-    const dragState = dragStateRef.current
-    if (!dragState || dragState.pointerId !== event.pointerId) return
-
-    dragStateRef.current = null
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    setIsDragging(false)
-    window.setTimeout(() => {
-      suppressClickRef.current = false
-    }, 0)
-  }
-
-  function handleClickCapture(event) {
-    if (!suppressClickRef.current) return
-    event.preventDefault()
-    event.stopPropagation()
+  function scrollRow(direction) {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    scroller.scrollBy({
+      behavior: 'smooth',
+      left: direction * Math.max(240, scroller.clientWidth * 0.82),
+    })
   }
 
   return (
-    <div
-      className={`${className} ${isDragging ? 'is-dragging' : ''}`}
-      onClickCapture={handleClickCapture}
-      onPointerCancel={handlePointerEnd}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerEnd}
-    >
-      {children}
+    <div className={`catalog-scroller-shell ${variant ? `catalog-scroller-shell-${variant}` : ''}`}>
+      {canScrollLeft && (
+        <button aria-label="Scroll row left" className="catalog-scroll-button catalog-scroll-button-left" onClick={() => scrollRow(-1)} type="button">
+          <ChevronLeft size={42} strokeWidth={4} />
+        </button>
+      )}
+      <div className={className} onScroll={updateArrowVisibility} ref={scrollerRef}>
+        {children}
+      </div>
+      {canScrollRight && (
+        <button aria-label="Scroll row right" className="catalog-scroll-button catalog-scroll-button-right" onClick={() => scrollRow(1)} type="button">
+          <ChevronRight size={42} strokeWidth={4} />
+        </button>
+      )}
     </div>
   )
 }

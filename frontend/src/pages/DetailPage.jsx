@@ -12,10 +12,12 @@ import {
   getRating,
   getStillUrl,
   getTitle,
+  getWatchProgress,
+  normalizeMediaPath,
   preloadImage,
 } from '../utils/media'
 
-function DetailPage({ detailData, onBack, onPlayVideo }) {
+function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
   const { credits, error, isLoading, item, videos } = detailData
   const seasons = useMemo(
     () => [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b),
@@ -29,6 +31,13 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
   const backdropFallback = isLoading ? '' : getPosterFallbackUrl(item)
   const genres = getGenres(item)
   const firstVideo = videos[0]
+  const findWatchEntry = (video) => watchHistory.find((entry) => (
+    normalizeMediaPath(entry.media_path) === normalizeMediaPath(video?.path)
+  )) || (!isMovie && watchHistory.find((entry) => (
+    Number(entry.season || 1) === Number(video?.season || 1)
+    && Number(entry.episode || 1) === Number(video?.episode || 1)
+  )))
+  const firstVideoProgress = getWatchProgress(findWatchEntry(firstVideo) || {})
   const visibleVideos = useMemo(
     () => videos.filter((video) => Number(video.season || 1) === selectedSeason),
     [selectedSeason, videos],
@@ -65,6 +74,17 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
             <Play fill="currentColor" size={20} />
             <span>{isLoading ? 'Loading...' : firstVideo ? 'Play' : 'Unavailable offline'}</span>
           </button>
+          {isMovie && firstVideoProgress > 0 && (
+            <div className="detail-watch-progress">
+              <div className="detail-watch-progress-copy">
+                <span>Watch progress</span>
+                <strong>{Math.round(firstVideoProgress)}%</strong>
+              </div>
+              <span className="detail-watch-progress-track">
+                <span style={{ width: `${firstVideoProgress}%` }} />
+              </span>
+            </div>
+          )}
         </div>
       </section>
 
@@ -123,6 +143,7 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
                     name: video.name || `${getTitle(item)} episode ${episodeNumber}`,
                   })
                   const duration = formatDuration(video)
+                  const watchProgress = getWatchProgress(findWatchEntry(video) || {})
 
                   return (
                     <article
@@ -144,6 +165,14 @@ function DetailPage({ detailData, onBack, onPlayVideo }) {
                         <span aria-hidden="true" className="episode-play-icon">
                           <Play fill="currentColor" size={20} />
                         </span>
+                        {watchProgress > 0 && (
+                          <>
+                            <span className="episode-progress-label">{Math.round(watchProgress)}%</span>
+                            <span className="episode-progress-track">
+                              <span style={{ width: `${watchProgress}%` }} />
+                            </span>
+                          </>
+                        )}
                       </div>
                       <div className="episode-copy">
                         <div className="episode-title-row">
