@@ -25,7 +25,7 @@ import {
   fetchSubtitleTrack,
   getTimestampedAudioTranscodeUrl,
 } from '../services/api'
-import { getItemPath, getMediaType, getTitle } from '../utils/media'
+import { getEpisodeHistoryLabel, getItemPath, getMediaType, getTitle } from '../utils/media'
 
 const SAVE_INTERVAL_MS = 10000
 const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
@@ -1234,10 +1234,15 @@ function WatchPage({
 
 function createHistoryPayload({ item, profileId, video }, positionMs, durationMs) {
   const isMovie = getMediaType(item) === 'movie'
+  const episodeTitle = getEpisodeHistoryLabel({
+    ...video,
+    media_path: video.path,
+    media_title: video.title || video.name,
+  })
   return {
     profile_id: profileId,
     media_path: video.path,
-    media_title: isMovie ? getTitle(item) : video.name,
+    media_title: isMovie ? getTitle(item) : episodeTitle,
     series_title: isMovie ? null : getTitle(item),
     series_path: isMovie ? null : getItemPath(item),
     source: video.source || item.source || '',

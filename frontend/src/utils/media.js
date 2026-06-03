@@ -141,6 +141,44 @@ export function getWatchProgress(item) {
   return Math.min(100, Math.max(0, (position / duration) * 100))
 }
 
+export function getEpisodeHistoryLabel(item = {}) {
+  const title = getCleanEpisodeTitle(
+    item.media_title || item.title || item.name,
+    item.media_path || item.path,
+  )
+  if (title) return title
+
+  const season = Number(item.season || 0)
+  const episode = Number(item.episode || 0)
+  if (season > 0 && episode > 0) return `Season ${season} Episode ${episode}`
+  if (episode > 0) return `Episode ${episode}`
+  return getCleanEpisodeTitle(item.series_title, item.media_path) || 'Continue Watching'
+}
+
+function getCleanEpisodeTitle(value, mediaPath = '') {
+  const title = String(value || '').trim()
+  if (!title || isTechnicalEpisodeTitle(title, mediaPath)) return ''
+  return title
+}
+
+function isTechnicalEpisodeTitle(value, mediaPath = '') {
+  const title = String(value || '').trim()
+  const lower = title.toLowerCase()
+  const path = String(mediaPath || '').trim().replace(/\\/g, '/').toLowerCase()
+  if (!lower) return true
+  if (lower === path) return true
+  if (/^(?:gdrive|gdrive_folder|telegram)\//.test(lower)) return true
+  if (/^https?:\/\//.test(lower)) return true
+
+  const pathTail = path.split('/').filter(Boolean).pop()
+  if (pathTail && lower === pathTail) return true
+  if (/^[a-z0-9_-]{20,}$/i.test(title) && path.includes(lower)) return true
+
+  const normalized = lower.replace(/[._-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (/^(?:s\s*\d+\s*e\s*\d+|episode\s*\d+|ep\s*\d+)$/.test(normalized)) return true
+  return /\b(?:480p|720p|1080p|2160p|web\s?dl|webrip|bluray|bdrip|hdtv|x264|x265|hevc|aac|ac3|dts)\b/.test(normalized)
+}
+
 export function formatDuration(video) {
   const durationMs = Number(video.duration_ms || 0)
   if (durationMs <= 0) return ''
