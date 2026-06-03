@@ -3,6 +3,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import LoadableImage from '../LoadableImage'
 import {
   getItemKey,
+  getEpisodeHistoryLabel,
   getPosterFallbackUrl,
   getPosterUrl,
   getRating,
@@ -73,7 +74,7 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
                 <span style={{ width: `${getWatchProgress(item)}%` }} />
               </span>
             </div>
-            <h3>{item.media_title || item.series_title || 'Continue Watching'}</h3>
+            <h3>{getEpisodeHistoryLabel(item)}</h3>
           </button>
         ))}
       </DraggableScroller>

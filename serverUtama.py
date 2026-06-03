@@ -20,7 +20,7 @@ import subprocess
 from functools import wraps, lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 import unicodedata
 from time import monotonic as _monotonic
 from requests.adapters import HTTPAdapter
@@ -2491,6 +2491,96 @@ def delete_profile(current_user):
         return orjson_jsonify({"message": "Deleted"})
     finally: release_db_connection(conn, db_type)
 
+def _normalize_history_media_path(media_path):
+    value = str(media_path or '').strip().replace('\\', '/')
+    if not value:
+        return ''
+
+    value = unquote(value).strip().replace('\\', '/')
+    canonical_match = re.match(r'^/?(gdrive|telegram)/(.+?)/*(?:[?#].*)?$', value, re.IGNORECASE)
+    if canonical_match:
+        prefix = canonical_match.group(1).lower()
+        suffix = canonical_match.group(2).strip('/')
+        return f'{prefix}/{suffix}' if suffix else ''
+
+    parsed = urlparse(value)
+    path = unquote(parsed.path or value).replace('\\', '/')
+    for pattern in (
+        r'(?:^|/)api/gdrive-stream/([^/?#]+)',
+        r'(?:^|/)api/gdrive-audio-transcode/([^/?#]+)',
+        r'(?:^|/)api/gdrive-audio-transcode-start/([^/?#]+)',
+        r'(?:^|/)api/gdrive-embedded-subtitles/([^/?#]+)',
+        r'(?:^|/)api/hls-manifest/([^/?#]+)',
+        r'(?:^|/)gdrive-proxy/([^/?#]+)',
+    ):
+        match = re.search(pattern, path, re.IGNORECASE)
+        if match:
+            return f"gdrive/{match.group(1)}"
+
+    if parsed.netloc.endswith('googleapis.com'):
+        match = re.search(r'(?:^|/)drive/v3/files/([^/?#]+)', path)
+        if match:
+            return f"gdrive/{match.group(1)}"
+
+    worker_id = path.strip('/')
+    if parsed.scheme and parsed.netloc and worker_id and '/' not in worker_id and 'token=' in parsed.query:
+        return f'gdrive/{worker_id}'
+
+    return value.strip('/')
+
+
+def _history_lookup_paths(raw_media_path):
+    raw = str(raw_media_path or '').strip()
+    normalized = _normalize_history_media_path(raw)
+    paths = [normalized] if normalized else []
+    if raw and raw != normalized:
+        paths.append(raw)
+    return paths
+
+
+def _looks_like_history_technical_title(title, media_path):
+    text = str(title or '').strip()
+    if not text:
+        return True
+    lower = text.lower().replace('\\', '/')
+    path = str(media_path or '').lower().replace('\\', '/')
+    if lower == path:
+        return True
+    if lower.startswith(('gdrive/', 'gdrive_folder/', 'telegram/', 'http://', 'https://')):
+        return True
+    path_tail = path.split('/')[-1]
+    if path_tail and lower == path_tail:
+        return True
+    if re.match(r'^[a-z0-9_-]{20,}$', text, re.IGNORECASE) and lower in path:
+        return True
+    normalized = re.sub(r'\s+', ' ', re.sub(r'[._-]+', ' ', lower)).strip()
+    return bool(re.match(r'^(?:s\s*\d+\s*e\s*\d+|episode\s*\d+|ep\s*\d+)$', normalized))
+
+
+def _history_display_media_title(data):
+    media_path = data.get('media_path')
+    title = data.get('media_title')
+    if not _looks_like_history_technical_title(title, media_path):
+        return title
+
+    season = data.get('season')
+    episode = data.get('episode')
+    try:
+        season = int(season) if season is not None else None
+    except (TypeError, ValueError):
+        season = None
+    try:
+        episode = int(episode) if episode is not None else None
+    except (TypeError, ValueError):
+        episode = None
+
+    if season and episode:
+        return f'Season {season} Episode {episode}'
+    if episode:
+        return f'Episode {episode}'
+    return title
+
+
 @app.route('/api/history/get/<profile_id>', methods=['GET'])
 @token_required(check_expiry=True)
 def get_history(current_user, profile_id):
@@ -2521,6 +2611,10 @@ def get_history(current_user, profile_id):
             cur.execute(sql, tuple(params))
             res = [dict(r) for r in cur.fetchall()]
         else: res = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
+
+        for item in res:
+            item['media_path'] = _normalize_history_media_path(item.get('media_path'))
+            item['media_title'] = _history_display_media_title(item)
         
         return add_no_cache_headers(orjson_jsonify(res))
     finally: release_db_connection(conn, db_type)
@@ -2528,29 +2622,43 @@ def get_history(current_user, profile_id):
 @app.route('/api/history/save', methods=['POST'])
 @token_required(check_expiry=True)
 def save_history(current_user):
-    data = request.get_json()
+    data = request.get_json() or {}
+    raw_media_path = data.get('media_path')
+    normalized_media_path = _normalize_history_media_path(raw_media_path)
+    if not normalized_media_path:
+        return orjson_jsonify({"message": "media_path required"}, 400)
+    data['media_path'] = normalized_media_path
+    data['media_title'] = _history_display_media_title(data)
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
-        lookup_params = (current_user['id'], data['profile_id'], data['media_path'])
+        lookup_paths = _history_lookup_paths(raw_media_path)
+        path_placeholders = ', '.join([ph] * len(lookup_paths))
         cur.execute(
-            f"SELECT is_hidden FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}",
-            lookup_params,
+            f"SELECT media_path FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path IN ({path_placeholders})",
+            (current_user['id'], data['profile_id'], *lookup_paths),
         )
-        existing = cur.fetchone()
-        if existing is not None:
+        existing_rows = cur.fetchall()
+        existing_path = None
+        for row in existing_rows:
+            row_path = row[0]
+            if row_path == data['media_path']:
+                existing_path = row_path
+                break
+            existing_path = existing_path or row_path
+        if existing_path is not None:
             sql_update = f'''
                 UPDATE watch_history
-                SET media_title={ph}, series_title={ph}, series_path={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
+                SET media_path={ph}, media_title={ph}, series_title={ph}, series_path={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
                     season={ph}, episode={ph}, position_ms={ph}, duration_ms={ph}, is_hidden=0, last_watched=CURRENT_TIMESTAMP
                 WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
             '''
             params = (
-                data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'),
+                data['media_path'], data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'),
                 data.get('still_path'), data.get('subtitle_path'), data.get('season'),
                 data.get('episode'), data['position_ms'], data['duration_ms'],
-                current_user['id'], data['profile_id'], data['media_path'],
+                current_user['id'], data['profile_id'], existing_path,
             )
             cur.execute(sql_update, params)
         else:
@@ -2568,20 +2676,24 @@ def save_history(current_user):
 @app.route('/api/history/hide', methods=['POST'])
 @token_required(check_expiry=True)
 def hide_history(current_user):
-    data = request.get_json()
+    data = request.get_json() or {}
+    lookup_paths = _history_lookup_paths(data.get('media_path'))
+    if not lookup_paths:
+        return orjson_jsonify({"message": "media_path required"}, 400)
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
+        path_placeholders = ', '.join([ph] * len(lookup_paths))
         query = f"""
             UPDATE watch_history
             SET is_hidden = 1
-            WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
+            WHERE user_id={ph} AND profile_id={ph} AND media_path IN ({path_placeholders})
         """
         cur.execute(
             query,
             (
-                current_user['id'], data['profile_id'], data['media_path'],
+                current_user['id'], data['profile_id'], *lookup_paths,
             ),
         )
         conn.commit()
@@ -2593,19 +2705,23 @@ def hide_history(current_user):
 @app.route('/api/history/delete', methods=['POST'])
 @token_required(check_expiry=True)
 def delete_history(current_user):
-    data = request.get_json()
+    data = request.get_json() or {}
+    lookup_paths = _history_lookup_paths(data.get('media_path'))
+    if not lookup_paths:
+        return orjson_jsonify({"message": "media_path required"}, 400)
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
+        path_placeholders = ', '.join([ph] * len(lookup_paths))
         query = f"""
             DELETE FROM watch_history
-            WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
+            WHERE user_id={ph} AND profile_id={ph} AND media_path IN ({path_placeholders})
         """
         cur.execute(
             query,
             (
-                current_user['id'], data['profile_id'], data['media_path'],
+                current_user['id'], data['profile_id'], *lookup_paths,
             ),
         )
         conn.commit()
