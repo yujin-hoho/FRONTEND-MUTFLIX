@@ -4,6 +4,7 @@ import re
 import json
 import pickle
 import base64
+import queue
 import time
 import hashlib
 import hmac
@@ -224,7 +225,12 @@ TMDB_HTTP_RETRIES = max(0, int(os.environ.get('TMDB_HTTP_RETRIES', '1')))
 TMDB_HTTP_BACKOFF_SECONDS = max(0.0, float(os.environ.get('TMDB_HTTP_BACKOFF_SECONDS', '0.35')))
 SEARCH_RESPONSE_CACHE_TTL_SECONDS = 30
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
-AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
+AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '160k')
+AUDIO_TRANSCODE_AAC_CODER = os.environ.get('AUDIO_TRANSCODE_AAC_CODER', 'fast').strip()
+AUDIO_TRANSCODE_CHUNK_BYTES = max(64 * 1024, int(os.environ.get('AUDIO_TRANSCODE_CHUNK_BYTES', str(512 * 1024))))
+AUDIO_TRANSCODE_BUFFER_BYTES = max(AUDIO_TRANSCODE_CHUNK_BYTES, int(os.environ.get('AUDIO_TRANSCODE_BUFFER_BYTES', str(64 * 1024 * 1024))))
+AUDIO_TRANSCODE_BUFFER_CHUNKS = max(1, (AUDIO_TRANSCODE_BUFFER_BYTES + AUDIO_TRANSCODE_CHUNK_BYTES - 1) // AUDIO_TRANSCODE_CHUNK_BYTES)
+AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS = max(1_000_000, int(os.environ.get('AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS', '30000000')))
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
 AUDIO_TRANSCODE_SLOT_WAIT_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_SLOT_WAIT_SECONDS', '3')))
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
@@ -407,6 +413,9 @@ _gdrive_file_metadata_cache_lock = threading.Lock()
 _gdrive_file_metadata_key_locks = {}
 _gdrive_file_metadata_key_locks_lock = threading.Lock()
 _browser_supported_audio_codecs = frozenset({'aac', 'mp3', 'mp2', 'opus', 'vorbis'})
+_audio_transcode_expensive_codecs = frozenset({'truehd', 'mlp', 'dts', 'dca', 'flac'})
+_audio_transcode_lighter_codecs = frozenset({'aac', 'ac3', 'eac3', 'mp3', 'mp2', 'opus', 'vorbis'})
+_audio_transcode_non_primary_terms = ('commentary', 'director', 'descriptive', 'description')
 
 # === USER DATA RAM CACHE (profiles, mylist) ===
 # Per-user caching — eliminates DB roundtrip (~100-200ms saved per request)
@@ -4008,6 +4017,10 @@ def get_gdrive_stream_details(current_user,file_path):
             "audio_codec_label": file_metadata.get('audio_codec_label', ''),
             "audio_channels": file_metadata.get('audio_channels', 0),
             "audio_profile": file_metadata.get('audio_profile', ''),
+            "audio_stream_index": file_metadata.get('audio_stream_index'),
+            "audio_transcode_stream_index": file_metadata.get('audio_transcode_stream_index'),
+            "audio_transcode_codec": file_metadata.get('audio_transcode_codec', ''),
+            "audio_transcode_codec_label": file_metadata.get('audio_transcode_codec_label', ''),
             "audio_probe_status": file_metadata.get('audio_probe_status', ''),
             "audio_streams": file_metadata.get('audio_streams', []),
             "browser_audio_supported": file_metadata.get('browser_audio_supported'),
@@ -4120,7 +4133,7 @@ def _probe_gdrive_media_metadata(fid):
         "ffprobe",
         "-v", "error",
         "-headers", ffprobe_headers,
-        "-show_entries", "format=duration:stream=index,codec_type,codec_name,profile,channels,channel_layout,duration:stream_tags=language,title:stream_disposition=default",
+        "-show_entries", "format=duration:stream=index,codec_type,codec_name,profile,channels,channel_layout,bit_rate,duration:stream_tags=language,title:stream_disposition=default",
         "-of", "json",
         media_url,
     ]
@@ -4163,11 +4176,16 @@ def _probe_gdrive_media_metadata(fid):
             }
 
         audio_codec = primary_audio.get('codec', '')
+        transcode_audio = _select_audio_stream_for_transcode(audio_streams, primary_audio)
         return {
             "audio_codec": audio_codec,
             "audio_codec_label": _format_audio_codec_label(primary_audio),
             "audio_channels": primary_audio.get('channels', 0),
             "audio_profile": primary_audio.get('profile', ''),
+            "audio_stream_index": primary_audio.get('index'),
+            "audio_transcode_stream_index": transcode_audio.get('index') if transcode_audio else primary_audio.get('index'),
+            "audio_transcode_codec": transcode_audio.get('codec', '') if transcode_audio else audio_codec,
+            "audio_transcode_codec_label": _format_audio_codec_label(transcode_audio) if transcode_audio else _format_audio_codec_label(primary_audio),
             "audio_probe_status": "ok",
             "audio_streams": audio_streams,
             "browser_audio_supported": _is_browser_supported_audio_codec(audio_codec),
@@ -4182,6 +4200,10 @@ def _normalize_audio_stream_metadata(stream):
         channels = int(stream.get('channels') or 0)
     except (TypeError, ValueError):
         channels = 0
+    try:
+        bit_rate = int(stream.get('bit_rate') or 0)
+    except (TypeError, ValueError):
+        bit_rate = 0
     tags = stream.get('tags') or {}
     disposition = stream.get('disposition') or {}
     return {
@@ -4190,11 +4212,72 @@ def _normalize_audio_stream_metadata(stream):
         "profile": str(stream.get('profile') or ''),
         "channels": channels,
         "channel_layout": str(stream.get('channel_layout') or ''),
+        "bit_rate": bit_rate,
         "language": str(tags.get('language') or ''),
         "title": str(tags.get('title') or ''),
         "default": bool(disposition.get('default')),
         "browser_supported": _is_browser_supported_audio_codec(codec),
     }
+
+def _select_audio_stream_for_transcode(audio_streams, primary_audio=None):
+    if not audio_streams:
+        return None
+
+    primary_audio = primary_audio or next((stream for stream in audio_streams if stream.get('default')), None) or audio_streams[0]
+    primary_codec = str(primary_audio.get('codec') or '').lower()
+    if primary_codec not in _audio_transcode_expensive_codecs:
+        return primary_audio
+
+    candidates = [
+        stream for stream in audio_streams
+        if stream is not primary_audio and _is_lighter_transcode_audio_candidate(stream, primary_audio)
+    ]
+    if not candidates:
+        return primary_audio
+    return min(candidates, key=_audio_transcode_stream_score)
+
+def _is_lighter_transcode_audio_candidate(stream, primary_audio):
+    codec = str(stream.get('codec') or '').lower()
+    if codec not in _audio_transcode_lighter_codecs:
+        return False
+    if _is_non_primary_audio_track(stream):
+        return False
+    if not _audio_languages_match(stream.get('language'), primary_audio.get('language')):
+        return False
+    return True
+
+def _audio_languages_match(candidate_language, primary_language):
+    candidate = _normalize_audio_language(candidate_language)
+    primary = _normalize_audio_language(primary_language)
+    if not primary:
+        return False
+    return candidate == primary
+
+def _normalize_audio_language(language):
+    normalized = str(language or '').strip().lower()
+    return '' if normalized in {'', 'und', 'unknown'} else normalized
+
+def _is_non_primary_audio_track(stream):
+    text = f"{stream.get('title') or ''} {stream.get('language') or ''}".lower()
+    return any(term in text for term in _audio_transcode_non_primary_terms)
+
+def _audio_transcode_stream_score(stream):
+    codec = str(stream.get('codec') or '').lower()
+    codec_scores = {
+        "aac": 0,
+        "mp3": 1,
+        "mp2": 1,
+        "opus": 1,
+        "vorbis": 1,
+        "ac3": 2,
+        "eac3": 3,
+    }
+    return (
+        codec_scores.get(codec, 10),
+        int(stream.get('channels') or 0) or 99,
+        int(stream.get('bit_rate') or 0) or 999999999,
+        int(stream.get('index') or 0),
+    )
 
 def _is_browser_supported_audio_codec(codec):
     return str(codec or '').lower() in _browser_supported_audio_codecs
@@ -4265,6 +4348,93 @@ def _get_gdrive_stream_http_session():
         session.headers.update({"User-Agent": "Mutflix/1.0"})
         _gdrive_stream_http_local.session = session
     return session
+
+def _get_gdrive_audio_transcode_stream_map(fid):
+    metadata = _get_gdrive_file_metadata(fid)
+    stream_index = metadata.get('audio_transcode_stream_index')
+    if stream_index is None:
+        audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
+        primary_index = metadata.get('audio_stream_index')
+        primary_audio = next((stream for stream in audio_streams if stream.get('index') == primary_index), None)
+        primary_audio = primary_audio or next((stream for stream in audio_streams if stream.get('default')), None)
+        selected_audio = _select_audio_stream_for_transcode(audio_streams, primary_audio)
+        stream_index = selected_audio.get('index') if selected_audio else None
+
+    try:
+        return f"0:{int(stream_index)}?"
+    except (TypeError, ValueError):
+        return "0:a:0?"
+
+def _terminate_audio_transcode_process(process):
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=1)
+        except Exception:
+            pass
+
+def _stream_audio_transcode_process(process):
+    output_queue = queue.Queue(maxsize=AUDIO_TRANSCODE_BUFFER_CHUNKS)
+    stop_event = threading.Event()
+    sentinel = object()
+    release_lock = threading.Lock()
+    released = False
+
+    def release_slot_once():
+        nonlocal released
+        with release_lock:
+            if released:
+                return
+            released = True
+        _audio_transcode_slots.release()
+
+    def put_until_delivered(item):
+        while not stop_event.is_set():
+            try:
+                output_queue.put(item, timeout=0.25)
+                return True
+            except queue.Full:
+                pass
+        return False
+
+    def read_stdout_ahead():
+        try:
+            while not stop_event.is_set():
+                chunk = process.stdout.read(AUDIO_TRANSCODE_CHUNK_BYTES)
+                if not chunk:
+                    break
+                if not put_until_delivered(chunk):
+                    break
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+            _terminate_audio_transcode_process(process)
+            release_slot_once()
+            put_until_delivered(sentinel)
+
+    threading.Thread(
+        target=read_stdout_ahead,
+        name=f"audio-transcode-buffer-{process.pid}",
+        daemon=True,
+    ).start()
+
+    try:
+        while True:
+            chunk = output_queue.get()
+            if chunk is sentinel:
+                break
+            yield chunk
+    finally:
+        stop_event.set()
+        _terminate_audio_transcode_process(process)
+        release_slot_once()
 
 
 def _proxy_gdrive_media(fid):
@@ -4358,11 +4528,18 @@ def gdrive_audio_transcode(fid):
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
     start_seconds = _clamp_audio_transcode_start(request.args.get('start_seconds'))
+    audio_stream_map = _get_gdrive_audio_transcode_stream_map(fid)
     command = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
         "-nostdin",
+        "-reconnect", "1",
+        "-reconnect_streamed", "1",
+        "-reconnect_on_network_error", "1",
+        "-reconnect_on_http_error", "429,500,502,503,504",
+        "-reconnect_delay_max", "2",
+        "-rw_timeout", str(AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS),
         "-headers", ffmpeg_headers,
     ]
     if start_seconds > 0:
@@ -4372,14 +4549,19 @@ def gdrive_audio_transcode(fid):
     command.extend([
         "-i", media_url,
         "-map", "0:v:0?",
-        "-map", "0:a:0?",
+        "-map", audio_stream_map,
         "-sn",
         "-dn",
         "-c:v", "copy",
         "-c:a", "aac",
+    ])
+    if AUDIO_TRANSCODE_AAC_CODER:
+        command.extend(["-aac_coder", AUDIO_TRANSCODE_AAC_CODER])
+    command.extend([
         "-ac", "2",
         "-b:a", AUDIO_TRANSCODE_AUDIO_BITRATE,
         "-avoid_negative_ts", "make_zero",
+        "-flush_packets", "1",
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4",
         "pipe:1",
@@ -4395,35 +4577,16 @@ def gdrive_audio_transcode(fid):
         _audio_transcode_slots.release()
         return jsonify({"error": "Failed to start audio transcoder"}), 500
 
-    def generate():
-        try:
-            while True:
-                chunk = process.stdout.read(1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            try:
-                process.stdout.close()
-            except Exception:
-                pass
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            _audio_transcode_slots.release()
-
     return Response(
-        stream_with_context(generate()),
+        stream_with_context(_stream_audio_transcode_process(process)),
         headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Expose-Headers": "Content-Type",
+            "Access-Control-Expose-Headers": "Content-Type, X-Mutflix-Audio-Buffer",
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Content-Type": "video/mp4",
             "X-Accel-Buffering": "no",
+            "X-Mutflix-Audio-Buffer": str(AUDIO_TRANSCODE_BUFFER_BYTES),
         },
         direct_passthrough=True,
     )
