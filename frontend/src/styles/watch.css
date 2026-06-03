@@ -21,6 +21,17 @@
   object-fit: contain;
 }
 
+.watch-held-frame {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  pointer-events: none;
+}
+
 .watch-subtitles {
   position: absolute;
   right: clamp(16px, 6vw, 92px);

@@ -83,6 +83,8 @@ function WatchPage({
   const pendingAudioTranscodeOffsetRef = useRef(0)
   const pendingAudioTranscodeTargetRef = useRef(null)
   const pendingAudioTranscodeAutoplayRef = useRef(null)
+  const seekPreviewTimeoutRef = useRef(null)
+  const isSeekBarActiveRef = useRef(false)
   const embeddedSubtitleTracksRef = useRef([])
   const embeddedSubtitleTrackUrlRef = useRef('')
   const embeddedSubtitleWindowRequestsRef = useRef(new Set())
@@ -117,6 +119,8 @@ function WatchPage({
   const [selectedSubtitleId, setSelectedSubtitleId] = useState('')
   const [isSubtitlePanelOpen, setIsSubtitlePanelOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
+  const [seekPreviewTime, setSeekPreviewTime] = useState(null)
+  const [heldFrameUrl, setHeldFrameUrl] = useState('')
   const [playerError, setPlayerError] = useState('')
 
   const queue = useMemo(() => videos?.length ? videos : [video], [video, videos])
@@ -149,6 +153,10 @@ function WatchPage({
     (markers.outroStartSeconds > 0 && currentTime >= duration - markers.outroStartSeconds)
     || currentTime >= duration - 2
   )
+  const isAudioTranscodeStream = Boolean(
+    streamUrl && audioTranscodeBaseUrlRef.current && streamUrl.startsWith(audioTranscodeBaseUrlRef.current),
+  )
+  const visiblePlaybackTime = seekPreviewTime ?? currentTime
   const activeSubtitleCues = useMemo(
     () => isCaptionsEnabled
       ? subtitleCues.filter((cue) => (
@@ -298,6 +306,22 @@ function WatchPage({
     audioTranscodeStartRequestRef.current = { controller: null, id: request.id + 1 }
   }, [])
 
+  const holdCurrentFrame = useCallback(() => {
+    const snapshotUrl = captureVideoFrame(playerRef.current)
+    if (snapshotUrl) setHeldFrameUrl(snapshotUrl)
+  }, [])
+
+  const clearHeldFrame = useCallback(() => {
+    setHeldFrameUrl('')
+  }, [])
+
+  const clearSeekPreview = useCallback(() => {
+    window.clearTimeout(seekPreviewTimeoutRef.current)
+    seekPreviewTimeoutRef.current = null
+    isSeekBarActiveRef.current = false
+    setSeekPreviewTime(null)
+  }, [])
+
   const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, immediate = false } = {}) => {
     const audioTranscodeUrl = audioTranscodeBaseUrlRef.current
     if (!audioTranscodeUrl) return false
@@ -311,6 +335,7 @@ function WatchPage({
     pendingAudioTranscodeAutoplayRef.current = autoplay
       ?? pendingAudioTranscodeAutoplayRef.current
       ?? !player?.paused
+    holdCurrentFrame()
     player?.pause()
     cancelAudioTranscodeStartRequest()
     const requestId = audioTranscodeStartRequestRef.current.id
@@ -318,12 +343,14 @@ function WatchPage({
     audioTranscodeStartRequestRef.current = { controller, id: requestId }
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = boundedTarget
+    isSeekBarActiveRef.current = false
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
     restoredPositionRef.current = true
     clearStreamStallTimeout()
     setPlayerError('')
+    setSeekPreviewTime(boundedTarget)
     setCurrentTime(boundedTarget)
     setIsBuffering(true)
     const resolveStreamStart = () => {
@@ -345,7 +372,7 @@ function WatchPage({
       audioTranscodeStartTimeoutRef.current = window.setTimeout(resolveStreamStart, AUDIO_TRANSCODE_SEEK_DEBOUNCE_MS)
     }
     return true
-  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout])
+  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame])
 
   const seekToPlaybackTime = useCallback((targetSeconds) => {
     const player = playerRef.current
@@ -388,11 +415,12 @@ function WatchPage({
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     restoredPositionRef.current = false
+    holdCurrentFrame()
     setPlayerError('')
     setIsBuffering(true)
     setStreamUrl(fallbackUrl)
     return true
-  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, streamUrl])
+  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame, streamUrl])
 
   const armStreamStallFallback = useCallback((delayMs = STREAM_STALL_FALLBACK_DELAY_MS) => {
     clearStreamStallTimeout()
@@ -425,11 +453,12 @@ function WatchPage({
 
     setCurrentTime(getPlaybackPosition(player, audioTranscodeOffsetRef.current))
     setIsBuffering(!player.paused && player.readyState < HTMLMediaElement.HAVE_FUTURE_DATA)
+    if (!Number.isFinite(pendingAudioTranscodeTargetRef.current)) clearSeekPreview()
     if (pendingInitialSeekRef.current) {
       pendingInitialSeekRef.current = false
       player.play().catch(() => setShowControls(true))
     }
-  }, [clearStreamStallTimeout])
+  }, [clearSeekPreview, clearStreamStallTimeout])
 
   const handlePlaying = useCallback(() => {
     clearStreamStallTimeout()
@@ -438,14 +467,18 @@ function WatchPage({
     requestedSeekPositionRef.current = null
     pendingAudioTranscodeTargetRef.current = null
     pendingAudioTranscodeAutoplayRef.current = null
+    clearSeekPreview()
+    clearHeldFrame()
     setIsBuffering(false)
-  }, [clearStreamStallTimeout])
+  }, [clearHeldFrame, clearSeekPreview, clearStreamStallTimeout])
 
   useEffect(() => {
     progressContextRef.current = { item, profileId, video }
   }, [item, profileId, video])
 
   useEffect(() => clearStreamStallTimeout, [clearStreamStallTimeout])
+
+  useEffect(() => () => window.clearTimeout(seekPreviewTimeoutRef.current), [])
 
   useEffect(() => {
     writeSubtitleSettings(subtitleSettings)
@@ -475,6 +508,8 @@ function WatchPage({
       if (!ignore) {
         setStreamUrl('')
         setNeedsAudioTranscode(false)
+        clearHeldFrame()
+        clearSeekPreview()
         setSubtitleCues([])
         setSubtitleUrl('')
         setEmbeddedSubtitleTracks([])
@@ -560,7 +595,7 @@ function WatchPage({
       cancelAudioTranscodeStartRequest()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, cancelAudioTranscodeStartRequest, clearStreamStallTimeout, markerFolderName, restartAudioTranscodeAt, selectSubtitleTrack, subtitlePath, videoName, videoOriginalName, videoPath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, markerFolderName, restartAudioTranscodeAt, selectSubtitleTrack, subtitlePath, videoName, videoOriginalName, videoPath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -717,7 +752,7 @@ function WatchPage({
       fallbackPositionRef.current = null
       restoredPositionRef.current = true
     }
-    setIsBuffering(false)
+    if (!heldFrameUrl) setIsBuffering(false)
     setTextTracksHidden(player)
     const shouldAutoplay = pendingAudioTranscodeAutoplayRef.current
     if (shouldAutoplay !== false) player.play().catch(() => setShowControls(true))
@@ -726,13 +761,67 @@ function WatchPage({
   function handleTimeUpdate() {
     const player = playerRef.current
     if (!player) return
+    const playbackDuration = getPlaybackDuration(player.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current)
+    setDuration(playbackDuration)
+
+    const pendingTranscodeTarget = pendingAudioTranscodeTargetRef.current
+    if (Number.isFinite(pendingTranscodeTarget)) {
+      setCurrentTime(pendingTranscodeTarget)
+      return
+    }
+    if (isSeekBarActiveRef.current || Number.isFinite(seekPreviewTime)) {
+      return
+    }
+
     setCurrentTime(getPlaybackPosition(player, audioTranscodeOffsetRef.current))
-    setDuration(getPlaybackDuration(player.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current))
     persistProgress()
   }
 
+  function handleSeekInput(event) {
+    const targetSeconds = clampPlaybackSeekTime(event.target.value, duration)
+    window.clearTimeout(seekPreviewTimeoutRef.current)
+    setSeekPreviewTime(targetSeconds)
+    setCurrentTime(targetSeconds)
+  }
+
   function handleSeek(event) {
-    seekToPlaybackTime(Number(event.target.value))
+    if (isSeekBarActiveRef.current) {
+      handleSeekInput(event)
+      return
+    }
+    commitSeekBarTime(event.target.value)
+  }
+
+  function handleSeekPointerDown(event) {
+    isSeekBarActiveRef.current = true
+    setSeekPreviewTime(clampPlaybackSeekTime(event.currentTarget.value, duration))
+  }
+
+  function handleSeekPointerUp(event) {
+    commitSeekBarTime(event.currentTarget.value)
+  }
+
+  function handleSeekPointerCancel() {
+    isSeekBarActiveRef.current = false
+    if (!Number.isFinite(pendingAudioTranscodeTargetRef.current)) {
+      seekPreviewTimeoutRef.current = window.setTimeout(() => setSeekPreviewTime(null), 250)
+    }
+  }
+
+  function commitSeekBarTime(value) {
+    const targetSeconds = clampPlaybackSeekTime(value, duration)
+    isSeekBarActiveRef.current = false
+    window.clearTimeout(seekPreviewTimeoutRef.current)
+    setSeekPreviewTime(targetSeconds)
+    setCurrentTime(targetSeconds)
+    if (!seekToPlaybackTime(targetSeconds)) {
+      seekPreviewTimeoutRef.current = window.setTimeout(() => setSeekPreviewTime(null), 250)
+      return
+    }
+    revealControls()
+    if (!audioTranscodeBaseUrlRef.current) {
+      seekPreviewTimeoutRef.current = window.setTimeout(() => setSeekPreviewTime(null), 250)
+    }
   }
 
   function handleVolume(event) {
@@ -805,15 +894,22 @@ function WatchPage({
     >
       <video
         className="watch-video"
+        crossOrigin={isAudioTranscodeStream ? 'anonymous' : undefined}
         onClick={toggleControls}
         onEnded={() => {
+          clearHeldFrame()
           setIsPlaying(false)
           persistProgress({ complete: true, force: true })
           setShowControls(true)
         }}
         onError={() => {
+          clearHeldFrame()
           if (switchToFallbackStream()) return
           if (streamUrl) setPlayerError('The browser could not play this video format.')
+          setIsBuffering(false)
+        }}
+        onLoadedData={() => {
+          clearHeldFrame()
           setIsBuffering(false)
         }}
         onLoadedMetadata={handleLoadedMetadata}
@@ -846,6 +942,10 @@ function WatchPage({
           />
         )}
       </video>
+
+      {heldFrameUrl && isBuffering && !playerError && (
+        <img alt="" aria-hidden="true" className="watch-held-frame" src={heldFrameUrl} />
+      )}
 
       {activeSubtitleCues.length > 0 && (
         <div
@@ -1041,9 +1141,13 @@ function WatchPage({
           max={duration || 0}
           min="0"
           onChange={handleSeek}
+          onInput={handleSeekInput}
+          onPointerCancel={handleSeekPointerCancel}
+          onPointerDown={handleSeekPointerDown}
+          onPointerUp={handleSeekPointerUp}
           step="0.1"
           type="range"
-          value={Math.min(currentTime, duration || 0)}
+          value={Math.min(visiblePlaybackTime, duration || 0)}
         />
         <div className="watch-controls-row">
           <div className="watch-controls-group">
@@ -1069,7 +1173,7 @@ function WatchPage({
               type="range"
               value={isMuted ? 0 : volume}
             />
-            <span className="watch-time">{formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}</span>
+            <span className="watch-time">{formatPlaybackTime(visiblePlaybackTime)} / {formatPlaybackTime(duration)}</span>
           </div>
           <div className="watch-controls-group">
             <button
@@ -1150,6 +1254,16 @@ function formatPlaybackTime(seconds) {
   return segments.map((segment) => String(segment).padStart(2, '0')).join(':')
 }
 
+function clampPlaybackSeekTime(seconds, duration = 0) {
+  const numericSeconds = Number(seconds)
+  if (!Number.isFinite(numericSeconds)) return 0
+  const maxDuration = Number(duration)
+  const upperBound = Number.isFinite(maxDuration) && maxDuration > 0
+    ? Math.max(0, maxDuration - 0.1)
+    : Number.MAX_SAFE_INTEGER
+  return Math.min(upperBound, Math.max(0, numericSeconds))
+}
+
 function getPlaybackDuration(playerDuration, sourceDuration, sourceOffset = 0) {
   const numericPlayerDuration = Number(playerDuration)
   const durations = [Number(sourceDuration)]
@@ -1163,6 +1277,26 @@ function getPlaybackDuration(playerDuration, sourceDuration, sourceOffset = 0) {
 function getPlaybackPosition(player, sourceOffset = 0) {
   const playerTime = Number(player?.currentTime)
   return Math.max(0, (Number.isFinite(playerTime) ? playerTime : 0) + (Number(sourceOffset) || 0))
+}
+
+function captureVideoFrame(player) {
+  const videoWidth = Number(player?.videoWidth) || 0
+  const videoHeight = Number(player?.videoHeight) || 0
+  if (!player || player.readyState < 2 || videoWidth <= 0 || videoHeight <= 0) return ''
+
+  const scale = Math.min(1, 1280 / videoWidth, 720 / videoHeight)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(videoWidth * scale))
+  canvas.height = Math.max(1, Math.round(videoHeight * scale))
+
+  try {
+    const context = canvas.getContext('2d')
+    if (!context) return ''
+    context.drawImage(player, 0, 0, canvas.width, canvas.height)
+    return canvas.toDataURL('image/jpeg', 0.82)
+  } catch {
+    return ''
+  }
 }
 
 function clampSubtitleDelay(seconds) {

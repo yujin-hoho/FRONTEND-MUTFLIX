@@ -230,12 +230,14 @@ AUDIO_TRANSCODE_SLOT_WAIT_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCO
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
 AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
+AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '60')))
 EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS = max(300, int(os.environ.get('EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS', str(7 * 24 * 60 * 60))))
 EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS', '300')))
 EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS', '300')))
 EMBEDDED_SUBTITLE_MAX_CONCURRENT = max(1, int(os.environ.get('EMBEDDED_SUBTITLE_MAX_CONCURRENT', '2')))
 EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS = max(2, int(os.environ.get('EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS', '6')))
 EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS = max(10, int(os.environ.get('EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS', '120')))
+EMBEDDED_SUBTITLE_VTT_CACHE_VERSION = 'v4'
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
@@ -4360,7 +4362,7 @@ def _resolve_gdrive_audio_transcode_start(fid, requested_start):
     if requested_start <= 0 or not shutil.which("ffprobe"):
         return requested_start
 
-    cache_key = f"audio_transcode_keyframe_v1_{fid}_{requested_start:g}"
+    cache_key = f"audio_transcode_keyframe_v2_{fid}_{requested_start:g}"
     cached_start = disk_cache.get(cache_key)
     if cached_start is not None:
         return float(cached_start)
@@ -4371,11 +4373,13 @@ def _resolve_gdrive_audio_transcode_start(fid, requested_start):
 
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    probe_start = max(0, requested_start - AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS)
+    probe_duration = max(0.1, requested_start - probe_start + 0.1)
     command = [
         "ffprobe",
         "-v", "error",
         "-headers", ffprobe_headers,
-        "-read_intervals", f"{requested_start}%+0.1",
+        "-read_intervals", f"{probe_start:g}%+{probe_duration:g}",
         "-select_streams", "v:0",
         "-skip_frame", "nokey",
         "-show_entries", "frame=best_effort_timestamp_time",
@@ -4441,14 +4445,14 @@ def serve_gdrive_embedded_subtitle(fid, stream_index):
     cache_key = _embedded_subtitle_vtt_cache_key(fid, stream_index, start_seconds, duration_seconds)
     cached_content = disk_cache.get(cache_key)
     if cached_content:
-        return _embedded_subtitle_vtt_response(cached_content)
+        return _embedded_subtitle_vtt_response(cached_content, start_seconds, duration_seconds)
 
     if not acquire_lock(cache_key, timeout_seconds=EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS):
         deadline = time.time() + 15
         while time.time() < deadline:
             cached_content = disk_cache.get(cache_key)
             if cached_content:
-                return _embedded_subtitle_vtt_response(cached_content)
+                return _embedded_subtitle_vtt_response(cached_content, start_seconds, duration_seconds)
             time.sleep(0.2)
         return _embedded_subtitle_json_response({"error": "Subtitle extraction is already running"}, 503)
 
@@ -4492,7 +4496,7 @@ def serve_gdrive_embedded_subtitle(fid, stream_index):
             _embedded_subtitle_slots.release()
             release_lock(cache_key)
 
-    return _embedded_subtitle_vtt_stream_response(generate())
+    return _embedded_subtitle_vtt_stream_response(generate(), start_seconds, duration_seconds)
 
 def _probe_gdrive_embedded_subtitles(fid):
     cache_key = f"embedded_subtitle_tracks_v2_{fid}"
@@ -4625,11 +4629,12 @@ def _start_gdrive_embedded_subtitle_extract(fid, stream_index, *, start_seconds=
     ]
     if start_seconds > 0:
         command.extend(["-ss", str(start_seconds)])
+    command.extend(["-copyts", "-start_at_zero"])
     command.extend([
         "-i", media_url,
     ])
     if duration_seconds > 0:
-        command.extend(["-t", str(duration_seconds)])
+        command.extend(["-to", str(start_seconds + duration_seconds)])
     command.extend([
         "-map", f"0:{stream_index}",
         "-vn",
@@ -4658,7 +4663,7 @@ def _clamp_embedded_subtitle_time(value, *, default, maximum):
     return round(min(maximum, max(0, numeric_value)), 3)
 
 def _embedded_subtitle_vtt_cache_key(fid, stream_index, start_seconds=0, duration_seconds=0):
-    return f"embedded_subtitle_vtt_v2_{fid}_{stream_index}_{start_seconds:g}_{duration_seconds:g}"
+    return f"embedded_subtitle_vtt_{EMBEDDED_SUBTITLE_VTT_CACHE_VERSION}_{fid}_{stream_index}_{start_seconds:g}_{duration_seconds:g}"
 
 def _embedded_subtitle_json_response(payload, status=200):
     response = orjson_jsonify(payload, status)
@@ -4666,17 +4671,28 @@ def _embedded_subtitle_json_response(payload, status=200):
     response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     return response
 
-def _embedded_subtitle_vtt_response(content):
+def _embedded_subtitle_timing_headers(start_seconds=0, duration_seconds=0):
+    return {
+        "Access-Control-Expose-Headers": "X-Mutflix-Subtitle-Timeline, X-Mutflix-Subtitle-Cue-Offset, X-Mutflix-Subtitle-Window-Duration, X-Mutflix-Subtitle-Cache-Version",
+        "X-Mutflix-Subtitle-Cache-Version": EMBEDDED_SUBTITLE_VTT_CACHE_VERSION,
+        "X-Mutflix-Subtitle-Cue-Offset": "0",
+        "X-Mutflix-Subtitle-Timeline": "absolute",
+        "X-Mutflix-Subtitle-Window-Duration": f"{float(duration_seconds):g}",
+    }
+
+def _embedded_subtitle_vtt_response(content, start_seconds=0, duration_seconds=0):
     response = Response(content, mimetype='text/vtt')
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Cache-Control'] = 'public, max-age=86400'
+    response.headers.update(_embedded_subtitle_timing_headers(start_seconds, duration_seconds))
     return response
 
-def _embedded_subtitle_vtt_stream_response(content):
+def _embedded_subtitle_vtt_stream_response(content, start_seconds=0, duration_seconds=0):
     return Response(
         stream_with_context(content),
         headers={
             "Access-Control-Allow-Origin": "*",
+            **_embedded_subtitle_timing_headers(start_seconds, duration_seconds),
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Content-Type": "text/vtt; charset=utf-8",
             "X-Accel-Buffering": "no",

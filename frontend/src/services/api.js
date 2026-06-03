@@ -10,6 +10,8 @@ import {
   getPosterUrl,
 } from '../utils/media'
 
+const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v4'
+
 export function createEmptyCredits() {
   return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
 }
@@ -243,7 +245,7 @@ export async function fetchEmbeddedSubtitleTracks(embeddedSubtitlesUrl) {
     const data = await response.json().catch(() => ({}))
     if (!response.ok) return []
 
-    const tracks = Array.isArray(data.tracks) ? data.tracks : []
+    const tracks = (Array.isArray(data.tracks) ? data.tracks : [])
       .filter((track) => track.url)
       .map((track) => ({ ...track, url: resolveApiPath(track.url) }))
     if (tracks.length) return tracks
@@ -259,23 +261,30 @@ export async function fetchEmbeddedSubtitleWindow(subtitleTrackUrl, startSeconds
   const subtitleUrl = new URL(subtitleTrackUrl, window.location.origin)
   subtitleUrl.searchParams.set('start_seconds', String(startSeconds))
   subtitleUrl.searchParams.set('duration_seconds', String(durationSeconds))
+  subtitleUrl.searchParams.set('subtitle_cache_v', EMBEDDED_SUBTITLE_CACHE_VERSION)
   return fetchProgressiveSubtitleTrack(subtitleUrl.toString(), {
     createObjectUrl: false,
+    cueOffsetMode: 'response-header',
     cueOffsetSeconds: startSeconds,
     onCues,
   })
 }
 
-async function fetchProgressiveSubtitleTrack(subtitlePath, { createObjectUrl = true, cueOffsetSeconds = 0, onCues } = {}) {
+async function fetchProgressiveSubtitleTrack(
+  subtitlePath,
+  { createObjectUrl = true, cueOffsetMode = 'always', cueOffsetSeconds = 0, onCues } = {},
+) {
   const response = await fetch(subtitlePath)
   if (!response.ok) return { cues: [], url: '' }
+  const resolvedCueOffsetSeconds = getSubtitleCueOffset(response, cueOffsetSeconds, cueOffsetMode)
   if (!response.body) {
-    const track = await fetchSubtitleTrack(subtitlePath)
-    if (!createObjectUrl && track.url) URL.revokeObjectURL(track.url)
+    const subtitleText = decodeSubtitleText(await response.arrayBuffer())
+    const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
+    const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), resolvedCueOffsetSeconds)
+    if (!cues.length) return { cues: [], url: '' }
     return {
-      ...track,
-      cues: offsetSubtitleCues(track.cues, cueOffsetSeconds),
-      url: createObjectUrl ? track.url : '',
+      cues,
+      url: createObjectUrl ? URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })) : '',
     }
   }
 
@@ -289,14 +298,14 @@ async function fetchProgressiveSubtitleTrack(subtitlePath, { createObjectUrl = t
     subtitleText += decoder.decode(value, { stream: true })
     const cues = offsetSubtitleCues(
       parseSubtitleCues(normalizeSubtitleToWebVtt(subtitleText, subtitlePath)),
-      cueOffsetSeconds,
+      resolvedCueOffsetSeconds,
     )
     if (cues.length) onCues?.(cues)
   }
 
   subtitleText += decoder.decode()
   const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
-  const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), cueOffsetSeconds)
+  const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), resolvedCueOffsetSeconds)
   if (!cues.length) return { cues: [], url: '' }
   onCues?.(cues)
   return {
@@ -312,6 +321,19 @@ function offsetSubtitleCues(cues, offsetSeconds) {
     endTime: cue.endTime + offsetSeconds,
     startTime: cue.startTime + offsetSeconds,
   }))
+}
+
+function getSubtitleCueOffset(response, fallbackOffsetSeconds, mode) {
+  const fallbackOffset = Number(fallbackOffsetSeconds) || 0
+  if (!fallbackOffset) return 0
+  if (mode !== 'response-header') return fallbackOffset
+
+  const timeline = String(response.headers.get('X-Mutflix-Subtitle-Timeline') || '').toLowerCase()
+  if (timeline === 'absolute') return 0
+
+  const headerOffset = Number(response.headers.get('X-Mutflix-Subtitle-Cue-Offset'))
+  if (timeline === 'relative' && Number.isFinite(headerOffset)) return headerOffset
+  return fallbackOffset
 }
 
 function decodeSubtitleText(subtitleBytes) {
