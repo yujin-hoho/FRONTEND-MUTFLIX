@@ -36,7 +36,7 @@ export function writeDashboardCache(profileId, { history, movies, series }) {
     const nextCache = Object.fromEntries(entries)
     nextCache[profileId] = {
       cachedAt: Date.now(),
-      history: normalizeWatchHistory(history).slice(0, 20),
+      history: normalizeWatchHistory(history).slice(0, 100),
       movies: movies.slice(0, MAX_CACHED_ITEMS_PER_TYPE),
       series: series.slice(0, MAX_CACHED_ITEMS_PER_TYPE),
     }

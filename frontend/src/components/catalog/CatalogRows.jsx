@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import LoadableImage from '../LoadableImage'
 import {
@@ -51,7 +51,7 @@ const CatalogCard = memo(function CatalogCard({ item, onOpenDetail, rank }) {
   )
 })
 
-export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
+export const HistoryRow = memo(function HistoryRow({ items, onHide, onPlay }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return null
@@ -66,16 +66,32 @@ export const HistoryRow = memo(function HistoryRow({ items, onPlay }) {
       </div>
       <DraggableScroller className="catalog-scroller history-scroller" variant="history">
         {(showAll ? items : items.slice(0, 15)).map((item) => (
-          <button className="catalog-card history-card" key={item.media_path} onClick={() => onPlay(item)} type="button">
-            <div className="history-frame">
-              <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} fallbackSrc={getPosterFallbackUrl(item)} key={getStillUrl(item)} src={getStillUrl(item)} />
-              <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
-              <span className="history-progress-track">
-                <span style={{ width: `${getWatchProgress(item)}%` }} />
-              </span>
-            </div>
-            <h3>{getEpisodeHistoryLabel(item)}</h3>
-          </button>
+          <article className="catalog-card history-card" key={item.media_path}>
+            <button className="history-play-surface" onClick={() => onPlay(item)} type="button">
+              <div className="history-frame">
+                <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} fallbackSrc={getPosterFallbackUrl(item)} key={getStillUrl(item)} src={getStillUrl(item)} />
+                <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
+                <span className="history-progress-track">
+                  <span style={{ width: `${getWatchProgress(item)}%` }} />
+                </span>
+              </div>
+              <h3>{getEpisodeHistoryLabel(item)}</h3>
+            </button>
+            {onHide && (
+              <button
+                aria-label="Remove from Continue Watching"
+                className="history-hide-button"
+                onClick={(event) => {
+                  event.stopPropagation()
+                  onHide(item)
+                }}
+                title="Remove from Continue Watching"
+                type="button"
+              >
+                <X size={16} strokeWidth={3} />
+              </button>
+            )}
+          </article>
         ))}
       </DraggableScroller>
     </section>

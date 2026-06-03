@@ -93,7 +93,7 @@ export async function editProfile(authToken, profile) {
 export async function fetchDashboardData(authToken, profileId) {
   const headers = { 'x-access-token': authToken }
   const [historyResponse, catalogResponse] = await Promise.all([
-    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?active_only=true&limit=20`, { headers }),
+    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?active_only=true&include_hidden=true&limit=100`, { headers }),
     fetch(`${API_BASE_URL}/api/folders`, { headers }),
   ])
   const historyData = await historyResponse.json().catch(() => [])
@@ -580,6 +580,21 @@ export async function saveWatchProgress(authToken, payload) {
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to save watch progress.')
+  return normalizedPayload
+}
+
+export async function hideWatchHistory(authToken, payload) {
+  const normalizedPayload = { ...payload, media_path: normalizeMediaPath(payload.media_path) }
+  const response = await fetch(`${API_BASE_URL}/api/history/hide`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-token': authToken,
+    },
+    body: JSON.stringify(normalizedPayload),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to hide watch history.')
   return normalizedPayload
 }
 

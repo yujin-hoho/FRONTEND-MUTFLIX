@@ -21,6 +21,7 @@ import {
   fetchDetailData,
   fetchProfiles,
   fetchVideoQueue,
+  hideWatchHistory,
   mergeCatalogMetadataUpdates,
   saveWatchProgress,
 } from './services/api'
@@ -268,6 +269,41 @@ function App() {
       return { ...currentData, watchHistory }
     })
     await saveWatchProgress(authToken, payload)
+  }, [authToken, selectedProfile])
+
+  const handleHideHistory = useCallback(async (historyEntry) => {
+    if (!selectedProfile || !historyEntry?.media_path) return
+
+    const payload = {
+      media_path: historyEntry.media_path,
+      profile_id: selectedProfile.id,
+    }
+    let previousHistory = []
+    setProfileData((currentData) => {
+      previousHistory = currentData.watchHistory
+      const watchHistory = hideHistoryEntry(currentData.watchHistory, historyEntry)
+      const currentCatalog = catalogDataRef.current
+      writeDashboardCache(selectedProfile.id, {
+        history: watchHistory,
+        movies: currentCatalog.movies,
+        series: currentCatalog.series,
+      })
+      return { ...currentData, watchHistory }
+    })
+
+    try {
+      await hideWatchHistory(authToken, payload)
+    } catch {
+      setProfileData((currentData) => {
+        const currentCatalog = catalogDataRef.current
+        writeDashboardCache(selectedProfile.id, {
+          history: previousHistory,
+          movies: currentCatalog.movies,
+          series: currentCatalog.series,
+        })
+        return { ...currentData, watchHistory: previousHistory }
+      })
+    }
   }, [authToken, selectedProfile])
 
   const handleSearchCatalog = useCallback((query, options) => (
@@ -651,6 +687,7 @@ function App() {
         onOpenCatalogFilter={handleOpenCatalogFilter}
         onOpenMyList={handleOpenMyList}
         onOpenDetail={handleOpenDetail}
+        onHideHistory={handleHideHistory}
         onPlayHistory={handleResumeHistory}
         onOpenSearch={handleOpenSearch}
         onSearchCatalog={handleSearchCatalog}
@@ -836,6 +873,17 @@ function mergeWatchHistory(history, payload) {
     },
     ...remainingHistory,
   ]).slice(0, 20)
+}
+
+function hideHistoryEntry(history, historyEntry) {
+  const mediaPath = normalizeMediaPath(historyEntry.media_path)
+  if (!mediaPath) return normalizeWatchHistory(history)
+
+  return normalizeWatchHistory(history).map((entry) => (
+    entry.media_path === mediaPath
+      ? { ...entry, is_hidden: 1 }
+      : entry
+  ))
 }
 
 function appendMissingCatalogItems(items, additions) {

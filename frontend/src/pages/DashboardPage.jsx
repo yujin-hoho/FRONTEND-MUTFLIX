@@ -25,6 +25,7 @@ function DashboardPage({
   onOpenCatalogFilter,
   onOpenMyList,
   onOpenDetail,
+  onHideHistory,
   onPlayHistory,
   onOpenSearch,
   onSearchCatalog,
@@ -117,7 +118,7 @@ function DashboardPage({
 
         {!catalogData.error && (
           <>
-            <HistoryRow items={profileData.watchHistory} onPlay={onPlayHistory} />
+            <HistoryRow items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onPlay={onPlayHistory} />
             {dashboardView.curatedRows.map((row) => (
               <CatalogRow items={row.items} key={row.genre} onOpenDetail={onOpenDetail} title={row.genre} />
             ))}
@@ -189,6 +190,12 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey) {
     featuredFallback: featuredItem ? getPosterFallbackUrl(featuredItem) : '',
     featuredItem,
   }
+}
+
+function getVisibleHistory(history) {
+  return (Array.isArray(history) ? history : [])
+    .filter((entry) => !Number(entry.is_hidden || 0))
+    .slice(0, 20)
 }
 
 export default DashboardPage

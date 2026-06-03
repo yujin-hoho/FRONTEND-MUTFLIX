@@ -545,6 +545,21 @@
   grid-auto-columns: clamp(210px, 24vw, 340px);
 }
 
+.history-card {
+  position: relative;
+}
+
+.history-play-surface {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
 .history-frame {
   position: relative;
   aspect-ratio: 16 / 9;
@@ -589,6 +604,44 @@
   height: 100%;
   display: block;
   object-fit: cover;
+}
+
+.history-hide-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid rgba(248, 250, 252, 0.18);
+  border-radius: 999px;
+  background: rgba(2, 6, 23, 0.78);
+  color: #f8fafc;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.92);
+  transition: background 150ms ease, opacity 150ms ease, transform 150ms ease;
+}
+
+.history-card:hover .history-hide-button,
+.history-hide-button:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.history-hide-button:hover,
+.history-hide-button:focus-visible {
+  background: rgba(220, 38, 38, 0.9);
+  outline: none;
+}
+
+@media (hover: none) {
+  .history-hide-button {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .poster-frame img,
