@@ -231,6 +231,8 @@ AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCO
 AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
 AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '60')))
+AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS', '1')))
+AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS', '0.35')))
 EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS = max(300, int(os.environ.get('EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS', str(7 * 24 * 60 * 60))))
 EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EMPTY_CACHE_TTL_SECONDS', '300')))
 EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS = max(30, int(os.environ.get('EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS', '300')))
@@ -4345,10 +4347,16 @@ def get_gdrive_audio_transcode_start(fid):
         return orjson_jsonify({"error": "Unauthorized stream"}, 401)
 
     requested_start = _clamp_audio_transcode_start(request.args.get('start_seconds'))
-    return orjson_jsonify({
+    timeline_offset_seconds, timeline_offset_source = _resolve_gdrive_audio_transcode_start_info(fid, requested_start)
+    response = orjson_jsonify({
         "stream_start_seconds": requested_start,
-        "timeline_offset_seconds": _resolve_gdrive_audio_transcode_start(fid, requested_start),
+        "timeline_offset_seconds": timeline_offset_seconds,
+        "timeline_offset_ready": timeline_offset_source in {"origin", "cache", "probe"},
+        "timeline_offset_source": timeline_offset_source,
     })
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return response
 
 def _clamp_audio_transcode_start(value):
     try:
@@ -4358,18 +4366,23 @@ def _clamp_audio_transcode_start(value):
     return round(min(24 * 60 * 60, max(0, numeric_value)), 3)
 
 def _resolve_gdrive_audio_transcode_start(fid, requested_start):
+    return _resolve_gdrive_audio_transcode_start_info(fid, requested_start)[0]
+
+def _resolve_gdrive_audio_transcode_start_info(fid, requested_start):
     """Resolve the keyframe FFmpeg will use for stream-copy video seeking."""
-    if requested_start <= 0 or not shutil.which("ffprobe"):
-        return requested_start
+    if requested_start <= 0:
+        return requested_start, "origin"
+    if not shutil.which("ffprobe"):
+        return requested_start, "ffprobe-unavailable"
 
     cache_key = f"audio_transcode_keyframe_v2_{fid}_{requested_start:g}"
     cached_start = disk_cache.get(cache_key)
     if cached_start is not None:
-        return float(cached_start)
+        return float(cached_start), "cache"
 
     token = _get_fresh_gdrive_token()
     if not token:
-        return requested_start
+        return requested_start, "token-unavailable"
 
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
@@ -4386,29 +4399,38 @@ def _resolve_gdrive_audio_transcode_start(fid, requested_start):
         "-of", "csv=p=0",
         media_url,
     ]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
-        )
-        timestamps = [
-            float(match.group(0))
-            for line in (result.stdout or '').splitlines()
-            if (match := re.search(r'-?\d+(?:\.\d+)?', line))
-        ]
-        valid_timestamps = [
-            timestamp
-            for timestamp in timestamps
-            if 0 <= timestamp <= requested_start
-        ]
-        resolved_start = max(valid_timestamps) if valid_timestamps else requested_start
-        disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
-        return resolved_start
-    except Exception:
-        return requested_start
+    last_error = None
+    for attempt in range(AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
+            )
+            timestamps = [
+                float(match.group(0))
+                for line in (result.stdout or '').splitlines()
+                if (match := re.search(r'-?\d+(?:\.\d+)?', line))
+            ]
+            valid_timestamps = [
+                timestamp
+                for timestamp in timestamps
+                if 0 <= timestamp <= requested_start
+            ]
+            if valid_timestamps:
+                resolved_start = max(valid_timestamps)
+                disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
+                return resolved_start, "probe"
+            last_error = "empty"
+        except Exception as exc:
+            last_error = exc.__class__.__name__
+
+        if attempt < AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS - 1 and AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS > 0:
+            time.sleep(AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS)
+
+    return requested_start, f"fallback-{last_error or 'unknown'}"
 
 @app.route("/api/gdrive-embedded-subtitles/<fid>")
 @rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-list', cors=True)

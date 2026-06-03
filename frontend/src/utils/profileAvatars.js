@@ -1,4 +1,4 @@
-const avatarModules = import.meta.glob('../../assets/Profile/**/*.{jpg,jpeg,png,webp}', {
+const avatarModules = import.meta.glob('../../assets/profile/**/*.{jpg,jpeg,png,webp}', {
   eager: true,
   import: 'default',
   query: '?url',
@@ -6,11 +6,11 @@ const avatarModules = import.meta.glob('../../assets/Profile/**/*.{jpg,jpeg,png,
 
 export const PROFILE_AVATAR_CATEGORIES = Object.entries(avatarModules)
   .reduce((categories, [modulePath, url]) => {
-    const match = modulePath.match(/\/Profile\/([^/]+)\/([^/]+)$/)
+    const match = modulePath.match(/\/profile\/([^/]+)\/([^/]+)$/)
     if (!match) return categories
 
     const [, category, fileName] = match
-    const seed = `Profile/${category}/${fileName}`
+    const seed = `profile/${category}/${fileName}`
     let categoryEntry = categories.find((entry) => entry.id === category)
     if (!categoryEntry) {
       categoryEntry = {

@@ -11,6 +11,7 @@ import {
 } from '../utils/media'
 
 const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v4'
+const AUDIO_TRANSCODE_START_RETRY_DELAYS_MS = [900]
 
 export function createEmptyCredits() {
   return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
@@ -185,18 +186,60 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
 export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeconds, { signal } = {}) {
   const requestedStart = Math.max(0, Number(startSeconds) || 0)
   if (!audioTranscodeStartUrl || requestedStart <= 0) {
-    return { streamStartSeconds: requestedStart, timelineOffsetSeconds: requestedStart }
+    return { streamStartSeconds: requestedStart, timelineOffsetReady: true, timelineOffsetSeconds: requestedStart }
   }
 
   const url = new URL(audioTranscodeStartUrl, window.location.origin)
   url.searchParams.set('start_seconds', String(requestedStart))
-  const response = await fetch(url, { signal })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the playback position.')
 
-  return {
-    streamStartSeconds: Math.max(0, Number(data.stream_start_seconds) || requestedStart),
-    timelineOffsetSeconds: Math.min(requestedStart, Math.max(0, Number(data.timeline_offset_seconds) || 0)),
+  const retryDelays = [0, ...AUDIO_TRANSCODE_START_RETRY_DELAYS_MS]
+  for (let attemptIndex = 0; attemptIndex < retryDelays.length; attemptIndex += 1) {
+    const retryDelayMs = retryDelays[attemptIndex]
+    if (retryDelayMs > 0) await waitForRetry(retryDelayMs, signal)
+
+    const response = await fetch(url, { cache: 'no-store', signal })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the playback position.')
+
+    const start = {
+      streamStartSeconds: Math.max(0, Number(data.stream_start_seconds) || requestedStart),
+      timelineOffsetReady: data.timeline_offset_ready !== false,
+      timelineOffsetSeconds: Math.min(requestedStart, Math.max(0, Number(data.timeline_offset_seconds) || 0)),
+      timelineOffsetSource: String(data.timeline_offset_source || ''),
+    }
+    if (start.timelineOffsetReady || attemptIndex === retryDelays.length - 1) {
+      return start
+    }
+  }
+
+  return { streamStartSeconds: requestedStart, timelineOffsetReady: false, timelineOffsetSeconds: requestedStart }
+}
+
+function waitForRetry(delayMs, signal) {
+  if (signal?.aborted) return Promise.reject(createAbortError())
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      signal?.removeEventListener('abort', handleAbort)
+      resolve()
+    }, delayMs)
+
+    function handleAbort() {
+      window.clearTimeout(timeoutId)
+      reject(createAbortError())
+    }
+
+    signal?.addEventListener('abort', handleAbort, { once: true })
+  })
+}
+
+function createAbortError() {
+  try {
+    return new DOMException('Aborted', 'AbortError')
+  } catch {
+    const error = new Error('Aborted')
+    error.name = 'AbortError'
+    return error
   }
 }
 
@@ -801,8 +844,22 @@ function resolveApiPath(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
 }
 
+const AUDIO_TAG_BOUNDARY = String.raw`(?:^|[.\s_[\]()-])`
+const AUDIO_TAG_END = String.raw`(?:[.\s_[\]()-]|$)`
+const AUDIO_CHANNEL_TAG = String.raw`(?:2[\s._-]*0|5[\s._-]*1|7[\s._-]*1|atmos)`
+const UNSUPPORTED_BROWSER_AUDIO_PATTERNS = [
+  new RegExp(`${AUDIO_TAG_BOUNDARY}e[\\s._-]*a[\\s._-]*c[\\s._-]*3${AUDIO_TAG_END}`, 'i'),
+  new RegExp(`${AUDIO_TAG_BOUNDARY}a[\\s._-]*c[\\s._-]*3${AUDIO_TAG_END}`, 'i'),
+  new RegExp(`${AUDIO_TAG_BOUNDARY}d[\\s._-]*d[\\s._-]*p(?:[\\s._-]*${AUDIO_CHANNEL_TAG})?${AUDIO_TAG_END}`, 'i'),
+  new RegExp(`${AUDIO_TAG_BOUNDARY}d[\\s._-]*d[\\s._-]*${AUDIO_CHANNEL_TAG}${AUDIO_TAG_END}`, 'i'),
+  new RegExp(`${AUDIO_TAG_BOUNDARY}dolby[\\s._-]+digital(?:[\\s._-]+plus)?${AUDIO_TAG_END}`, 'i'),
+  new RegExp(`${AUDIO_TAG_BOUNDARY}true[\\s._-]*hd${AUDIO_TAG_END}`, 'i'),
+  new RegExp(`${AUDIO_TAG_BOUNDARY}dts(?:[\\s._-]*(?:hd|x|ma))?${AUDIO_TAG_END}`, 'i'),
+]
+
 function hasUnsupportedBrowserAudio(fileName) {
-  return /(?:^|[.\s_-])(?:ddp(?:[.\s_-]?5(?:[.\s_-]?1)?)?|e-?ac-?3)(?:[.\s_-]|$)/i.test(String(fileName || ''))
+  const normalizedFileName = String(fileName || '')
+  return UNSUPPORTED_BROWSER_AUDIO_PATTERNS.some((pattern) => pattern.test(normalizedFileName))
 }
 
 function normalizeMyListItem(item) {
