@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '../config'
+import { getProfileAvatarUrlFromSeed } from './profileAvatars'
 
 export function createProfileId() {
   if (crypto.randomUUID) return crypto.randomUUID()
@@ -84,6 +85,9 @@ export function normalizeWatchHistory(history) {
 export function getProfileAvatarUrl(profile) {
   const avatarUrl = profile.avatar_url || profile.avatar || profile.image_url
   if (avatarUrl) return avatarUrl
+
+  const profileAvatarUrl = getProfileAvatarUrlFromSeed(profile.avatar_seed)
+  if (profileAvatarUrl) return profileAvatarUrl
 
   const seed = hashString(profile.avatar_seed || profile.id || profile.name || 'M')
   const hue = Math.abs(seed) % 360

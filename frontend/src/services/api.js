@@ -73,6 +73,22 @@ export async function addProfile(authToken, profile) {
   }
 }
 
+export async function editProfile(authToken, profile) {
+  const response = await fetch(`${API_BASE_URL}/api/profiles/edit`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-token': authToken,
+    },
+    body: JSON.stringify(profile),
+  })
+  const data = await response.json().catch(() => ({}))
+
+  if (!response.ok) {
+    throw new Error(data.message || data.error || 'Failed to update profile.')
+  }
+}
+
 export async function fetchDashboardData(authToken, profileId) {
   const headers = { 'x-access-token': authToken }
   const [historyResponse, catalogResponse] = await Promise.all([

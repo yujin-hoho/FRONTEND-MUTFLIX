@@ -14,6 +14,7 @@ import {
   addProfile,
   authenticate,
   createEmptyCredits,
+  editProfile,
   enrichCatalogMetadata,
   fetchCatalogSearch,
   fetchDashboardData,
@@ -48,6 +49,7 @@ import {
   preloadImages,
   rotateItems,
 } from './utils/media'
+import { DEFAULT_PROFILE_AVATAR_SEED } from './utils/profileAvatars'
 
 const EMPTY_DETAIL_DATA = {
   item: null,
@@ -82,7 +84,9 @@ function App() {
   const [isAddingProfile, setIsAddingProfile] = useState(false)
   const [profileMessage, setProfileMessage] = useState(null)
   const [showAddProfile, setShowAddProfile] = useState(false)
+  const [editingProfile, setEditingProfile] = useState(null)
   const [newProfileName, setNewProfileName] = useState('')
+  const [profileAvatarSeed, setProfileAvatarSeed] = useState(DEFAULT_PROFILE_AVATAR_SEED)
   const [profileData, setProfileData] = useState({
     watchHistory: [],
     isLoading: false,
@@ -298,6 +302,30 @@ function App() {
     setSelectedProfile(profile)
   }
 
+  function openAddProfile() {
+    setEditingProfile(null)
+    setNewProfileName('')
+    setProfileAvatarSeed(DEFAULT_PROFILE_AVATAR_SEED)
+    setProfileMessage(null)
+    setShowAddProfile(true)
+  }
+
+  function openEditProfile(profile) {
+    setEditingProfile(profile)
+    setNewProfileName(profile.name || '')
+    setProfileAvatarSeed(profile.avatar_seed || DEFAULT_PROFILE_AVATAR_SEED)
+    setProfileMessage(null)
+    setShowAddProfile(true)
+  }
+
+  function closeProfileForm() {
+    if (isAddingProfile) return
+    setShowAddProfile(false)
+    setEditingProfile(null)
+    setNewProfileName('')
+    setProfileAvatarSeed(DEFAULT_PROFILE_AVATAR_SEED)
+  }
+
   function handleChangeProfile() {
     localStorage.removeItem('mutflix_profile')
     sessionStorage.removeItem('mutflix_profile')
@@ -439,19 +467,32 @@ function App() {
     setIsAddingProfile(true)
     setProfileMessage(null)
     const nextProfile = {
-      id: createProfileId(),
+      id: editingProfile?.id || createProfileId(),
       name: profileName,
-      avatar_seed: `${profileName}-${Date.now()}`,
+      avatar_seed: profileAvatarSeed || editingProfile?.avatar_seed || DEFAULT_PROFILE_AVATAR_SEED || `${profileName}-${Date.now()}`,
     }
 
     try {
-      await addProfile(authToken, nextProfile)
+      if (editingProfile) {
+        await editProfile(authToken, nextProfile)
+      } else {
+        await addProfile(authToken, nextProfile)
+      }
       setProfiles((currentProfiles) => {
-        const nextProfiles = [...currentProfiles, nextProfile]
+        const nextProfiles = editingProfile
+          ? currentProfiles.map((profile) => (profile.id === nextProfile.id ? nextProfile : profile))
+          : [...currentProfiles, nextProfile]
         writeProfilesCache(nextProfiles)
         return nextProfiles
       })
+      if (selectedProfile?.id === nextProfile.id) {
+        const storage = localStorage.getItem('mutflix_token') ? localStorage : sessionStorage
+        storage.setItem('mutflix_profile', JSON.stringify(nextProfile))
+        setSelectedProfile(nextProfile)
+      }
       setNewProfileName('')
+      setProfileAvatarSeed(DEFAULT_PROFILE_AVATAR_SEED)
+      setEditingProfile(null)
       setShowAddProfile(false)
     } catch (error) {
       setProfileMessage(error.message)
@@ -500,13 +541,18 @@ function App() {
   if (currentUser && !selectedProfile) {
     return (
       <ProfilePage
+        editingProfile={editingProfile}
         isAddingProfile={isAddingProfile}
         isProfileLoading={isProfileLoading}
         newProfileName={newProfileName}
         onAddProfile={handleAddProfile}
+        onAvatarSeedChange={setProfileAvatarSeed}
+        onEditProfile={openEditProfile}
         onNewProfileNameChange={setNewProfileName}
         onProfileSelect={handleProfileSelect}
-        onShowAddProfileChange={setShowAddProfile}
+        onShowAddProfileChange={openAddProfile}
+        onCloseProfileForm={closeProfileForm}
+        profileAvatarSeed={profileAvatarSeed}
         profileMessage={profileMessage}
         profiles={profiles}
         showAddProfile={showAddProfile}
