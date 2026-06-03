@@ -155,7 +155,13 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
 
   const fileName = video.original_name || data.file_name || video.name || mediaPath
   const isHlsStream = /\.m3u8(?:$|\?)/i.test(fileName)
-  const needsAudioTranscode = !isHlsStream && hasUnsupportedBrowserAudio(fileName)
+  const probedBrowserAudioSupported = typeof data.browser_audio_supported === 'boolean'
+    ? data.browser_audio_supported
+    : null
+  const needsAudioTranscode = !isHlsStream && (
+    probedBrowserAudioSupported === false
+    || (probedBrowserAudioSupported === null && hasUnsupportedBrowserAudio(fileName))
+  )
   const gdriveToken = String(data.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
   const fileId = mediaPath.split('/', 2)[1]
   const audioTranscodeUrl = needsAudioTranscode && data.audio_transcode_url
@@ -176,6 +182,10 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   return {
     audioTranscodeStartUrl,
     audioTranscodeUrl,
+    audioCodec: String(data.audio_codec || ''),
+    audioCodecLabel: getAudioCodecLabel(data),
+    audioProbeStatus: String(data.audio_probe_status || ''),
+    browserAudioSupported: probedBrowserAudioSupported,
     durationMs: Number(data.duration_ms || 0),
     embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
@@ -213,6 +223,18 @@ export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeco
   }
 
   return { streamStartSeconds: requestedStart, timelineOffsetReady: false, timelineOffsetSeconds: requestedStart }
+}
+
+function getAudioCodecLabel(data) {
+  const label = String(data.audio_codec_label || '').trim()
+  if (label) return label
+
+  const codec = String(data.audio_codec || '').trim()
+  if (codec) return codec.toUpperCase()
+
+  const status = String(data.audio_probe_status || '').trim()
+  if (status && status !== 'no-audio') return `Probe ${status}`
+  return ''
 }
 
 function waitForRetry(delayMs, signal) {

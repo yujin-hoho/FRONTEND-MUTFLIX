@@ -129,6 +129,21 @@
   flex: 0 0 auto;
 }
 
+.watch-audio-codec {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 26px;
+  margin-top: 0 !important;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: rgba(15, 23, 42, 0.54);
+  color: #cbd5e1 !important;
+  font-size: 0.72rem !important;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
 .watch-topbar span {
   display: block;
   margin-top: 4px;

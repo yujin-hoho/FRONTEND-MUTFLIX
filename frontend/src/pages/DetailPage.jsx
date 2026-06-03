@@ -7,6 +7,7 @@ import {
   formatDuration,
   getDetailArtworkUrl,
   getGenres,
+  getItemPath,
   getMediaType,
   getPosterFallbackUrl,
   getRating,
@@ -34,7 +35,8 @@ function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
   const findWatchEntry = (video) => watchHistory.find((entry) => (
     normalizeMediaPath(entry.media_path) === normalizeMediaPath(video?.path)
   )) || (!isMovie && watchHistory.find((entry) => (
-    Number(entry.season || 1) === Number(video?.season || 1)
+    isSameSeriesHistoryEntry(entry, item)
+    && Number(entry.season || 1) === Number(video?.season || 1)
     && Number(entry.episode || 1) === Number(video?.episode || 1)
   )))
   const firstVideoProgress = getWatchProgress(findWatchEntry(firstVideo) || {})
@@ -209,6 +211,26 @@ function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
       </section>
     </main>
   )
+}
+
+function isSameSeriesHistoryEntry(entry, item) {
+  const itemPath = normalizeLookupValue(getItemPath(item))
+  const itemTitle = normalizeLookupValue(getTitle(item))
+  const entryPath = normalizeLookupValue(entry.series_path)
+  const entryTitle = normalizeLookupValue(entry.series_title)
+
+  if (itemPath && entryPath) return itemPath === entryPath
+  if (itemTitle && entryTitle) return itemTitle === entryTitle
+  return false
+}
+
+function normalizeLookupValue(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\(\d{4}\)/g, ' ')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 export default DetailPage

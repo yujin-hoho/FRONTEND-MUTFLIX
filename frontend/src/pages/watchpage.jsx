@@ -111,6 +111,7 @@ function WatchPage({
   const [isBuffering, setIsBuffering] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [needsAudioTranscode, setNeedsAudioTranscode] = useState(false)
+  const [audioCodecLabel, setAudioCodecLabel] = useState('')
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
   const [subtitleDelayInput, setSubtitleDelayInput] = useState(() => formatSubtitleDelay(subtitleSettings.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
@@ -508,6 +509,7 @@ function WatchPage({
       if (!ignore) {
         setStreamUrl('')
         setNeedsAudioTranscode(false)
+        setAudioCodecLabel('')
         clearHeldFrame()
         clearSeekPreview()
         setSubtitleCues([])
@@ -525,7 +527,7 @@ function WatchPage({
 
     const playbackSourcePromise = fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
     playbackSourcePromise
-      .then(({ audioTranscodeStartUrl, audioTranscodeUrl, durationMs, fallbackUrl, url }) => {
+      .then(({ audioCodecLabel: nextAudioCodecLabel, audioProbeStatus, audioTranscodeStartUrl, audioTranscodeUrl, durationMs, fallbackUrl, url }) => {
         if (!ignore) {
           const sourceDurationSeconds = Number(durationMs || 0) / 1000
           sourceDurationRef.current = sourceDurationSeconds
@@ -533,6 +535,7 @@ function WatchPage({
           audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
           fallbackStreamUrlRef.current = fallbackUrl
           setNeedsAudioTranscode(Boolean(audioTranscodeUrl))
+          setAudioCodecLabel(nextAudioCodecLabel || formatAudioProbeStatus(audioProbeStatus))
           if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
           if (audioTranscodeUrl) {
             const resumeSeconds = initialResumePositionRef.current
@@ -972,8 +975,11 @@ function WatchPage({
             {needsAudioTranscode && (
               <aside className="watch-transcode-notice">
                 <AlertTriangle aria-hidden="true" size={15} />
-                <span>Audio video ini perlu ditranscode. Untuk pengalaman terbaik, gunakan aplikasi Mutflix.</span>
+                <span>{audioCodecLabel ? `${audioCodecLabel} perlu ditranscode.` : 'Audio video ini perlu ditranscode.'}</span>
               </aside>
+            )}
+            {audioCodecLabel && !needsAudioTranscode && (
+              <span className="watch-audio-codec">Audio: {audioCodecLabel}</span>
             )}
           </div>
           {isSeries && <span>{video.name}</span>}
@@ -1252,6 +1258,12 @@ function formatPlaybackTime(seconds) {
   const remainingSeconds = roundedSeconds % 60
   const segments = hours > 0 ? [hours, minutes, remainingSeconds] : [minutes, remainingSeconds]
   return segments.map((segment) => String(segment).padStart(2, '0')).join(':')
+}
+
+function formatAudioProbeStatus(status) {
+  const normalizedStatus = String(status || '').trim()
+  if (!normalizedStatus || normalizedStatus === 'no-audio' || normalizedStatus === 'ok') return ''
+  return `Probe ${normalizedStatus}`
 }
 
 function clampPlaybackSeekTime(seconds, duration = 0) {

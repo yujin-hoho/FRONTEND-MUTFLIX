@@ -406,6 +406,7 @@ _gdrive_file_metadata_retry_ttl = 60
 _gdrive_file_metadata_cache_lock = threading.Lock()
 _gdrive_file_metadata_key_locks = {}
 _gdrive_file_metadata_key_locks_lock = threading.Lock()
+_browser_supported_audio_codecs = frozenset({'aac', 'mp3', 'mp2', 'opus', 'vorbis'})
 
 # === USER DATA RAM CACHE (profiles, mylist) ===
 # Per-user caching — eliminates DB roundtrip (~100-200ms saved per request)
@@ -656,6 +657,7 @@ def init_db():
                 media_path TEXT NOT NULL,
                 media_title TEXT,
                 series_title TEXT,
+                series_path TEXT,
                 source TEXT,
                 still_path TEXT,
                 subtitle_path TEXT,
@@ -673,6 +675,7 @@ def init_db():
             "ALTER TABLE watch_history ADD COLUMN season INTEGER",
             "ALTER TABLE watch_history ADD COLUMN episode INTEGER",
             "ALTER TABLE watch_history ADD COLUMN is_hidden INTEGER DEFAULT 0",
+            "ALTER TABLE watch_history ADD COLUMN series_path TEXT",
         ):
             try:
                 cur.execute(column_sql)
@@ -2498,7 +2501,7 @@ def get_history(current_user, profile_id):
     if active_only:
         where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
         params.append(WATCH_HISTORY_ACTIVE_CUTOFF)
-    sql = f'''SELECT media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched
+    sql = f'''SELECT media_path, media_title, series_title, series_path, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched
               FROM watch_history WHERE {where} ORDER BY last_watched DESC'''
     if limit:
         sql += f' LIMIT {ph}'
@@ -2530,12 +2533,12 @@ def save_history(current_user):
         if existing is not None:
             sql_update = f'''
                 UPDATE watch_history
-                SET media_title={ph}, series_title={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
+                SET media_title={ph}, series_title={ph}, series_path={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
                     season={ph}, episode={ph}, position_ms={ph}, duration_ms={ph}, is_hidden=0, last_watched=CURRENT_TIMESTAMP
                 WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
             '''
             params = (
-                data.get('media_title'), data.get('series_title'), data.get('source'),
+                data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'),
                 data.get('still_path'), data.get('subtitle_path'), data.get('season'),
                 data.get('episode'), data['position_ms'], data['duration_ms'],
                 current_user['id'], data['profile_id'], data['media_path'],
@@ -2543,10 +2546,10 @@ def save_history(current_user):
             cur.execute(sql_update, params)
         else:
             sql_insert = f'''
-                INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 0, CURRENT_TIMESTAMP)
+                INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, series_path, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 0, CURRENT_TIMESTAMP)
             '''
-            params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'])
+            params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'])
             cur.execute(sql_insert, params)
         conn.commit()
         return orjson_jsonify({"message": "Saved"})
@@ -4001,6 +4004,13 @@ def get_gdrive_stream_details(current_user,file_path):
             "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "file_name": file_name,
             "duration_ms": file_metadata.get('duration_ms', 0),
+            "audio_codec": file_metadata.get('audio_codec', ''),
+            "audio_codec_label": file_metadata.get('audio_codec_label', ''),
+            "audio_channels": file_metadata.get('audio_channels', 0),
+            "audio_profile": file_metadata.get('audio_profile', ''),
+            "audio_probe_status": file_metadata.get('audio_probe_status', ''),
+            "audio_streams": file_metadata.get('audio_streams', []),
+            "browser_audio_supported": file_metadata.get('browser_audio_supported'),
             "headers": {
                 "Authorization": f"Bearer {token}",
                 "User-Agent": "Mutflix/1.0" 
@@ -4073,12 +4083,15 @@ def _get_gdrive_file_metadata(fid):
         try:
             payload = svc.files().get(fileId=fid, fields="name,videoMediaMetadata(durationMillis)").execute()
             duration_ms = int(payload.get("videoMediaMetadata", {}).get("durationMillis") or 0)
+            probed_metadata = _probe_gdrive_media_metadata(fid)
             if duration_ms <= 0:
-                duration_ms = _probe_gdrive_duration_ms(fid)
+                duration_ms = probed_metadata.get("duration_ms", 0)
             metadata = {
                 "duration_ms": duration_ms,
                 "file_name": payload.get("name", ""),
+                **probed_metadata,
             }
+            metadata["duration_ms"] = duration_ms
         except Exception:
             return {}
         with _gdrive_file_metadata_cache_lock:
@@ -4087,15 +4100,19 @@ def _get_gdrive_file_metadata(fid):
         return metadata
 
 def _is_gdrive_file_metadata_cache_fresh(metadata, cached_at, now):
-    ttl = _gdrive_file_metadata_cache_ttl if metadata.get('duration_ms', 0) > 0 else _gdrive_file_metadata_retry_ttl
+    stable_audio_probe = metadata.get('audio_probe_status') in ('ok', 'no-audio')
+    ttl = _gdrive_file_metadata_cache_ttl if metadata.get('duration_ms', 0) > 0 and stable_audio_probe else _gdrive_file_metadata_retry_ttl
     return now - cached_at < ttl
 
 def _probe_gdrive_duration_ms(fid):
+    return _probe_gdrive_media_metadata(fid).get("duration_ms", 0)
+
+def _probe_gdrive_media_metadata(fid):
     if not shutil.which("ffprobe"):
-        return 0
+        return {"audio_probe_status": "ffprobe-unavailable", "duration_ms": 0}
     token = _get_fresh_gdrive_token()
     if not token:
-        return 0
+        return {"audio_probe_status": "token-unavailable", "duration_ms": 0}
 
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
@@ -4103,7 +4120,7 @@ def _probe_gdrive_duration_ms(fid):
         "ffprobe",
         "-v", "error",
         "-headers", ffprobe_headers,
-        "-show_entries", "format=duration:stream=duration",
+        "-show_entries", "format=duration:stream=index,codec_type,codec_name,profile,channels,channel_layout,duration:stream_tags=language,title:stream_disposition=default",
         "-of", "json",
         media_url,
     ]
@@ -4116,7 +4133,7 @@ def _probe_gdrive_duration_ms(fid):
             timeout=AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS,
         )
         if result.returncode != 0:
-            return 0
+            return {"audio_probe_status": "failed", "duration_ms": 0}
         payload = json.loads(result.stdout or '{}')
         durations = [
             payload.get('format', {}).get('duration'),
@@ -4127,9 +4144,79 @@ def _probe_gdrive_duration_ms(fid):
             for duration in durations
             if duration not in (None, '', 'N/A')
         ]
-        return round(max(numeric_durations) * 1000) if numeric_durations else 0
+        audio_streams = [
+            _normalize_audio_stream_metadata(stream)
+            for stream in payload.get('streams', [])
+            if stream.get('codec_type') == 'audio'
+        ]
+        audio_streams = [stream for stream in audio_streams if stream]
+        primary_audio = next((stream for stream in audio_streams if stream.get('default')), None)
+        if not primary_audio and audio_streams:
+            primary_audio = audio_streams[0]
+
+        if not primary_audio:
+            return {
+                "audio_probe_status": "no-audio",
+                "browser_audio_supported": True,
+                "duration_ms": round(max(numeric_durations) * 1000) if numeric_durations else 0,
+                "audio_streams": audio_streams,
+            }
+
+        audio_codec = primary_audio.get('codec', '')
+        return {
+            "audio_codec": audio_codec,
+            "audio_codec_label": _format_audio_codec_label(primary_audio),
+            "audio_channels": primary_audio.get('channels', 0),
+            "audio_profile": primary_audio.get('profile', ''),
+            "audio_probe_status": "ok",
+            "audio_streams": audio_streams,
+            "browser_audio_supported": _is_browser_supported_audio_codec(audio_codec),
+            "duration_ms": round(max(numeric_durations) * 1000) if numeric_durations else 0,
+        }
     except Exception:
-        return 0
+        return {"audio_probe_status": "failed", "duration_ms": 0}
+
+def _normalize_audio_stream_metadata(stream):
+    codec = str(stream.get('codec_name') or '').lower()
+    try:
+        channels = int(stream.get('channels') or 0)
+    except (TypeError, ValueError):
+        channels = 0
+    tags = stream.get('tags') or {}
+    disposition = stream.get('disposition') or {}
+    return {
+        "index": stream.get('index'),
+        "codec": codec,
+        "profile": str(stream.get('profile') or ''),
+        "channels": channels,
+        "channel_layout": str(stream.get('channel_layout') or ''),
+        "language": str(tags.get('language') or ''),
+        "title": str(tags.get('title') or ''),
+        "default": bool(disposition.get('default')),
+        "browser_supported": _is_browser_supported_audio_codec(codec),
+    }
+
+def _is_browser_supported_audio_codec(codec):
+    return str(codec or '').lower() in _browser_supported_audio_codecs
+
+def _format_audio_codec_label(audio_stream):
+    codec = str(audio_stream.get('codec') or '').upper()
+    codec_labels = {
+        "AAC": "AAC",
+        "AC3": "AC-3",
+        "EAC3": "E-AC-3",
+        "DTS": "DTS",
+        "TRUEHD": "TrueHD",
+        "MP3": "MP3",
+        "OPUS": "Opus",
+        "VORBIS": "Vorbis",
+        "FLAC": "FLAC",
+    }
+    label = codec_labels.get(codec, codec or "Unknown audio")
+    channels = audio_stream.get('channels') or 0
+    if channels:
+        label = f"{label} {channels}ch"
+    return label
 
 
 def _make_stream_token(fid, ttl=None):
