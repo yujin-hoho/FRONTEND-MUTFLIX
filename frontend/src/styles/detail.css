@@ -473,6 +473,22 @@
   object-fit: cover;
 }
 
+.episode-thumbnail-completed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: rgba(2, 6, 23, 0.42);
+  pointer-events: none;
+}
+
+.episode-completion-badge {
+  top: 8px;
+  left: 8px;
+  width: 32px;
+  height: 32px;
+}
+
 .episode-thumbnail-fallback {
   background: linear-gradient(135deg, #1f2937, #020617);
 }
@@ -481,6 +497,7 @@
   position: absolute;
   top: 50%;
   left: 50%;
+  z-index: 2;
   width: 44px;
   height: 44px;
   display: grid;
@@ -498,6 +515,7 @@
   position: absolute;
   top: 8px;
   right: 8px;
+  z-index: 2;
   border-radius: 999px;
   background: rgba(2, 6, 23, 0.82);
   color: #7cf2ad;
@@ -511,6 +529,7 @@
   right: 0;
   bottom: 0;
   left: 0;
+  z-index: 2;
   height: 5px;
   border-radius: 0;
 }

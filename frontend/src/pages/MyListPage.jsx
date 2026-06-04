@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bookmark, ChevronDown, LogOut, UsersRound } from 'lucide-react'
+import { Bookmark, Check, ChevronDown, LogOut, UsersRound } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
 import SearchBox from '../components/search/SearchBox'
 import { fetchMyList } from '../services/api'
-import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle } from '../utils/media'
+import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 
 function MyListPage({
   authToken,
@@ -13,10 +13,13 @@ function MyListPage({
   onHydrateItems,
   onLogout,
   onOpenDetail,
+  onOpenContextMenu,
   onOpenSearch,
   onSearchCatalog,
   profileId,
+  profileMyList = [],
   selectedProfile,
+  watchHistory = [],
 }) {
   const [activeStatus, setActiveStatus] = useState('plan_to_watch')
   const [showProfileMenu, setShowProfileMenu] = useState(false)
@@ -85,11 +88,14 @@ function MyListPage({
         <div className="dashboard-actions">
           <SearchBox
             catalogItems={catalogItems}
+            myList={items}
             onFilterSelect={onFilterSelect}
             onHydrateItems={onHydrateItems}
             onOpenDetail={onOpenDetail}
+            onOpenContextMenu={onOpenContextMenu}
             onSearchCatalog={onSearchCatalog}
             onSubmit={onOpenSearch}
+            watchHistory={watchHistory}
           />
           <div className="profile-menu">
             <button
@@ -149,11 +155,23 @@ function MyListPage({
               const genres = getGenres(item)
               const poster = getPosterUrl(item)
               const rating = getRating(item)
+              const isCompleted = isCatalogItemCompleted(item, { myList: [...items, ...profileMyList], watchHistory })
 
               return (
-                <button className="my-list-card" key={getItemKey(item)} onClick={() => onOpenDetail(item)} type="button">
-                  <span className="my-list-poster">
+                <button
+                  className={`my-list-card${isCompleted ? ' item-completed' : ''}`}
+                  key={getItemKey(item)}
+                  onClick={() => onOpenDetail(item)}
+                  onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+                  type="button"
+                >
+                  <span className={`my-list-poster${isCompleted ? ' completed-poster' : ''}`}>
                     <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
+                    {isCompleted && (
+                      <span aria-label="Selesai" className="completion-badge item-completion-badge">
+                        <Check size={20} strokeWidth={3.4} />
+                      </span>
+                    )}
                     {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
                   </span>
                   <span className="my-list-copy">

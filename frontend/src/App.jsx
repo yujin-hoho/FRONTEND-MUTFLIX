@@ -19,11 +19,13 @@ import {
   fetchCatalogSearch,
   fetchDashboardData,
   fetchDetailData,
+  fetchMyList,
   fetchProfiles,
   fetchVideoQueue,
   hideWatchHistory,
   mergeCatalogMetadataUpdates,
   saveWatchProgress,
+  saveMyListItemStatus,
 } from './services/api'
 import {
   readDashboardCache,
@@ -37,6 +39,7 @@ import {
   getCatalogIdentityKey,
   getDetailArtworkUrl,
   getDetailUrl,
+  getEpisodeHistoryLabel,
   getItemKey,
   getItemPath,
   getMediaType,
@@ -89,6 +92,7 @@ function App() {
   const [newProfileName, setNewProfileName] = useState('')
   const [profileAvatarSeed, setProfileAvatarSeed] = useState(DEFAULT_PROFILE_AVATAR_SEED)
   const [profileData, setProfileData] = useState({
+    myList: [],
     watchHistory: [],
     isLoading: false,
     error: null,
@@ -100,6 +104,7 @@ function App() {
     error: null,
   })
   const [detailData, setDetailData] = useState(EMPTY_DETAIL_DATA)
+  const [contextMenu, setContextMenu] = useState(null)
   const featuredItemKeys = useRef(new Map())
   const historyQueueRequestId = useRef(0)
   const pendingMetadataKeys = useRef(new Set())
@@ -165,6 +170,9 @@ function App() {
       const dashboardRequest = fetchDashboardData(authToken, selectedProfile.id)
         .then((dashboard) => ({ dashboard }))
         .catch((error) => ({ error }))
+      const myListRequest = fetchMyList(authToken, selectedProfile.id)
+        .then((myList) => ({ myList }))
+        .catch(() => ({ myList: [] }))
 
       setProfileData((currentData) => ({ ...currentData, isLoading: true, error: null }))
       setCatalogData((currentData) => ({ ...currentData, isLoading: true, error: null }))
@@ -172,13 +180,14 @@ function App() {
       if (cachedDashboard) {
         await preloadDashboardAssets(featuredItemKeys.current, selectedProfile.id, cachedDashboard)
         if (!ignore) {
-          setProfileData({ watchHistory: cachedDashboard.history || [], isLoading: false, error: null })
+          setProfileData({ myList: [], watchHistory: cachedDashboard.history || [], isLoading: false, error: null })
           setCatalogData({ movies: cachedDashboard.movies, series: cachedDashboard.series, isLoading: false, error: null })
         }
       }
 
       try {
         const { dashboard, error } = await dashboardRequest
+        const { myList } = await myListRequest
         if (error) throw error
 
         const refreshedDashboard = cachedDashboard
@@ -189,12 +198,12 @@ function App() {
         await preloadDashboardAssets(featuredItemKeys.current, selectedProfile.id, enrichedDashboard)
 
         if (!ignore) {
-          setProfileData({ watchHistory: enrichedDashboard.history, isLoading: false, error: null })
+          setProfileData({ myList, watchHistory: enrichedDashboard.history, isLoading: false, error: null })
           setCatalogData({ movies: enrichedDashboard.movies, series: enrichedDashboard.series, isLoading: false, error: null })
         }
       } catch (error) {
         if (!ignore && !cachedDashboard) {
-          setProfileData({ watchHistory: [], isLoading: false, error: error.message })
+          setProfileData({ myList: [], watchHistory: [], isLoading: false, error: error.message })
           setCatalogData({ movies: [], series: [], isLoading: false, error: error.message })
         }
       }
@@ -309,6 +318,92 @@ function App() {
   const handleSearchCatalog = useCallback((query, options) => (
     fetchCatalogSearch(authToken, query, options)
   ), [authToken])
+
+  const closeCompletedContextMenu = useCallback(() => {
+    setContextMenu(null)
+  }, [])
+
+  const openCompletedContextMenu = useCallback((event, payload) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setContextMenu({
+      ...payload,
+      x: Math.min(event.clientX, window.innerWidth - 220),
+      y: Math.min(event.clientY, window.innerHeight - 64),
+    })
+  }, [])
+
+  const handleMarkContextCompleted = useCallback(async () => {
+    const menu = contextMenu
+    closeCompletedContextMenu()
+    if (!menu || !selectedProfile) return
+
+    if (menu.historyEntry) {
+      const durationMs = Math.max(1, Number(menu.historyEntry.duration_ms || 0))
+      const payload = {
+        ...menu.historyEntry,
+        profile_id: selectedProfile.id,
+        position_ms: durationMs,
+        duration_ms: durationMs,
+      }
+      setProfileData((currentData) => {
+        const watchHistory = mergeWatchHistory(currentData.watchHistory, payload)
+        const currentCatalog = catalogDataRef.current
+        writeDashboardCache(selectedProfile.id, {
+          history: watchHistory,
+          movies: currentCatalog.movies,
+          series: currentCatalog.series,
+        })
+        return { ...currentData, watchHistory }
+      })
+      await saveWatchProgress(authToken, payload)
+      return
+    }
+
+    if (menu.video && menu.item) {
+      const durationMs = Math.max(1, Number(menu.video.duration_ms || 0))
+      const payload = createCompletedHistoryPayload({
+        item: menu.item,
+        profileId: selectedProfile.id,
+        video: menu.video,
+      }, durationMs)
+      setProfileData((currentData) => {
+        const watchHistory = mergeWatchHistory(currentData.watchHistory, payload)
+        const currentCatalog = catalogDataRef.current
+        writeDashboardCache(selectedProfile.id, {
+          history: watchHistory,
+          movies: currentCatalog.movies,
+          series: currentCatalog.series,
+        })
+        return { ...currentData, watchHistory }
+      })
+      await saveWatchProgress(authToken, payload)
+      return
+    }
+
+    if (!menu.item) return
+    const completedItem = await saveMyListItemStatus(authToken, {
+      item: menu.item,
+      profileId: selectedProfile.id,
+      status: 'completed',
+    })
+    setProfileData((currentData) => ({
+      ...currentData,
+      myList: mergeMyListItem(currentData.myList, completedItem),
+    }))
+  }, [authToken, closeCompletedContextMenu, contextMenu, selectedProfile])
+
+  useEffect(() => {
+    if (!contextMenu) return undefined
+    window.addEventListener('click', closeCompletedContextMenu)
+    window.addEventListener('scroll', closeCompletedContextMenu, true)
+    window.addEventListener('resize', closeCompletedContextMenu)
+    return () => {
+      window.removeEventListener('click', closeCompletedContextMenu)
+      window.removeEventListener('scroll', closeCompletedContextMenu, true)
+      window.removeEventListener('resize', closeCompletedContextMenu)
+    }
+  }, [closeCompletedContextMenu, contextMenu])
 
   useEffect(() => {
     if (!currentUser || !selectedProfile || !isDetailRoute) return
@@ -574,6 +669,21 @@ function App() {
     }
   }
 
+  function renderWithContextMenu(content) {
+    return (
+      <>
+        {content}
+        {contextMenu && (
+          <div className="mutflix-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
+            <button onClick={handleMarkContextCompleted} role="menuitem" type="button">
+              Mark as completed
+            </button>
+          </div>
+        )}
+      </>
+    )
+  }
+
   if (currentUser && !selectedProfile) {
     return (
       <ProfilePage
@@ -630,19 +740,20 @@ function App() {
       )
     }
     if (isDetailRoute && detailData.item) {
-      return (
+      return renderWithContextMenu(
         <DetailPage
           detailData={detailData}
           onBack={handleDetailBack}
+          onOpenContextMenu={openCompletedContextMenu}
           onPlayVideo={(video) => handleOpenWatch(detailData.item, video, detailData.videos)}
           watchHistory={profileData.watchHistory}
-        />
+        />,
       )
     }
     if (catalogData.isLoading) return <DashboardSkeleton />
     if (isSearchRoute) {
       const searchFilter = readCatalogFilter(location.search)
-      return (
+      return renderWithContextMenu(
         <SearchResultsPage
           key={location.search || '__empty__'}
           catalogData={catalogData}
@@ -654,14 +765,17 @@ function App() {
           onLogout={handleLogout}
           onOpenDetail={handleOpenDetail}
           onOpenMyList={handleOpenMyList}
+          onOpenContextMenu={openCompletedContextMenu}
           onQueryChange={(query) => handleOpenSearch(query, { replace: true })}
           onSearchCatalog={handleSearchCatalog}
           selectedProfile={selectedProfile}
-        />
+          watchHistory={profileData.watchHistory}
+          myList={profileData.myList}
+        />,
       )
     }
     if (isMyListRoute) {
-      return (
+      return renderWithContextMenu(
         <MyListPage
           authToken={authToken}
           catalogData={catalogData}
@@ -670,15 +784,18 @@ function App() {
           onHydrateItems={hydrateCatalogItems}
           onLogout={handleLogout}
           onOpenDetail={handleOpenDetail}
+          onOpenContextMenu={openCompletedContextMenu}
           onOpenSearch={handleOpenSearch}
           onSearchCatalog={handleSearchCatalog}
           profileId={selectedProfile.id}
+          profileMyList={profileData.myList}
           selectedProfile={selectedProfile}
-        />
+          watchHistory={profileData.watchHistory}
+        />,
       )
     }
 
-    return (
+    return renderWithContextMenu(
       <DashboardPage
         catalogData={catalogData}
         onChangeProfile={handleChangeProfile}
@@ -687,14 +804,16 @@ function App() {
         onOpenCatalogFilter={handleOpenCatalogFilter}
         onOpenMyList={handleOpenMyList}
         onOpenDetail={handleOpenDetail}
+        onOpenContextMenu={openCompletedContextMenu}
         onHideHistory={handleHideHistory}
         onPlayHistory={handleResumeHistory}
         onOpenSearch={handleOpenSearch}
         onSearchCatalog={handleSearchCatalog}
+        myList={profileData.myList}
         profileData={profileData}
         selectedProfile={selectedProfile}
         featuredItemKey={getFeaturedItemKey(featuredItemKeys.current, selectedProfile.id, catalogData.movies, catalogData.series)}
-      />
+      />,
     )
   }
 
@@ -817,6 +936,29 @@ function historyEntryToVideo(entry) {
   }
 }
 
+function createCompletedHistoryPayload({ item, profileId, video }, durationMs) {
+  const isMovie = getMediaType(item) === 'movie'
+  const episodeTitle = getEpisodeHistoryLabel({
+    ...video,
+    media_path: video.path,
+    media_title: video.title || video.name,
+  })
+  return {
+    profile_id: profileId,
+    media_path: video.path,
+    media_title: isMovie ? getTitle(item) : episodeTitle,
+    series_title: isMovie ? null : getTitle(item),
+    series_path: isMovie ? null : getItemPath(item),
+    source: video.source || item.source || '',
+    still_path: video.still_path || item.tmdb_backdrop_path || item.backdrop_path || item.tmdb_poster_path || item.poster_path || '',
+    subtitle_path: video.subtitle_path || '',
+    season: video.season || 1,
+    episode: video.episode || 1,
+    position_ms: durationMs,
+    duration_ms: durationMs,
+  }
+}
+
 function historyEntryToItem(entry) {
   const isSeries = Boolean(entry.series_title)
   return {
@@ -864,7 +1006,16 @@ function mergeWatchHistory(history, payload) {
   const remainingHistory = normalizeWatchHistory(history)
     .filter((entry) => entry.media_path !== normalizedPayload.media_path)
   const isCompleted = payload.duration_ms > 0 && payload.position_ms >= payload.duration_ms * 0.9
-  if (isCompleted) return remainingHistory
+  if (isCompleted) {
+    return normalizeWatchHistory([
+      {
+        ...normalizedPayload,
+        is_hidden: 0,
+        last_watched: new Date().toISOString(),
+      },
+      ...remainingHistory,
+    ]).slice(0, 100)
+  }
   return normalizeWatchHistory([
     {
       ...normalizedPayload,
@@ -873,6 +1024,16 @@ function mergeWatchHistory(history, payload) {
     },
     ...remainingHistory,
   ]).slice(0, 20)
+}
+
+function mergeMyListItem(myList, item) {
+  const itemKey = getCatalogIdentityKey(item)
+  const nextItem = { ...item, my_list_status: 'completed' }
+  const existingItems = Array.isArray(myList) ? myList : []
+  if (!existingItems.some((entry) => getCatalogIdentityKey(entry) === itemKey)) return [nextItem, ...existingItems]
+  return existingItems.map((entry) => (
+    getCatalogIdentityKey(entry) === itemKey ? { ...entry, ...nextItem } : entry
+  ))
 }
 
 function hideHistoryEntry(history, historyEntry) {

@@ -141,6 +141,32 @@ export function getWatchProgress(item) {
   return Math.min(100, Math.max(0, (position / duration) * 100))
 }
 
+export function isWatchCompleted(item) {
+  return getWatchProgress(item) >= 90
+}
+
+export function isMyListCompleted(item) {
+  return item?.my_list_status === 'completed' || item?.status === 'completed'
+}
+
+export function isCatalogItemCompleted(item, { myList = [], watchHistory = [] } = {}) {
+  if (!item) return false
+  const catalogKey = getCatalogIdentityKey(item)
+  if (myList.some((entry) => isMyListCompleted(entry) && getCatalogIdentityKey(entry) === catalogKey)) return true
+  if (getMediaType(item) !== 'movie') return false
+
+  const itemPath = normalizeMediaPath(getItemPath(item))
+  const title = normalizeLookupTitle(getTitle(item))
+  return watchHistory.some((entry) => (
+    isWatchCompleted(entry)
+    && !entry.series_title
+    && (
+      normalizeMediaPath(entry.media_path) === itemPath
+      || normalizeLookupTitle(entry.media_title) === title
+    )
+  ))
+}
+
 export function getEpisodeHistoryLabel(item = {}) {
   const title = getCleanEpisodeTitle(
     item.media_title || item.title || item.name,
@@ -153,6 +179,15 @@ export function getEpisodeHistoryLabel(item = {}) {
   if (season > 0 && episode > 0) return `Season ${season} Episode ${episode}`
   if (episode > 0) return `Episode ${episode}`
   return getCleanEpisodeTitle(item.series_title, item.media_path) || 'Continue Watching'
+}
+
+function normalizeLookupTitle(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\(\d{4}\)/g, ' ')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function getCleanEpisodeTitle(value, mediaPath = '') {

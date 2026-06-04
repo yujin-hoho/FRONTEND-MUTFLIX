@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { Search, SlidersHorizontal, X } from 'lucide-react'
+import { Check, Search, SlidersHorizontal, X } from 'lucide-react'
 import LoadableImage from '../LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle } from '../../utils/media'
+import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../../utils/media'
 import { getCatalogFilters, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
 
 const PREVIEW_RESULT_LIMIT = 5
@@ -10,7 +10,9 @@ function SearchBox({
   catalogItems,
   activeFilter,
   defaultQuery = '',
+  myList = [],
   onHydrateItems,
+  onOpenContextMenu,
   onOpenDetail,
   onFilterSelect,
   onQueryChange,
@@ -19,6 +21,7 @@ function SearchBox({
   placeholder = 'Search',
   query: controlledQuery,
   showPreview = true,
+  watchHistory = [],
   variant = 'compact',
 }) {
   const [isFocused, setIsFocused] = useState(false)
@@ -225,11 +228,23 @@ function SearchBox({
                 const poster = getPosterUrl(item)
                 const genres = getGenres(item)
                 const rating = getRating(item)
+                const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
 
                 return (
-                  <button className="search-preview-card" key={`${getMediaType(item)}-${item.folder_name || getTitle(item)}`} onClick={() => handleOpenDetail(item)} type="button">
-                    <span className="search-preview-poster">
+                  <button
+                    className={`search-preview-card${isCompleted ? ' item-completed' : ''}`}
+                    key={`${getMediaType(item)}-${item.folder_name || getTitle(item)}`}
+                    onClick={() => handleOpenDetail(item)}
+                    onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+                    type="button"
+                  >
+                    <span className={`search-preview-poster${isCompleted ? ' completed-poster' : ''}`}>
                       <LoadableImage alt="" key={poster} src={poster} />
+                      {isCompleted && (
+                        <span aria-label="Selesai" className="completion-badge search-preview-completion-badge">
+                          <Check size={13} strokeWidth={3.4} />
+                        </span>
+                      )}
                     </span>
                     <span className="search-preview-copy">
                       <strong>{getTitle(item)}</strong>

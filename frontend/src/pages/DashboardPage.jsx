@@ -13,6 +13,8 @@ import {
   getRating,
   getRotationKey,
   getTitle,
+  isCatalogItemCompleted,
+  isWatchCompleted,
   rotateItems,
 } from '../utils/media'
 
@@ -23,17 +25,22 @@ function DashboardPage({
   onHydrateItems,
   onLogout,
   onOpenCatalogFilter,
+  onOpenContextMenu,
   onOpenMyList,
   onOpenDetail,
   onHideHistory,
   onPlayHistory,
   onOpenSearch,
   onSearchCatalog,
+  myList = [],
   profileData,
   selectedProfile,
 }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false)
-  const dashboardView = useMemo(() => buildDashboardView(catalogData, selectedProfile, featuredItemKey), [catalogData, featuredItemKey, selectedProfile])
+  const dashboardView = useMemo(
+    () => buildDashboardView(catalogData, selectedProfile, featuredItemKey, profileData.watchHistory, myList),
+    [catalogData, featuredItemKey, myList, profileData.watchHistory, selectedProfile],
+  )
 
   return (
     <main className="dashboard-page">
@@ -51,11 +58,14 @@ function DashboardPage({
         <div className="dashboard-actions">
           <SearchBox
             catalogItems={dashboardView.catalogItems}
+            myList={myList}
             onHydrateItems={onHydrateItems}
             onFilterSelect={onOpenCatalogFilter}
+            onOpenContextMenu={onOpenContextMenu}
             onOpenDetail={onOpenDetail}
             onSearchCatalog={onSearchCatalog}
             onSubmit={onOpenSearch}
+            watchHistory={profileData.watchHistory}
           />
           <div className="profile-menu">
             <button
@@ -118,12 +128,12 @@ function DashboardPage({
 
         {!catalogData.error && (
           <>
-            <HistoryRow items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onPlay={onPlayHistory} />
+            <HistoryRow items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onOpenContextMenu={onOpenContextMenu} onPlay={onPlayHistory} />
             {dashboardView.curatedRows.map((row) => (
-              <CatalogRow items={row.items} key={row.genre} onOpenDetail={onOpenDetail} title={row.genre} />
+              <CatalogRow items={row.items} key={row.genre} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} title={row.genre} />
             ))}
             {dashboardView.catalogRows.map((row) => (
-              <CatalogRow items={row.items} key={row.genre} onOpenDetail={onOpenDetail} ranked={row.ranked} title={row.genre} />
+              <CatalogRow items={row.items} key={row.genre} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} ranked={row.ranked} title={row.genre} />
             ))}
           </>
         )}
@@ -132,9 +142,11 @@ function DashboardPage({
   )
 }
 
-function buildDashboardView(catalogData, selectedProfile, featuredItemKey) {
+function buildDashboardView(catalogData, selectedProfile, featuredItemKey, watchHistory = [], myList = []) {
   const rotationKey = getRotationKey(selectedProfile.id)
+  const completedContext = { myList, watchHistory }
   const catalogItems = [...catalogData.movies, ...catalogData.series]
+    .filter((item) => !isCatalogItemCompleted(item, completedContext))
   const featuredItem = catalogItems.find((item) => getItemKey(item) === featuredItemKey)
     || rotateItems(catalogItems, `${rotationKey}-hero`)[0]
     || catalogItems[0]
@@ -194,7 +206,7 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey) {
 
 function getVisibleHistory(history) {
   return (Array.isArray(history) ? history : [])
-    .filter((entry) => !Number(entry.is_hidden || 0))
+    .filter((entry) => !Number(entry.is_hidden || 0) && !isWatchCompleted(entry))
     .slice(0, 20)
 }
 

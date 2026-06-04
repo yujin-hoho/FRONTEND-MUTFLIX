@@ -1,8 +1,8 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, LogOut, Search, UsersRound } from 'lucide-react'
+import { Check, ChevronDown, LogOut, Search, UsersRound } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle } from '../utils/media'
+import { getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
 function SearchResultsPage({
@@ -15,9 +15,12 @@ function SearchResultsPage({
   onLogout,
   onOpenDetail,
   onOpenMyList,
+  onOpenContextMenu,
   onQueryChange,
   onSearchCatalog,
+  myList = [],
   selectedProfile,
+  watchHistory = [],
 }) {
   const [query, setQuery] = useState(initialQuery)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
@@ -99,8 +102,10 @@ function SearchResultsPage({
             catalogItems={catalogItems}
             activeFilter={initialFilter}
             defaultQuery={initialQuery}
+            myList={myList}
             onHydrateItems={onHydrateItems}
             onOpenDetail={onOpenDetail}
+            onOpenContextMenu={onOpenContextMenu}
             onFilterSelect={onFilterSelect}
             onQueryChange={handleQueryChange}
             onSearchCatalog={onSearchCatalog}
@@ -111,6 +116,7 @@ function SearchResultsPage({
             placeholder="Cari film, series, atau genre"
             query={query}
             showPreview={false}
+            watchHistory={watchHistory}
           />
           <div className="profile-menu">
             <button
@@ -181,11 +187,23 @@ function SearchResultsPage({
               const poster = getPosterUrl(item)
               const rating = getRating(item)
               const genres = getGenres(item)
+              const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
 
               return (
-                <button className="search-result-card" key={getItemKey(item)} onClick={() => onOpenDetail(item)} type="button">
-                  <span className="search-result-poster">
+                <button
+                  className={`search-result-card${isCompleted ? ' item-completed' : ''}`}
+                  key={getItemKey(item)}
+                  onClick={() => onOpenDetail(item)}
+                  onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+                  type="button"
+                >
+                  <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
                     <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
+                    {isCompleted && (
+                      <span aria-label="Selesai" className="completion-badge item-completion-badge">
+                        <Check size={20} strokeWidth={3.4} />
+                      </span>
+                    )}
                     {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
                   </span>
                   <span className="search-result-copy">

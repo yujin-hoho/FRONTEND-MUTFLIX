@@ -93,7 +93,7 @@ export async function editProfile(authToken, profile) {
 export async function fetchDashboardData(authToken, profileId) {
   const headers = { 'x-access-token': authToken }
   const [historyResponse, catalogResponse] = await Promise.all([
-    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?active_only=true&include_hidden=true&limit=100`, { headers }),
+    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&limit=100`, { headers }),
     fetch(`${API_BASE_URL}/api/folders`, { headers }),
   ])
   const historyData = await historyResponse.json().catch(() => [])
@@ -124,6 +124,35 @@ export async function fetchMyList(authToken, profileId) {
   const data = await response.json().catch(() => [])
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to load My List.')
   return Array.isArray(data) ? data.map(normalizeMyListItem) : []
+}
+
+export async function saveMyListItemStatus(authToken, { item, profileId, status = 'completed' }) {
+  const folderName = getItemPath(item)
+  if (!folderName || !profileId) throw new Error('Missing item or profile.')
+
+  const response = await fetch(`${API_BASE_URL}/api/mylist/add`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-token': authToken,
+    },
+    body: JSON.stringify({
+      folder_name: folderName,
+      media_type: getMediaType(item),
+      meta: item,
+      profile_id: profileId,
+      status,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to update My List.')
+
+  return normalizeMyListItem({
+    folder_name: folderName,
+    media_type: getMediaType(item),
+    meta_json: item,
+    status,
+  })
 }
 
 export async function fetchCatalogSearch(authToken, query, { signal } = {}) {

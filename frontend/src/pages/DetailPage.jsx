@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronUp, Play } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Play } from 'lucide-react'
 import { EPISODES_PER_PAGE } from '../config'
 import LoadableImage from '../components/LoadableImage'
 import CreditsPanel from '../components/detail/CreditsPanel'
@@ -14,11 +14,12 @@ import {
   getStillUrl,
   getTitle,
   getWatchProgress,
+  isWatchCompleted,
   normalizeMediaPath,
   preloadImage,
 } from '../utils/media'
 
-function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
+function DetailPage({ detailData, onBack, onOpenContextMenu, onPlayVideo, watchHistory = [] }) {
   const { credits, error, isLoading, item, videos } = detailData
   const seasons = useMemo(
     () => [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b),
@@ -145,7 +146,9 @@ function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
                     name: video.name || `${getTitle(item)} episode ${episodeNumber}`,
                   })
                   const duration = formatDuration(video)
-                  const watchProgress = getWatchProgress(findWatchEntry(video) || {})
+                  const watchEntry = findWatchEntry(video) || {}
+                  const watchProgress = getWatchProgress(watchEntry)
+                  const isCompleted = isWatchCompleted(watchEntry)
 
                   return (
                     <article
@@ -153,6 +156,7 @@ function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
                       className="episode-card"
                       key={`${video.path || video.name}-${index}`}
                       onClick={() => onPlayVideo(video)}
+                      onContextMenu={(event) => onOpenContextMenu?.(event, { item, video })}
                       onKeyDown={(event) => {
                         if (event.key !== 'Enter' && event.key !== ' ') return
                         event.preventDefault()
@@ -162,18 +166,20 @@ function DetailPage({ detailData, onBack, onPlayVideo, watchHistory = [] }) {
                       tabIndex="0"
                     >
                       <span className="episode-number">{episodeNumber}</span>
-                      <div className="episode-thumbnail">
+                      <div className={`episode-thumbnail${isCompleted ? ' episode-thumbnail-completed' : ''}`}>
                         <LoadableImage fallbackSrc={thumbnailFallback} key={thumbnail} loading="eager" src={thumbnail} />
+                        {isCompleted && (
+                          <span aria-label="Episode selesai" className="completion-badge episode-completion-badge">
+                            <Check size={18} strokeWidth={3.4} />
+                          </span>
+                        )}
                         <span aria-hidden="true" className="episode-play-icon">
                           <Play fill="currentColor" size={20} />
                         </span>
                         {watchProgress > 0 && (
-                          <>
-                            <span className="episode-progress-label">{Math.round(watchProgress)}%</span>
-                            <span className="episode-progress-track">
-                              <span style={{ width: `${watchProgress}%` }} />
-                            </span>
-                          </>
+                          <span aria-label={`Progress ${Math.round(watchProgress)}%`} className="episode-progress-track">
+                            <span style={{ width: `${watchProgress}%` }} />
+                          </span>
                         )}
                       </div>
                       <div className="episode-copy">

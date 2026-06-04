@@ -12,10 +12,11 @@ import {
   getWatchProgress,
 } from '../../utils/media'
 
-export const CatalogRow = memo(function CatalogRow({ emptyMessage, items, onOpenDetail, ranked = false, title }) {
+export const CatalogRow = memo(function CatalogRow({ emptyMessage, items, onOpenContextMenu, onOpenDetail, ranked = false, title }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return emptyMessage ? <p className="empty-catalog">{emptyMessage}</p> : null
+  const visibleItems = showAll ? items : items.slice(0, 15)
 
   return (
     <section className="catalog-row" aria-label={title}>
@@ -26,21 +27,26 @@ export const CatalogRow = memo(function CatalogRow({ emptyMessage, items, onOpen
         </button>
       </div>
       <DraggableScroller className={`catalog-scroller ${ranked ? 'ranked-scroller' : ''}`}>
-        {(showAll ? items : items.slice(0, 15)).map((item, index) => (
-          <CatalogCard item={item} key={getItemKey(item)} onOpenDetail={onOpenDetail} rank={ranked ? index + 1 : null} />
+        {visibleItems.map((item, index) => (
+          <CatalogCard item={item} key={getItemKey(item)} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} rank={ranked ? index + 1 : null} />
         ))}
       </DraggableScroller>
     </section>
   )
 })
 
-const CatalogCard = memo(function CatalogCard({ item, onOpenDetail, rank }) {
+const CatalogCard = memo(function CatalogCard({ item, onOpenContextMenu, onOpenDetail, rank }) {
   const poster = getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)
 
   return (
-    <button className={`catalog-card ${rank ? 'ranked-card' : ''}`} onClick={() => onOpenDetail(item)} type="button">
+    <button
+      className={`catalog-card ${rank ? 'ranked-card' : ''}`}
+      onClick={() => onOpenDetail(item)}
+      onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+      type="button"
+    >
       {rank && <span className="ranked-number">{rank}</span>}
       <div className={rank ? 'ranked-frame' : 'poster-frame'}>
         {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
@@ -51,10 +57,11 @@ const CatalogCard = memo(function CatalogCard({ item, onOpenDetail, rank }) {
   )
 })
 
-export const HistoryRow = memo(function HistoryRow({ items, onHide, onPlay }) {
+export const HistoryRow = memo(function HistoryRow({ items, onHide, onOpenContextMenu, onPlay }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return null
+  const visibleItems = showAll ? items : items.slice(0, 15)
 
   return (
     <section className="catalog-row" aria-label="Continue watching">
@@ -65,8 +72,8 @@ export const HistoryRow = memo(function HistoryRow({ items, onHide, onPlay }) {
         </button>
       </div>
       <DraggableScroller className="catalog-scroller history-scroller" variant="history">
-        {(showAll ? items : items.slice(0, 15)).map((item) => (
-          <article className="catalog-card history-card" key={item.media_path}>
+        {visibleItems.map((item) => (
+          <article className="catalog-card history-card" key={item.media_path} onContextMenu={(event) => onOpenContextMenu?.(event, { historyEntry: item })}>
             <button className="history-play-surface" onClick={() => onPlay(item)} type="button">
               <div className="history-frame">
                 <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} fallbackSrc={getPosterFallbackUrl(item)} key={getStillUrl(item)} src={getStillUrl(item)} />
@@ -126,6 +133,19 @@ function DraggableScroller({ children, className, variant = '' }) {
     return () => resizeObserver.disconnect()
   }, [children, updateArrowVisibility])
 
+  useEffect(() => {
+    const scroller = scrollerRef.current
+    if (!scroller) return undefined
+
+    function blockTouchpadHorizontalScroll(event) {
+      if (Math.abs(event.deltaX) <= 0 && !event.shiftKey) return
+      event.preventDefault()
+    }
+
+    scroller.addEventListener('wheel', blockTouchpadHorizontalScroll, { passive: false })
+    return () => scroller.removeEventListener('wheel', blockTouchpadHorizontalScroll)
+  }, [])
+
   function scrollRow(direction) {
     const scroller = scrollerRef.current
     if (!scroller) return
@@ -142,7 +162,11 @@ function DraggableScroller({ children, className, variant = '' }) {
           <ChevronLeft size={42} strokeWidth={4} />
         </button>
       )}
-      <div className={className} onScroll={updateArrowVisibility} ref={scrollerRef}>
+      <div
+        className={className}
+        onScroll={updateArrowVisibility}
+        ref={scrollerRef}
+      >
         {children}
       </div>
       {canScrollRight && (
