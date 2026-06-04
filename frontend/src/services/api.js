@@ -168,15 +168,21 @@ export async function fetchCatalogSearch(authToken, query, { signal } = {}) {
   return Array.isArray(data) ? data : []
 }
 
-export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
+export async function fetchPlaybackSource(authToken, mediaPath, video = {}, options = {}) {
   if (!mediaPath) throw new Error('No media file was selected.')
   if (/^https?:\/\//i.test(mediaPath)) return { fallbackUrl: '', url: mediaPath }
   if (!mediaPath.startsWith('gdrive/')) {
     throw new Error('This media source is not available in the web player.')
   }
 
-  const fileNameQuery = video.original_name ? `?file_name=${encodeURIComponent(video.original_name)}` : ''
-  const response = await fetch(`${API_BASE_URL}/api/gdrive-stream-details/${encodeServerPath(mediaPath)}${fileNameQuery}`, {
+  const searchParams = new URLSearchParams()
+  if (video.original_name) searchParams.set('file_name', video.original_name)
+  const requestedAudioStreamIndex = normalizeAudioStreamIndex(options.audioStreamIndex)
+  if (requestedAudioStreamIndex !== null) {
+    searchParams.set('audio_stream_index', String(requestedAudioStreamIndex))
+  }
+  const queryString = searchParams.toString()
+  const response = await fetch(`${API_BASE_URL}/api/gdrive-stream-details/${encodeServerPath(mediaPath)}${queryString ? `?${queryString}` : ''}`, {
     headers: { 'x-access-token': authToken },
   })
   const data = await response.json().catch(() => ({}))
@@ -187,9 +193,18 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
   const probedBrowserAudioSupported = typeof data.browser_audio_supported === 'boolean'
     ? data.browser_audio_supported
     : null
+  const serverAudioTranscodeRequired = typeof data.audio_transcode_required === 'boolean'
+    ? data.audio_transcode_required
+    : null
   const needsAudioTranscode = !isHlsStream && (
-    probedBrowserAudioSupported === false
-    || (probedBrowserAudioSupported === null && hasUnsupportedBrowserAudio(fileName))
+    serverAudioTranscodeRequired === true
+    || (
+      serverAudioTranscodeRequired === null
+      && (
+        probedBrowserAudioSupported === false
+        || (probedBrowserAudioSupported === null && hasUnsupportedBrowserAudio(fileName))
+      )
+    )
   )
   const gdriveToken = String(data.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
   const fileId = mediaPath.split('/', 2)[1]
@@ -206,7 +221,13 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
       : gdriveToken && fileId
         ? `${CLOUDFLARE_STREAM_PROXY_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(gdriveToken)}`
         : data.stream_url
-  const fallbackPath = isHlsStream ? '' : data.stream_url
+  const selectedAudioStreamIndex = normalizeAudioStreamIndex(data.selected_audio_stream_index)
+  const defaultAudioStreamIndex = normalizeAudioStreamIndex(data.default_audio_stream_index)
+  const selectedNonDefaultAudio = requestedAudioStreamIndex !== null
+    && selectedAudioStreamIndex !== null
+    && defaultAudioStreamIndex !== null
+    && selectedAudioStreamIndex !== defaultAudioStreamIndex
+  const fallbackPath = isHlsStream || selectedNonDefaultAudio ? '' : data.stream_url
   if (!streamPath) throw new Error('The server did not return a playable stream.')
   return {
     audioTranscodeStartUrl,
@@ -214,12 +235,44 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}) {
     audioCodec: String(data.audio_codec || ''),
     audioCodecLabel: getAudioCodecLabel(data),
     audioProbeStatus: String(data.audio_probe_status || ''),
+    audioTracks: normalizeAudioTracks(data.audio_streams),
     browserAudioSupported: probedBrowserAudioSupported,
+    defaultAudioStreamIndex,
     durationMs: Number(data.duration_ms || 0),
     embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
+    selectedAudioStreamIndex,
     url: resolvePublicPath(streamPath),
   }
+}
+
+function normalizeAudioTracks(audioStreams) {
+  return (Array.isArray(audioStreams) ? audioStreams : [])
+    .map((stream) => {
+      const streamIndex = normalizeAudioStreamIndex(stream.index)
+      if (streamIndex === null) return null
+      return {
+        bitRate: Number(stream.bit_rate || 0),
+        browserSupported: stream.browser_supported !== false,
+        channelLayout: String(stream.channel_layout || ''),
+        channels: Number(stream.channels || 0),
+        codec: String(stream.codec || ''),
+        codecLabel: String(stream.codec_label || ''),
+        default: Boolean(stream.default),
+        index: streamIndex,
+        language: String(stream.language || ''),
+        nonPrimary: Boolean(stream.non_primary),
+        profile: String(stream.profile || ''),
+        title: String(stream.title || ''),
+      }
+    })
+    .filter(Boolean)
+}
+
+function normalizeAudioStreamIndex(value) {
+  if (value === null || value === undefined || value === '') return null
+  const numericValue = Number(value)
+  return Number.isInteger(numericValue) ? numericValue : null
 }
 
 export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeconds, { signal } = {}) {

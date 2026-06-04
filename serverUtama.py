@@ -4119,27 +4119,57 @@ def get_gdrive_stream_details(current_user,file_path):
                     _gdrive_token_ts = time.time()
         
         file_metadata = _get_gdrive_file_metadata(fid)
+        requested_audio_stream_index = _parse_audio_stream_index(request.args.get('audio_stream_index'))
+        audio_streams = file_metadata.get('audio_streams') if isinstance(file_metadata.get('audio_streams'), list) else []
+        selected_audio = _get_audio_stream_by_index(audio_streams, requested_audio_stream_index)
+        explicit_audio_selection = selected_audio is not None
+        primary_audio = _get_primary_audio_stream(file_metadata)
+        selected_audio = selected_audio or primary_audio
+        selected_audio_stream_index = selected_audio.get('index') if selected_audio else file_metadata.get('audio_stream_index')
+        primary_audio_stream_index = primary_audio.get('index') if primary_audio else file_metadata.get('audio_stream_index')
+        selected_audio_browser_supported = selected_audio.get('browser_supported') if selected_audio else file_metadata.get('browser_audio_supported')
+        audio_transcode_required = bool(
+            selected_audio
+            and (
+                not selected_audio_browser_supported
+                or (
+                    explicit_audio_selection
+                    and selected_audio_stream_index != primary_audio_stream_index
+                )
+            )
+        )
+        audio_transcode_stream_index = (
+            selected_audio_stream_index
+            if explicit_audio_selection
+            else file_metadata.get('audio_transcode_stream_index')
+        )
+        audio_transcode_query = f"stream_token={quote(_make_stream_token(fid), safe='')}"
+        if explicit_audio_selection:
+            audio_transcode_query += f"&audio_stream_index={quote(str(selected_audio_stream_index), safe='')}"
         file_name = request.args.get('file_name') or file_metadata.get('file_name', '')
         res = {
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
             "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
-            "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
-            "audio_transcode_start_url": f"/api/gdrive-audio-transcode-start/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?{audio_transcode_query}",
+            "audio_transcode_start_url": f"/api/gdrive-audio-transcode-start/{fid}?{audio_transcode_query}",
             "embedded_subtitles_url": f"/api/gdrive-embedded-subtitles/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "file_name": file_name,
             "duration_ms": file_metadata.get('duration_ms', 0),
-            "audio_codec": file_metadata.get('audio_codec', ''),
-            "audio_codec_label": file_metadata.get('audio_codec_label', ''),
-            "audio_channels": file_metadata.get('audio_channels', 0),
-            "audio_profile": file_metadata.get('audio_profile', ''),
-            "audio_stream_index": file_metadata.get('audio_stream_index'),
-            "audio_transcode_stream_index": file_metadata.get('audio_transcode_stream_index'),
-            "audio_transcode_codec": file_metadata.get('audio_transcode_codec', ''),
-            "audio_transcode_codec_label": file_metadata.get('audio_transcode_codec_label', ''),
+            "audio_codec": selected_audio.get('codec', '') if selected_audio else file_metadata.get('audio_codec', ''),
+            "audio_codec_label": _format_audio_codec_label(selected_audio) if selected_audio else file_metadata.get('audio_codec_label', ''),
+            "audio_channels": selected_audio.get('channels', 0) if selected_audio else file_metadata.get('audio_channels', 0),
+            "audio_profile": selected_audio.get('profile', '') if selected_audio else file_metadata.get('audio_profile', ''),
+            "audio_stream_index": primary_audio_stream_index,
+            "selected_audio_stream_index": selected_audio_stream_index,
+            "default_audio_stream_index": primary_audio_stream_index,
+            "audio_transcode_required": audio_transcode_required,
+            "audio_transcode_stream_index": audio_transcode_stream_index,
+            "audio_transcode_codec": selected_audio.get('codec', '') if explicit_audio_selection and selected_audio else file_metadata.get('audio_transcode_codec', ''),
+            "audio_transcode_codec_label": _format_audio_codec_label(selected_audio) if explicit_audio_selection and selected_audio else file_metadata.get('audio_transcode_codec_label', ''),
             "audio_probe_status": file_metadata.get('audio_probe_status', ''),
-            "audio_streams": file_metadata.get('audio_streams', []),
-            "browser_audio_supported": file_metadata.get('browser_audio_supported'),
+            "audio_streams": audio_streams,
+            "browser_audio_supported": selected_audio_browser_supported,
             "headers": {
                 "Authorization": f"Bearer {token}",
                 "User-Agent": "Mutflix/1.0" 
@@ -4322,7 +4352,7 @@ def _normalize_audio_stream_metadata(stream):
         bit_rate = 0
     tags = stream.get('tags') or {}
     disposition = stream.get('disposition') or {}
-    return {
+    metadata = {
         "index": stream.get('index'),
         "codec": codec,
         "profile": str(stream.get('profile') or ''),
@@ -4334,6 +4364,34 @@ def _normalize_audio_stream_metadata(stream):
         "default": bool(disposition.get('default')),
         "browser_supported": _is_browser_supported_audio_codec(codec),
     }
+    metadata["codec_label"] = _format_audio_codec_label(metadata)
+    metadata["non_primary"] = _is_non_primary_audio_track(metadata)
+    return metadata
+
+def _parse_audio_stream_index(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def _get_audio_stream_by_index(audio_streams, stream_index):
+    if stream_index is None:
+        return None
+    for stream in audio_streams or []:
+        try:
+            if int(stream.get('index')) == stream_index:
+                return stream
+        except (TypeError, ValueError):
+            continue
+    return None
+
+def _get_primary_audio_stream(metadata):
+    audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
+    primary_index = metadata.get('audio_stream_index')
+    primary_audio = _get_audio_stream_by_index(audio_streams, _parse_audio_stream_index(primary_index))
+    return primary_audio or next((stream for stream in audio_streams if stream.get('default')), None) or (audio_streams[0] if audio_streams else None)
 
 def _select_audio_stream_for_transcode(audio_streams, primary_audio=None):
     if not audio_streams:
@@ -4465,11 +4523,12 @@ def _get_gdrive_stream_http_session():
         _gdrive_stream_http_local.session = session
     return session
 
-def _get_gdrive_audio_transcode_stream_map(fid):
+def _get_gdrive_audio_transcode_stream_map(fid, requested_stream_index=None):
     metadata = _get_gdrive_file_metadata(fid)
-    stream_index = metadata.get('audio_transcode_stream_index')
+    audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
+    requested_audio = _get_audio_stream_by_index(audio_streams, requested_stream_index)
+    stream_index = requested_audio.get('index') if requested_audio else metadata.get('audio_transcode_stream_index')
     if stream_index is None:
-        audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
         primary_index = metadata.get('audio_stream_index')
         primary_audio = next((stream for stream in audio_streams if stream.get('index') == primary_index), None)
         primary_audio = primary_audio or next((stream for stream in audio_streams if stream.get('default')), None)
@@ -4644,7 +4703,7 @@ def gdrive_audio_transcode(fid):
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
     start_seconds = _clamp_audio_transcode_start(request.args.get('start_seconds'))
-    audio_stream_map = _get_gdrive_audio_transcode_stream_map(fid)
+    audio_stream_map = _get_gdrive_audio_transcode_stream_map(fid, _parse_audio_stream_index(request.args.get('audio_stream_index')))
     command = [
         "ffmpeg",
         "-hide_banner",

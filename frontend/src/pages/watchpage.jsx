@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
+  AudioLines,
   Captions,
   Loader2,
   Maximize,
@@ -75,6 +76,9 @@ function WatchPage({
   const fallbackStreamUrlRef = useRef('')
   const fallbackPositionRef = useRef(null)
   const sourceDurationRef = useRef(0)
+  const playbackSourceRequestRef = useRef(0)
+  const audioTracksRef = useRef([])
+  const selectedAudioStreamIndexRef = useRef(null)
   const audioTranscodeBaseUrlRef = useRef('')
   const audioTranscodeOffsetRef = useRef(0)
   const audioTranscodeStartUrlRef = useRef('')
@@ -112,6 +116,9 @@ function WatchPage({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [needsAudioTranscode, setNeedsAudioTranscode] = useState(false)
   const [audioCodecLabel, setAudioCodecLabel] = useState('')
+  const [audioTracks, setAudioTracks] = useState([])
+  const [selectedAudioId, setSelectedAudioId] = useState('')
+  const [isAudioPanelOpen, setIsAudioPanelOpen] = useState(false)
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
   const [subtitleDelayInput, setSubtitleDelayInput] = useState(() => formatSubtitleDelay(subtitleSettings.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
@@ -142,6 +149,17 @@ function WatchPage({
     })),
   ], [embeddedSubtitleTracks, subtitleUrl])
   const hasSubtitleTrack = subtitleTracks.length > 0
+  const selectedAudioTrack = useMemo(
+    () => audioTracks.find((track) => getAudioTrackId(track) === selectedAudioId) || null,
+    [audioTracks, selectedAudioId],
+  )
+  const hasAudioTrackChoices = audioTracks.length > 1
+  const selectedAudioLabel = selectedAudioTrack
+    ? getAudioTrackDisplayLabel(selectedAudioTrack, { includeCodec: false })
+    : audioCodecLabel
+  const selectedAudioNoticeLabel = selectedAudioTrack
+    ? getAudioTrackDisplayLabel(selectedAudioTrack, { includeCodec: true })
+    : audioCodecLabel
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
   const episodeLabel = isSeries
@@ -172,7 +190,7 @@ function WatchPage({
     () => ({ top: `${subtitleSettings.positionPercent}%` }),
     [subtitleSettings.positionPercent],
   )
-  const shouldHideCursor = isPlaying && !showControls && !isSubtitlePanelOpen && !isBuffering && !playerError
+  const shouldHideCursor = isPlaying && !showControls && !isSubtitlePanelOpen && !isAudioPanelOpen && !isBuffering && !playerError
 
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
@@ -206,14 +224,15 @@ function WatchPage({
   const revealControls = useCallback(() => {
     setShowControls(true)
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying && !isSubtitlePanelOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isPlaying, isSubtitlePanelOpen])
+  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen])
 
   const toggleControls = useCallback(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isSubtitlePanelOpen) {
+    if (isSubtitlePanelOpen || isAudioPanelOpen) {
+      setIsAudioPanelOpen(false)
       setIsSubtitlePanelOpen(false)
       setShowControls(true)
       if (isPlaying) {
@@ -228,10 +247,10 @@ function WatchPage({
     }
 
     setShowControls(true)
-    if (isPlaying && !isSubtitlePanelOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isPlaying, isSubtitlePanelOpen, showControls])
+  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen, showControls])
 
   const togglePlay = useCallback(() => {
     const player = playerRef.current
@@ -376,6 +395,68 @@ function WatchPage({
     return true
   }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame])
 
+  const applyPlaybackSource = useCallback((playbackSource, { autoplay = true, startSeconds = 0 } = {}) => {
+    const {
+      audioCodecLabel: nextAudioCodecLabel,
+      audioProbeStatus,
+      audioTracks: nextAudioTracks = [],
+      audioTranscodeStartUrl,
+      audioTranscodeUrl,
+      durationMs,
+      fallbackUrl,
+      selectedAudioStreamIndex,
+      url,
+    } = playbackSource
+    const sourceDurationSeconds = Number(durationMs || 0) / 1000
+    const selectedTrack = getSelectedAudioTrack(nextAudioTracks, selectedAudioStreamIndex)
+
+    sourceDurationRef.current = sourceDurationSeconds
+    audioTranscodeBaseUrlRef.current = audioTranscodeUrl
+    audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
+    fallbackStreamUrlRef.current = fallbackUrl
+    audioTracksRef.current = nextAudioTracks
+    selectedAudioStreamIndexRef.current = selectedTrack?.index ?? null
+
+    setAudioTracks(nextAudioTracks)
+    setSelectedAudioId(selectedTrack ? getAudioTrackId(selectedTrack) : '')
+    setNeedsAudioTranscode(Boolean(audioTranscodeUrl))
+    setAudioCodecLabel(nextAudioCodecLabel || formatAudioProbeStatus(audioProbeStatus))
+    if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
+    if (audioTranscodeUrl) {
+      restartAudioTranscodeAt(startSeconds, { autoplay, immediate: true })
+      return
+    }
+
+    pendingAudioTranscodeAutoplayRef.current = autoplay
+    fallbackPositionRef.current = startSeconds > 0 ? startSeconds : null
+    restoredPositionRef.current = false
+    setStreamUrl(url)
+  }, [restartAudioTranscodeAt])
+
+  const loadPlaybackSource = useCallback((audioStreamIndex, { autoplay = true, startSeconds = 0 } = {}) => {
+    const requestId = playbackSourceRequestRef.current + 1
+    playbackSourceRequestRef.current = requestId
+    setPlayerError('')
+    setIsBuffering(true)
+
+    return fetchPlaybackSource(
+      authToken,
+      videoPath,
+      { name: videoName, original_name: videoOriginalName },
+      { audioStreamIndex },
+    ).then((playbackSource) => {
+      if (playbackSourceRequestRef.current !== requestId) return null
+      applyPlaybackSource(playbackSource, { autoplay, startSeconds })
+      return playbackSource
+    }).catch((error) => {
+      if (playbackSourceRequestRef.current === requestId) {
+        setPlayerError(error.message)
+        setIsBuffering(false)
+      }
+      return null
+    })
+  }, [applyPlaybackSource, authToken, videoName, videoOriginalName, videoPath])
+
   const seekToPlaybackTime = useCallback((targetSeconds) => {
     const player = playerRef.current
     if (!player) return false
@@ -511,6 +592,9 @@ function WatchPage({
         setStreamUrl('')
         setNeedsAudioTranscode(false)
         setAudioCodecLabel('')
+        setAudioTracks([])
+        setSelectedAudioId('')
+        setIsAudioPanelOpen(false)
         clearHeldFrame()
         clearSeekPreview()
         setSubtitleCues([])
@@ -520,38 +604,18 @@ function WatchPage({
         setSelectedSubtitleId('')
       }
     })
+    audioTracksRef.current = []
+    selectedAudioStreamIndexRef.current = null
     embeddedSubtitleTracksRef.current = []
     embeddedSubtitleTrackUrlRef.current = ''
     embeddedSubtitleWindowRequestsRef.current.clear()
     externalSubtitleCuesRef.current = []
     selectedSubtitleIdRef.current = ''
 
-    const playbackSourcePromise = fetchPlaybackSource(authToken, videoPath, { name: videoName, original_name: videoOriginalName })
-    playbackSourcePromise
-      .then(({ audioCodecLabel: nextAudioCodecLabel, audioProbeStatus, audioTranscodeStartUrl, audioTranscodeUrl, durationMs, fallbackUrl, url }) => {
-        if (!ignore) {
-          const sourceDurationSeconds = Number(durationMs || 0) / 1000
-          sourceDurationRef.current = sourceDurationSeconds
-          audioTranscodeBaseUrlRef.current = audioTranscodeUrl
-          audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
-          fallbackStreamUrlRef.current = fallbackUrl
-          setNeedsAudioTranscode(Boolean(audioTranscodeUrl))
-          setAudioCodecLabel(nextAudioCodecLabel || formatAudioProbeStatus(audioProbeStatus))
-          if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
-          if (audioTranscodeUrl) {
-            const resumeSeconds = initialResumePositionRef.current
-            restartAudioTranscodeAt(resumeSeconds, { autoplay: true, immediate: true })
-            return
-          }
-          setStreamUrl(url)
-        }
-      })
-      .catch((error) => {
-        if (!ignore) {
-          setPlayerError(error.message)
-          setIsBuffering(false)
-        }
-      })
+    const playbackSourcePromise = loadPlaybackSource(null, {
+      autoplay: true,
+      startSeconds: initialResumePositionRef.current,
+    })
 
     fetchPlaybackMarkers(authToken, markerFolderName).then((nextMarkers) => {
       if (!ignore) setMarkers(nextMarkers)
@@ -578,8 +642,8 @@ function WatchPage({
     const externalSubtitlePromise = loadExternalSubtitleTrack()
 
     async function loadEmbeddedSubtitleTracks() {
-      const { embeddedSubtitlesUrl } = await playbackSourcePromise
-      const tracks = await fetchEmbeddedSubtitleTracks(embeddedSubtitlesUrl)
+      const playbackSource = await playbackSourcePromise
+      const tracks = await fetchEmbeddedSubtitleTracks(playbackSource?.embeddedSubtitlesUrl)
       await externalSubtitlePromise
       if (ignore) return
 
@@ -596,10 +660,11 @@ function WatchPage({
 
     return () => {
       ignore = true
+      playbackSourceRequestRef.current += 1
       cancelAudioTranscodeStartRequest()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, markerFolderName, restartAudioTranscodeAt, selectSubtitleTrack, subtitlePath, videoName, videoOriginalName, videoPath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -722,11 +787,11 @@ function WatchPage({
 
   useEffect(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying && !isSubtitlePanelOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
     return () => window.clearTimeout(controlsTimeoutRef.current)
-  }, [isPlaying, isSubtitlePanelOpen])
+  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen])
 
   function handleLoadedMetadata() {
     const player = playerRef.current
@@ -849,6 +914,40 @@ function WatchPage({
 
   function handleSubtitleTrackChange(event) {
     selectSubtitleTrack(event.target.value)
+  }
+
+  function handleAudioTrackChange(event) {
+    const audioId = event.target.value
+    const selectedTrack = audioTracksRef.current.find((track) => getAudioTrackId(track) === audioId)
+    if (!selectedTrack || selectedTrack.index === selectedAudioStreamIndexRef.current) return
+
+    const player = playerRef.current
+    const switchPosition = player
+      ? getPlaybackPosition(player, audioTranscodeOffsetRef.current)
+      : currentTime
+    const shouldResume = player ? !player.paused : isPlaying
+
+    selectedAudioStreamIndexRef.current = selectedTrack.index
+    setSelectedAudioId(audioId)
+    holdCurrentFrame()
+    player?.pause()
+    cancelAudioTranscodeStartRequest()
+    clearStreamStallTimeout()
+    hasUsedStreamFallbackRef.current = false
+    pendingAudioTranscodeOffsetRef.current = 0
+    pendingAudioTranscodeTargetRef.current = null
+    pendingAudioTranscodeAutoplayRef.current = shouldResume
+    fallbackPositionRef.current = switchPosition
+    restoredPositionRef.current = false
+    setSeekPreviewTime(switchPosition)
+    setCurrentTime(switchPosition)
+    setIsBuffering(true)
+    setPlayerError('')
+    loadPlaybackSource(selectedTrack.index, {
+      autoplay: shouldResume,
+      startSeconds: switchPosition,
+    })
+    revealControls()
   }
 
   function handleSubtitlePosition(event) {
@@ -977,11 +1076,11 @@ function WatchPage({
             {needsAudioTranscode && (
               <aside className="watch-transcode-notice">
                 <AlertTriangle aria-hidden="true" size={15} />
-                <span>{audioCodecLabel ? `${audioCodecLabel} perlu ditranscode.` : 'Audio video ini perlu ditranscode.'}</span>
+                <span>{selectedAudioNoticeLabel ? `${selectedAudioNoticeLabel} perlu ditranscode.` : 'Audio video ini perlu ditranscode.'}</span>
               </aside>
             )}
-            {audioCodecLabel && !needsAudioTranscode && (
-              <span className="watch-audio-codec">Audio: {audioCodecLabel}</span>
+            {selectedAudioLabel && !needsAudioTranscode && (
+              <span className="watch-audio-codec">Audio: {selectedAudioLabel}</span>
             )}
           </div>
           {isSeries && <span>{video.name}</span>}
@@ -1016,6 +1115,52 @@ function WatchPage({
       </div>
 
       <div className="watch-controls">
+        {isAudioPanelOpen && (
+          <section aria-label="Audio settings" className="watch-subtitle-panel watch-audio-panel" id="audio-settings">
+            <div className="watch-subtitle-panel-header">
+              <div>
+                <h2>Audio</h2>
+                <p>{selectedAudioTrack ? getAudioTrackMetaLabel(selectedAudioTrack) : 'No audio track metadata is available.'}</p>
+              </div>
+              <button
+                aria-label="Close audio settings"
+                className="watch-subtitle-close"
+                onClick={() => setIsAudioPanelOpen(false)}
+                type="button"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <label className="watch-subtitle-setting watch-audio-select">
+              <span>Track</span>
+              <select aria-label="Audio track" onChange={handleAudioTrackChange} value={selectedAudioId}>
+                {audioTracks.map((track) => (
+                  <option key={getAudioTrackId(track)} value={getAudioTrackId(track)}>
+                    {getAudioTrackOptionLabel(track)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="watch-audio-track-list">
+              {audioTracks.map((track) => {
+                const audioId = getAudioTrackId(track)
+                const isSelected = audioId === selectedAudioId
+                return (
+                  <button
+                    aria-pressed={isSelected}
+                    className={`watch-audio-track ${isSelected ? 'active' : ''}`}
+                    key={audioId}
+                    onClick={() => handleAudioTrackChange({ target: { value: audioId } })}
+                    type="button"
+                  >
+                    <span className="watch-audio-track-title">{getAudioTrackDisplayLabel(track, { includeCodec: false })}</span>
+                    <span className="watch-audio-track-meta">{getAudioTrackMetaLabel(track)}</span>
+                  </button>
+                )
+              })}
+            </div>
+          </section>
+        )}
         {isSubtitlePanelOpen && (
           <section aria-label="Subtitle settings" className="watch-subtitle-panel" id="subtitle-settings">
             <div className="watch-subtitle-panel-header">
@@ -1202,13 +1347,31 @@ function WatchPage({
             >
               <SkipForward size={20} />
             </button>
+            {hasAudioTrackChoices && (
+              <button
+                aria-controls="audio-settings"
+                aria-expanded={isAudioPanelOpen}
+                aria-label="Audio settings"
+                className={`watch-icon-button ${isAudioPanelOpen ? 'active' : ''}`}
+                onClick={() => {
+                  setIsAudioPanelOpen((isOpen) => !isOpen)
+                  setIsSubtitlePanelOpen(false)
+                }}
+                type="button"
+              >
+                <AudioLines size={22} />
+              </button>
+            )}
             {hasSubtitleTrack && (
               <button
                 aria-controls="subtitle-settings"
                 aria-expanded={isSubtitlePanelOpen}
                 aria-label="Subtitle settings"
                 className={`watch-icon-button ${isCaptionsEnabled ? 'active' : ''}`}
-                onClick={() => setIsSubtitlePanelOpen((isOpen) => !isOpen)}
+                onClick={() => {
+                  setIsSubtitlePanelOpen((isOpen) => !isOpen)
+                  setIsAudioPanelOpen(false)
+                }}
                 type="button"
               >
                 <Captions size={22} />
@@ -1392,6 +1555,138 @@ function getPreferredEmbeddedSubtitleTrack(tracks) {
     || tracks.find((track) => ['id', 'ind', 'indonesian'].includes(String(track.language || '').toLowerCase()))
     || tracks.find((track) => ['en', 'eng', 'english'].includes(String(track.language || '').toLowerCase()))
     || tracks[0]
+}
+
+function getSelectedAudioTrack(tracks, selectedAudioStreamIndex) {
+  const hasSelectedIndex = selectedAudioStreamIndex !== null
+    && selectedAudioStreamIndex !== undefined
+    && selectedAudioStreamIndex !== ''
+  const numericSelectedIndex = Number(selectedAudioStreamIndex)
+  return (hasSelectedIndex && Number.isFinite(numericSelectedIndex)
+    ? tracks.find((track) => Number(track.index) === numericSelectedIndex)
+    : null)
+    || tracks.find((track) => track.default)
+    || tracks[0]
+    || null
+}
+
+function getAudioTrackId(track) {
+  return `audio:${track.index}`
+}
+
+function getAudioTrackOptionLabel(track) {
+  return getAudioTrackDisplayLabel(track, { includeCodec: true })
+}
+
+function getAudioTrackDisplayLabel(track, { includeCodec = true } = {}) {
+  const languageLabel = getAudioLanguageLabel(track.language)
+  const title = String(track.title || '').trim()
+  const kindLabel = getAudioTrackKindLabel(track)
+  const parts = []
+  if (languageLabel) parts.push(languageLabel)
+  if (title && !isDuplicateAudioLabel(title, languageLabel)) {
+    parts.push(title)
+  } else if (kindLabel) {
+    parts.push(kindLabel)
+  }
+  if (includeCodec) parts.push(getAudioTrackCodecLabel(track))
+  if (track.default) parts.push('Default')
+  return uniqueLabels(parts).join(' - ') || `Audio ${track.index}`
+}
+
+function getAudioTrackMetaLabel(track) {
+  const parts = [
+    getAudioTrackCodecLabel(track),
+    getAudioTrackKindLabel(track),
+    track.default ? 'Default' : '',
+    track.browserSupported ? '' : 'Transcode',
+  ]
+  return uniqueLabels(parts).join(' - ') || 'Audio track'
+}
+
+function getAudioTrackCodecLabel(track) {
+  const label = String(track.codecLabel || '').trim()
+  if (label) return label
+
+  const codec = String(track.codec || '').trim().toUpperCase() || 'Audio'
+  const channels = Number(track.channels || 0)
+  return channels > 0 ? `${codec} ${channels}ch` : codec
+}
+
+function getAudioTrackKindLabel(track) {
+  const text = `${track.title || ''} ${track.language || ''}`.toLowerCase()
+  if (/(commentary|komentar|director|commentator)/.test(text)) return 'Commentary'
+  if (/(descriptive|description|audio description|deskripsi|sdh)/.test(text)) return 'Audio description'
+  return track.nonPrimary ? 'Alternate' : ''
+}
+
+function getAudioLanguageLabel(language) {
+  const normalizedLanguage = String(language || '').trim().toLowerCase()
+  if (!normalizedLanguage || normalizedLanguage === 'und' || normalizedLanguage === 'unknown') return ''
+  const languageLabels = {
+    ar: 'Arabic',
+    ara: 'Arabic',
+    chi: 'Chinese',
+    cmn: 'Mandarin',
+    de: 'German',
+    deu: 'German',
+    eng: 'English',
+    en: 'English',
+    es: 'Spanish',
+    spa: 'Spanish',
+    fr: 'French',
+    fra: 'French',
+    fre: 'French',
+    hi: 'Hindi',
+    hin: 'Hindi',
+    id: 'Indonesian',
+    ind: 'Indonesian',
+    it: 'Italian',
+    ita: 'Italian',
+    ja: 'Japanese',
+    jpn: 'Japanese',
+    ko: 'Korean',
+    kor: 'Korean',
+    ms: 'Malay',
+    msa: 'Malay',
+    pt: 'Portuguese',
+    por: 'Portuguese',
+    ru: 'Russian',
+    rus: 'Russian',
+    th: 'Thai',
+    tha: 'Thai',
+    vi: 'Vietnamese',
+    vie: 'Vietnamese',
+    zh: 'Chinese',
+    zho: 'Chinese',
+  }
+  return languageLabels[normalizedLanguage] || normalizedLanguage.toUpperCase()
+}
+
+function isDuplicateAudioLabel(candidate, existingLabel) {
+  const normalizedCandidate = normalizeAudioLabel(candidate)
+  const normalizedExistingLabel = normalizeAudioLabel(existingLabel)
+  return Boolean(normalizedCandidate && normalizedExistingLabel && (
+    normalizedCandidate === normalizedExistingLabel
+    || normalizedCandidate.includes(normalizedExistingLabel)
+    || normalizedExistingLabel.includes(normalizedCandidate)
+  ))
+}
+
+function normalizeAudioLabel(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+function uniqueLabels(labels) {
+  const seenLabels = new Set()
+  return labels
+    .map((label) => String(label || '').trim())
+    .filter((label) => {
+      const key = normalizeAudioLabel(label)
+      if (!key || seenLabels.has(key)) return false
+      seenLabels.add(key)
+      return true
+    })
 }
 
 function getEmbeddedSubtitleTrackId(track) {

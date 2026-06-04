@@ -262,6 +262,10 @@
   padding: 16px;
 }
 
+.watch-audio-panel {
+  width: min(460px, calc(100vw - 24px));
+}
+
 .watch-subtitle-panel-header,
 .watch-subtitle-toggle,
 .watch-subtitle-delay,
@@ -350,6 +354,52 @@
   background: rgba(15, 23, 42, 0.92);
   color: #f8fafc;
   padding: 7px 8px;
+}
+
+.watch-audio-select {
+  margin-top: 14px;
+}
+
+.watch-audio-track-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.watch-audio-track {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #f8fafc;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.watch-audio-track:hover,
+.watch-audio-track.active {
+  border-color: rgba(0, 220, 100, 0.76);
+  background: rgba(5, 46, 22, 0.78);
+}
+
+.watch-audio-track-title {
+  overflow: hidden;
+  font-size: 0.84rem;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watch-audio-track-meta {
+  overflow: hidden;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .watch-subtitle-range-setting {
