@@ -1,4 +1,5 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
+import { hasLoadedImageUrl, rememberLoadedImageUrl } from '../utils/imageLoadCache'
 
 const LoadableImage = memo(function LoadableImage({
   alt = '',
@@ -9,44 +10,57 @@ const LoadableImage = memo(function LoadableImage({
   shimmerOnError = true,
   src,
 }) {
-  const [imageState, setImageState] = useState('loading')
   const [useFallback, setUseFallback] = useState(false)
   const resolvedSrc = useFallback || !src ? fallbackSrc : src
-  const showShimmer = imageState === 'loading' || (imageState === 'error' && shimmerOnError)
-  const shimmerClassName = loading === 'lazy' || imageState === 'error'
+  const [imageState, setImageState] = useState(() => getInitialImageState(src || fallbackSrc))
+  const renderImageState = imageState === 'loaded' && !hasLoadedImageUrl(resolvedSrc) ? 'loading' : imageState
+  const showShimmer = renderImageState === 'loading' || (renderImageState === 'error' && shimmerOnError)
+  const shimmerClassName = loading === 'lazy' || renderImageState === 'error'
     ? 'image-shimmer image-shimmer-static'
     : 'image-shimmer'
 
+  useEffect(() => {
+    setUseFallback(false)
+    setImageState(getInitialImageState(src || fallbackSrc))
+  }, [fallbackSrc, src])
+
   if (!resolvedSrc) {
     return shimmerOnError
-      ? <span className={imageState === 'error' ? 'image-shimmer image-shimmer-static' : 'image-shimmer'} aria-hidden="true" />
+      ? <span className={renderImageState === 'error' ? 'image-shimmer image-shimmer-static' : 'image-shimmer'} aria-hidden="true" />
       : null
   }
 
   return (
     <>
       {showShimmer && <span className={shimmerClassName} aria-hidden="true" />}
-      {imageState !== 'error' && (
+      {renderImageState !== 'error' && (
         <img
           alt={alt}
-          className={`${className} ${imageState === 'loaded' ? 'image-loaded' : 'image-loading'}`.trim()}
+          className={`${className} ${renderImageState === 'loaded' ? 'image-loaded' : 'image-loading'}`.trim()}
           decoding="async"
           fetchPriority={fetchPriority}
           loading={loading}
           onError={() => {
             if (fallbackSrc && resolvedSrc !== fallbackSrc) {
               setUseFallback(true)
-              setImageState('loading')
+              setImageState(getInitialImageState(fallbackSrc))
               return
             }
             setImageState('error')
           }}
-          onLoad={() => setImageState('loaded')}
+          onLoad={() => {
+            rememberLoadedImageUrl(resolvedSrc)
+            setImageState('loaded')
+          }}
           src={resolvedSrc}
         />
       )}
     </>
   )
 })
+
+function getInitialImageState(src) {
+  return hasLoadedImageUrl(src) ? 'loaded' : 'loading'
+}
 
 export default LoadableImage

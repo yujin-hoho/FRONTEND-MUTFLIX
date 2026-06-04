@@ -1,7 +1,7 @@
-const STATIC_CACHE = 'mutflix-static-v1'
-const IMAGE_CACHE = 'mutflix-images-v1'
+const STATIC_CACHE = 'mutflix-static-v2'
+const IMAGE_CACHE = 'mutflix-images-v2'
 const STATIC_ASSETS = ['/', '/index.html', '/favicon.svg', '/icons.svg']
-const MAX_IMAGE_CACHE_ITEMS = 120
+const MAX_IMAGE_CACHE_ITEMS = 800
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

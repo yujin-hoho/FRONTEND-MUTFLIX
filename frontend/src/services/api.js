@@ -693,20 +693,22 @@ export async function fetchVideoQueue(authToken, item) {
   const itemPath = getItemPath(detailItem)
   if (!itemPath || !navigator.onLine) return { item: detailItem, videos: [] }
 
+  const headers = { 'x-access-token': authToken }
   const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, {
     cache: 'no-store',
-    headers: { 'x-access-token': authToken },
+    headers,
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to load video queue.')
+  const mergedItem = mergeMeaningfulValues(
+    detailItem,
+    data.catalog_item || {},
+    { media_type: detailItem.media_type },
+  )
 
   return {
-    item: mergeMeaningfulValues(
-      detailItem,
-      data.catalog_item || {},
-      { media_type: detailItem.media_type },
-    ),
-    videos: Array.isArray(data.videos) ? data.videos : [],
+    item: mergedItem,
+    videos: await enrichEpisodesFromServer(mergedItem, Array.isArray(data.videos) ? data.videos : [], headers),
   }
 }
 

@@ -13,6 +13,11 @@
   cursor: pointer;
 }
 
+.watch-page.cursor-hidden,
+.watch-page.cursor-hidden * {
+  cursor: none !important;
+}
+
 .watch-video {
   width: 100%;
   height: 100%;

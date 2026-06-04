@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ChevronDown, LogOut, Play, UsersRound } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
 import { CatalogRow, HistoryRow } from '../components/catalog/CatalogRows'
 import SearchBox from '../components/search/SearchBox'
+import { createDashboardRowsSnapshot } from '../utils/cache'
 import {
   getDetailArtworkUrl,
   getGenres,
@@ -29,6 +30,7 @@ function DashboardPage({
   onOpenMyList,
   onOpenDetail,
   onHideHistory,
+  onDashboardRowsReady,
   onPlayHistory,
   onOpenSearch,
   onSearchCatalog,
@@ -41,6 +43,14 @@ function DashboardPage({
     () => buildDashboardView(catalogData, selectedProfile, featuredItemKey, profileData.watchHistory, myList),
     [catalogData, featuredItemKey, myList, profileData.watchHistory, selectedProfile],
   )
+  const displayView = catalogData.isFromCache && catalogData.rows
+    ? { ...dashboardView, ...catalogData.rows }
+    : dashboardView
+
+  useEffect(() => {
+    if (!onDashboardRowsReady || catalogData.isLoading || catalogData.isFromCache) return
+    onDashboardRowsReady(createDashboardRowsSnapshot(dashboardView))
+  }, [catalogData.isFromCache, catalogData.isLoading, dashboardView, onDashboardRowsReady])
 
   return (
     <main className="dashboard-page">
@@ -98,20 +108,20 @@ function DashboardPage({
       <section className="dashboard-hero" aria-label="Featured title">
         <LoadableImage
           className="dashboard-hero-poster"
-          fallbackSrc={dashboardView.featuredFallback}
+          fallbackSrc={displayView.featuredFallback}
           fetchPriority="high"
-          key={`${dashboardView.featuredBackdrop}-${dashboardView.featuredFallback}`}
+          key={`${displayView.featuredBackdrop}-${displayView.featuredFallback}`}
           loading="eager"
-          src={dashboardView.featuredBackdrop}
+          src={displayView.featuredBackdrop}
         />
         <div className="dashboard-hero-shade" />
         <div className="dashboard-hero-content">
-          <h1>{dashboardView.featuredItem ? getTitle(dashboardView.featuredItem) : 'Mutflix'}</h1>
+          <h1>{displayView.featuredItem ? getTitle(displayView.featuredItem) : 'Mutflix'}</h1>
           <p>
-            {dashboardView.featuredItem?.tmdb_overview
+            {displayView.featuredItem?.tmdb_overview
               || 'Explore movies and series from your Mutflix catalog.'}
           </p>
-          <button className="play-button" onClick={() => dashboardView.featuredItem && onOpenDetail(dashboardView.featuredItem)} type="button">
+          <button className="play-button" onClick={() => displayView.featuredItem && onOpenDetail(displayView.featuredItem)} type="button">
             <Play size={22} fill="currentColor" />
             <span>Play</span>
           </button>
@@ -129,10 +139,10 @@ function DashboardPage({
         {!catalogData.error && (
           <>
             <HistoryRow items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onOpenContextMenu={onOpenContextMenu} onPlay={onPlayHistory} />
-            {dashboardView.curatedRows.map((row) => (
+            {displayView.curatedRows.map((row) => (
               <CatalogRow items={row.items} key={row.genre} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} title={row.genre} />
             ))}
-            {dashboardView.catalogRows.map((row) => (
+            {displayView.catalogRows.map((row) => (
               <CatalogRow items={row.items} key={row.genre} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} ranked={row.ranked} title={row.genre} />
             ))}
           </>

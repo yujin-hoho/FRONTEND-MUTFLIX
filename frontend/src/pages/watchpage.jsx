@@ -172,6 +172,7 @@ function WatchPage({
     () => ({ top: `${subtitleSettings.positionPercent}%` }),
     [subtitleSettings.positionPercent],
   )
+  const shouldHideCursor = isPlaying && !showControls && !isSubtitlePanelOpen && !isBuffering && !playerError
 
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
@@ -891,7 +892,8 @@ function WatchPage({
 
   return (
     <main
-      className={`watch-page ${showControls ? 'controls-visible' : ''}`}
+      className={`watch-page ${showControls ? 'controls-visible' : ''} ${shouldHideCursor ? 'cursor-hidden' : ''}`}
+      onMouseDown={revealControls}
       onMouseMove={revealControls}
       ref={shellRef}
     >

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
-import { DASHBOARD_CACHE_KEY, PROFILES_CACHE_KEY } from './config'
+import { PROFILES_CACHE_KEY } from './config'
 import DashboardSkeleton from './components/DashboardSkeleton'
 import AuthPage from './pages/AuthPage'
 import DashboardPage from './pages/DashboardPage'
@@ -28,6 +28,8 @@ import {
   saveMyListItemStatus,
 } from './services/api'
 import {
+  clearDashboardCache,
+  mergeDashboardCache,
   readDashboardCache,
   readProfilesCache,
   writeDashboardCache,
@@ -37,7 +39,6 @@ import {
   createProfileId,
   getBackdropUrl,
   getCatalogIdentityKey,
-  getDetailArtworkUrl,
   getDetailUrl,
   getEpisodeHistoryLabel,
   getItemKey,
@@ -45,12 +46,10 @@ import {
   getMediaType,
   getPosterUrl,
   getRotationKey,
-  getStillUrl,
   getTitle,
   getWatchUrl,
   normalizeMediaPath,
   normalizeWatchHistory,
-  preloadImages,
   rotateItems,
 } from './utils/media'
 import { DEFAULT_PROFILE_AVATAR_SEED } from './utils/profileAvatars'
@@ -91,17 +90,53 @@ function App() {
   const [editingProfile, setEditingProfile] = useState(null)
   const [newProfileName, setNewProfileName] = useState('')
   const [profileAvatarSeed, setProfileAvatarSeed] = useState(DEFAULT_PROFILE_AVATAR_SEED)
-  const [profileData, setProfileData] = useState({
-    myList: [],
-    watchHistory: [],
-    isLoading: false,
-    error: null,
+  const [profileData, setProfileData] = useState(() => {
+    const profile = readStoredJson('mutflix_profile')
+    if (profile && profile.id) {
+      const cached = readDashboardCache(profile.id)
+      if (cached) {
+        return {
+          myList: [],
+          watchHistory: cached.history || [],
+          isLoading: false,
+          error: null,
+        }
+      }
+    }
+    return {
+      myList: [],
+      watchHistory: [],
+      isLoading: false,
+      error: null,
+    }
   })
-  const [catalogData, setCatalogData] = useState({
-    movies: [],
-    series: [],
-    isLoading: true,
-    error: null,
+  const [catalogData, setCatalogData] = useState(() => {
+    const profile = readStoredJson('mutflix_profile')
+    if (profile && profile.id) {
+      const cached = readDashboardCache(profile.id)
+      if (cached) {
+        const cachedCatalog = mergeDashboardCache({
+          movies: cached.movies || [],
+          series: cached.series || [],
+        }, cached)
+        return {
+          movies: cachedCatalog.movies,
+          rows: cached.rows,
+          series: cachedCatalog.series,
+          isLoading: true, // we still fetch fresh list in background
+          isFromCache: true,
+          error: null,
+        }
+      }
+    }
+    return {
+      movies: [],
+      rows: null,
+      series: [],
+      isLoading: true,
+      isFromCache: false,
+      error: null,
+    }
   })
   const [detailData, setDetailData] = useState(EMPTY_DETAIL_DATA)
   const [contextMenu, setContextMenu] = useState(null)
@@ -109,6 +144,7 @@ function App() {
   const historyQueueRequestId = useRef(0)
   const pendingMetadataKeys = useRef(new Set())
   const catalogDataRef = useRef(catalogData)
+  const dashboardRowsCacheKey = useRef('')
 
   const isRegister = mode === 'register'
   const canSubmit = username.trim().length > 0
@@ -123,6 +159,10 @@ function App() {
       navigate('/dashboard', { replace: true })
     }
   }, [location.pathname, navigate])
+
+  useEffect(() => {
+    dashboardRowsCacheKey.current = ''
+  }, [selectedProfile?.id])
 
   useEffect(() => {
     if (!currentUser || !authToken || selectedProfile) return
@@ -178,10 +218,16 @@ function App() {
       setCatalogData((currentData) => ({ ...currentData, isLoading: true, error: null }))
 
       if (cachedDashboard) {
-        await preloadDashboardAssets(featuredItemKeys.current, selectedProfile.id, cachedDashboard)
         if (!ignore) {
           setProfileData({ myList: [], watchHistory: cachedDashboard.history || [], isLoading: false, error: null })
-          setCatalogData({ movies: cachedDashboard.movies, series: cachedDashboard.series, isLoading: false, error: null })
+          setCatalogData({
+            movies: cachedDashboard.movies,
+            rows: cachedDashboard.rows,
+            series: cachedDashboard.series,
+            isLoading: true,
+            isFromCache: true,
+            error: null,
+          })
         }
       }
 
@@ -190,21 +236,48 @@ function App() {
         const { myList } = await myListRequest
         if (error) throw error
 
-        const refreshedDashboard = cachedDashboard
-          ? mergeCatalogMetadataUpdates(dashboard, cachedDashboard)
-          : dashboard
-        const enrichedDashboard = await enrichCatalogMetadata(authToken, refreshedDashboard)
-        writeDashboardCache(selectedProfile.id, enrichedDashboard)
-        await preloadDashboardAssets(featuredItemKeys.current, selectedProfile.id, enrichedDashboard)
+        const refreshedDashboard = mergeDashboardCache(dashboard, cachedDashboard)
 
+        // Show data immediately — merge with current state to preserve cached metadata
         if (!ignore) {
-          setProfileData({ myList, watchHistory: enrichedDashboard.history, isLoading: false, error: null })
-          setCatalogData({ movies: enrichedDashboard.movies, series: enrichedDashboard.series, isLoading: false, error: null })
+          setProfileData({ myList, watchHistory: refreshedDashboard.history, isLoading: false, error: null })
+          setCatalogData((current) => {
+            const merged = mergeCatalogMetadataUpdates(
+              { movies: refreshedDashboard.movies, series: refreshedDashboard.series },
+              current,
+            )
+            return { ...merged, rows: null, isLoading: false, isFromCache: false, error: null }
+          })
+        }
+
+        // Enrich metadata progressively in background — each batch updates UI + cache
+        const profileId = selectedProfile.id
+        const enrichedCatalog = await enrichCatalogMetadata(authToken, refreshedDashboard, Infinity, {
+          onProgress: (enrichedSoFar) => {
+            if (ignore) return
+            setCatalogData((current) => {
+              const merged = mergeCatalogMetadataUpdates(current, enrichedSoFar)
+              writeDashboardCache(profileId, { history: refreshedDashboard.history, movies: merged.movies, series: merged.series })
+              return { ...merged, rows: null, isLoading: false, isFromCache: false, error: null }
+            })
+          },
+        })
+
+        // Final write — ensures cache always has the fully enriched state
+        if (!ignore) {
+          setCatalogData((current) => {
+            const merged = mergeCatalogMetadataUpdates(current, enrichedCatalog)
+            writeDashboardCache(profileId, { history: refreshedDashboard.history, movies: merged.movies, series: merged.series })
+            return { ...merged, rows: null, isLoading: false, isFromCache: false, error: null }
+          })
         }
       } catch (error) {
         if (!ignore && !cachedDashboard) {
           setProfileData({ myList: [], watchHistory: [], isLoading: false, error: error.message })
-          setCatalogData({ movies: [], series: [], isLoading: false, error: error.message })
+          setCatalogData({ movies: [], rows: null, series: [], isLoading: false, isFromCache: false, error: error.message })
+        } else if (!ignore) {
+          setProfileData((currentData) => ({ ...currentData, isLoading: false, error: error.message }))
+          setCatalogData((currentData) => ({ ...currentData, isLoading: false, error: null }))
         }
       }
     }
@@ -265,6 +338,22 @@ function App() {
       pendingItems.forEach((item) => pendingMetadataKeys.current.delete(getCatalogIdentityKey(item)))
     }
   }, [authToken, profileData.watchHistory, selectedProfile])
+
+  const handleDashboardRowsReady = useCallback((rows) => {
+    if (!selectedProfile || !rows?.signature) return
+    if (dashboardRowsCacheKey.current === rows.signature) return
+
+    const currentCatalog = catalogDataRef.current
+    if (currentCatalog.isLoading || currentCatalog.isFromCache) return
+
+    dashboardRowsCacheKey.current = rows.signature
+    writeDashboardCache(selectedProfile.id, {
+      history: profileData.watchHistory,
+      movies: currentCatalog.movies,
+      rows,
+      series: currentCatalog.series,
+    })
+  }, [profileData.watchHistory, selectedProfile])
 
   const handleSaveProgress = useCallback(async (payload) => {
     setProfileData((currentData) => {
@@ -467,11 +556,11 @@ function App() {
     localStorage.removeItem('mutflix_token')
     localStorage.removeItem('mutflix_user')
     localStorage.removeItem('mutflix_profile')
-    localStorage.removeItem(DASHBOARD_CACHE_KEY)
     localStorage.removeItem(PROFILES_CACHE_KEY)
     sessionStorage.removeItem('mutflix_token')
     sessionStorage.removeItem('mutflix_user')
     sessionStorage.removeItem('mutflix_profile')
+    clearDashboardCache()
     setAuthToken('')
     setCurrentUser(null)
     setSelectedProfile(null)
@@ -535,12 +624,13 @@ function App() {
         const videos = matchedVideo
           ? detail.videos.map((entry) => (entry === matchedVideo ? video : entry))
           : [video]
+        const resolvedItem = detail.item || catalogItem
         navigate(getWatchUrl(video.path), {
           replace: true,
           state: {
             from,
             fromState,
-            item: catalogItem,
+            item: resolvedItem,
             video,
             videos,
           },
@@ -750,7 +840,7 @@ function App() {
         />,
       )
     }
-    if (catalogData.isLoading) return <DashboardSkeleton />
+    if (catalogData.isLoading && !catalogData.movies.length && !catalogData.series.length) return <DashboardSkeleton />
     if (isSearchRoute) {
       const searchFilter = readCatalogFilter(location.search)
       return renderWithContextMenu(
@@ -799,6 +889,7 @@ function App() {
       <DashboardPage
         catalogData={catalogData}
         onChangeProfile={handleChangeProfile}
+        onDashboardRowsReady={handleDashboardRowsReady}
         onLogout={handleLogout}
         onHydrateItems={hydrateCatalogItems}
         onOpenCatalogFilter={handleOpenCatalogFilter}
@@ -851,17 +942,6 @@ function readStoredJson(key) {
   }
 }
 
-async function preloadDashboardAssets(featuredKeys, profileId, { history = [], movies = [], series = [] }) {
-  const catalogItems = [...movies, ...series]
-  const itemKey = getFeaturedItemKey(featuredKeys, profileId, movies, series)
-  const heroItem = catalogItems.find((item) => getItemKey(item) === itemKey)
-
-  await preloadImages([
-    heroItem ? getDetailArtworkUrl(heroItem) : '',
-    ...catalogItems.map((item) => getPosterUrl(item)),
-    ...history.map((item) => getStillUrl(item)),
-  ])
-}
 
 function getCurrentRoute(location) {
   return `${location.pathname}${location.search}`
