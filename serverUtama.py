@@ -4772,9 +4772,8 @@ def gdrive_audio_transcode(fid):
 
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
-    requested_audio_stream_index = _parse_audio_stream_index(request.args.get('audio_stream_index'))
     start_seconds = _clamp_audio_transcode_start(request.args.get('start_seconds'))
-    audio_stream_map = _get_gdrive_audio_transcode_stream_map(fid, requested_audio_stream_index)
+    audio_stream_map = _get_gdrive_audio_transcode_stream_map(fid, _parse_audio_stream_index(request.args.get('audio_stream_index')))
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -4794,8 +4793,6 @@ def gdrive_audio_transcode(fid):
         # Video stays stream-copied, so preserve the same keyframe preroll for
         # transcoded audio instead of discarding it with FFmpeg's accurate seek.
         command.extend(["-ss", str(start_seconds), "-noaccurate_seek"])
-    if requested_audio_stream_index is not None:
-        command.extend(["-copyts", "-start_at_zero"])
     command.extend([
         "-i", media_url,
         "-map", "0:v:0?",
@@ -4849,10 +4846,8 @@ def get_gdrive_audio_transcode_start(fid):
     requested_start = _clamp_audio_transcode_start(request.args.get('start_seconds'))
     timeline_offset_seconds, timeline_offset_source = _resolve_gdrive_audio_transcode_start_info(fid, requested_start)
     timeline_offset_ready = timeline_offset_source in {"origin", "cache"} or timeline_offset_source.startswith("probe")
-    explicit_audio_selection = _parse_audio_stream_index(request.args.get('audio_stream_index')) is not None
-    stream_start_seconds = timeline_offset_seconds if explicit_audio_selection and timeline_offset_ready else requested_start
     response = orjson_jsonify({
-        "stream_start_seconds": stream_start_seconds,
+        "stream_start_seconds": requested_start,
         "timeline_offset_seconds": timeline_offset_seconds,
         "timeline_offset_ready": timeline_offset_ready,
         "timeline_offset_source": timeline_offset_source,
