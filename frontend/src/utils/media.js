@@ -29,10 +29,6 @@ export function getDetailArtworkUrl(item) {
   return getBackdropUrl(item) || getPosterUrl(item, 'w780')
 }
 
-export function getOverview(item) {
-  return item?.tmdb_overview || item?.overview || item?.description || item?.synopsis || item?.sinopsis || ''
-}
-
 export function getStillUrl(item) {
   const stillPath = item.still_path || item.poster_path || item.thumbnail_path || item.profile_path
   if (!stillPath) return ''

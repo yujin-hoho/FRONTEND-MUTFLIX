@@ -15,7 +15,7 @@
   position: fixed;
   top: 22px;
   left: clamp(20px, 4vw, 54px);
-  z-index: 5;
+  z-index: 12;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -39,8 +39,10 @@
   display: flex;
   align-items: end;
   overflow: hidden;
-  padding: 132px clamp(20px, 5vw, 72px) 64px;
-  background: #07111f;
+  padding: 120px clamp(20px, 4vw, 54px) 96px;
+  background:
+    radial-gradient(circle at 18% 20%, rgba(0, 220, 100, 0.18), transparent 28%),
+    linear-gradient(135deg, #07111f, #020617 72%);
 }
 
 .detail-backdrop,
@@ -53,8 +55,8 @@
 
 .detail-backdrop {
   object-fit: cover;
-  object-position: center top;
-  opacity: 0.82;
+  object-position: center;
+  opacity: 0.78;
 }
 
 .image-shimmer {
@@ -80,14 +82,10 @@
 }
 
 .image-loading {
-  position: relative;
-  z-index: 1;
   opacity: 0 !important;
 }
 
 .image-loaded {
-  position: relative;
-  z-index: 1;
   opacity: 1;
   transition: opacity 180ms ease;
 }
@@ -100,14 +98,15 @@
 
 .detail-shade {
   background:
-    linear-gradient(90deg, #020617 0%, rgba(2, 6, 23, 0.92) 32%, rgba(2, 6, 23, 0.12) 78%),
-    linear-gradient(0deg, #020617 0%, transparent 42%);
+    linear-gradient(90deg, #020617 0%, rgba(2, 6, 23, 0.88) 34%, rgba(2, 6, 23, 0.18) 72%),
+    linear-gradient(0deg, #020617 0%, transparent 32%);
 }
 
 .detail-copy {
   position: relative;
   z-index: 1;
-  width: min(100%, 680px);
+  width: min(100%, 640px);
+  transform: translateY(-28px);
 }
 
 .detail-type {
@@ -120,10 +119,11 @@
 }
 
 .detail-copy h1 {
-  margin: 0 0 18px;
-  font-size: clamp(2.8rem, 7vw, 6.5rem);
+  margin: 0 0 16px;
+  font-size: clamp(2.35rem, 5.4vw, 4.8rem);
   font-weight: 800;
-  line-height: 0.96;
+  line-height: 0.98;
+  letter-spacing: 0;
 }
 
 .detail-meta {
@@ -147,10 +147,15 @@
 }
 
 .detail-overview {
-  max-width: 620px;
+  display: -webkit-box;
+  max-width: 560px;
   margin: 0 0 24px;
   color: #dbeafe;
-  line-height: 1.7;
+  font-size: clamp(0.98rem, 1.35vw, 1.12rem);
+  line-height: 1.65;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .detail-watch-progress {
@@ -194,8 +199,9 @@
 
 .detail-body {
   position: relative;
-  z-index: 1;
-  padding: 28px clamp(20px, 5vw, 72px) 72px;
+  z-index: 2;
+  margin-top: -52px;
+  padding: 0 0 72px clamp(20px, 4vw, 54px);
 }
 
 .episode-heading {
@@ -337,7 +343,7 @@
   grid-template-columns: minmax(0, 860px) minmax(380px, 460px);
   gap: clamp(28px, 4vw, 62px);
   align-items: start;
-  padding-right: clamp(20px, 5vw, 72px);
+  padding-right: clamp(20px, 4vw, 54px);
 }
 
 .movie-detail-content-grid {

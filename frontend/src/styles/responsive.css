@@ -95,13 +95,28 @@
     padding-bottom: 76px;
   }
 
-  .dashboard-hero-poster {
+  .dashboard-hero-poster,
+  .detail-backdrop {
     width: 100%;
     opacity: 0.42;
   }
 
-  .dashboard-hero-content h1 {
+  .detail-hero {
+    min-height: 62vh;
+    padding: 92px clamp(20px, 4vw, 54px) 76px;
+  }
+
+  .detail-copy {
+    transform: translateY(-18px);
+  }
+
+  .dashboard-hero-content h1,
+  .detail-copy h1 {
     font-size: 2.35rem;
+  }
+
+  .detail-body {
+    margin-top: -42px;
   }
 
   .history-scroller {

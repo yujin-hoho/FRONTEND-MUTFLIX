@@ -5,7 +5,6 @@ import {
   getGenres,
   getItemPath,
   getMediaType,
-  getOverview,
   normalizeMediaPath,
   normalizeWatchHistory,
   getPosterUrl,
@@ -904,7 +903,7 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
 
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
-    .filter((item) => !item.tmdb_metadata_resolved && (!getPosterUrl(item) || !getBackdropUrl(item) || !getOverview(item) || !getGenres(item).length))
+    .filter((item) => !item.tmdb_metadata_resolved && (!getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
     .slice(0, maxItems)
     .map((item) => ({ media_type: mediaType, folder_name: item.folder_name || item.name }))
     .filter((item) => item.folder_name)
