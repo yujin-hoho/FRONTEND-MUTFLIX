@@ -133,19 +133,6 @@ function DraggableScroller({ children, className, variant = '' }) {
     return () => resizeObserver.disconnect()
   }, [children, updateArrowVisibility])
 
-  useEffect(() => {
-    const scroller = scrollerRef.current
-    if (!scroller) return undefined
-
-    function blockTouchpadHorizontalScroll(event) {
-      if (Math.abs(event.deltaX) <= 0 && !event.shiftKey) return
-      event.preventDefault()
-    }
-
-    scroller.addEventListener('wheel', blockTouchpadHorizontalScroll, { passive: false })
-    return () => scroller.removeEventListener('wheel', blockTouchpadHorizontalScroll)
-  }, [])
-
   function scrollRow(direction) {
     const scroller = scrollerRef.current
     if (!scroller) return

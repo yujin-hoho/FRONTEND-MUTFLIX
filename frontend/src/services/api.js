@@ -117,8 +117,11 @@ export async function fetchDashboardData(authToken, profileId) {
   return { history: normalizeWatchHistory(historyData), movies, series }
 }
 
-export async function fetchMyList(authToken, profileId) {
-  const response = await fetch(`${API_BASE_URL}/api/mylist?profile_id=${encodeURIComponent(profileId)}`, {
+export async function fetchMyList(authToken, profileId, { status } = {}) {
+  const params = new URLSearchParams({ profile_id: profileId })
+  if (status) params.set('status', status)
+
+  const response = await fetch(`${API_BASE_URL}/api/mylist?${params.toString()}`, {
     headers: { 'x-access-token': authToken },
   })
   const data = await response.json().catch(() => [])

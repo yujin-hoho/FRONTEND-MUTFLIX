@@ -1,8 +1,9 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronDown, LogOut, Search, UsersRound } from 'lucide-react'
+import { Check, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
-import { getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
+import ProfileMenu from '../components/ProfileMenu'
+import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
 function SearchResultsPage({
@@ -23,7 +24,6 @@ function SearchResultsPage({
   watchHistory = [],
 }) {
   const [query, setQuery] = useState(initialQuery)
-  const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const requestedHydrationKey = useRef('')
   const deferredQuery = useDeferredValue(query)
@@ -118,31 +118,7 @@ function SearchResultsPage({
             showPreview={false}
             watchHistory={watchHistory}
           />
-          <div className="profile-menu">
-            <button
-              aria-expanded={showProfileMenu}
-              className="profile-menu-trigger"
-              onClick={() => setShowProfileMenu((isOpen) => !isOpen)}
-              type="button"
-            >
-              <span className="profile-menu-avatar" aria-hidden="true">
-                <img alt="" src={getProfileAvatarUrl(selectedProfile)} />
-              </span>
-              <ChevronDown size={16} />
-            </button>
-            {showProfileMenu && (
-              <div className="profile-menu-dropdown">
-                <button onClick={onChangeProfile} type="button">
-                  <UsersRound size={17} />
-                  <span>Ganti profil</span>
-                </button>
-                <button onClick={onLogout} type="button">
-                  <LogOut size={17} />
-                  <span>Logout</span>
-                </button>
-              </div>
-            )}
-          </div>
+          <ProfileMenu onChangeProfile={onChangeProfile} onLogout={onLogout} selectedProfile={selectedProfile} />
         </div>
       </nav>
 

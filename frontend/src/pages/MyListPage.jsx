@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bookmark, Check, ChevronDown, LogOut, UsersRound } from 'lucide-react'
+import { Bookmark, Check } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
+import ProfileMenu from '../components/ProfileMenu'
 import SearchBox from '../components/search/SearchBox'
 import { fetchMyList } from '../services/api'
-import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getProfileAvatarUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
+import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
+
+const MY_LIST_STATUSES = ['plan_to_watch', 'completed']
 
 function MyListPage({
   authToken,
@@ -22,55 +25,68 @@ function MyListPage({
   watchHistory = [],
 }) {
   const [activeStatus, setActiveStatus] = useState('plan_to_watch')
-  const [showProfileMenu, setShowProfileMenu] = useState(false)
-  const [myList, setMyList] = useState([])
-  const [status, setStatus] = useState('loading')
-  const [error, setError] = useState('')
+  const [myListByStatus, setMyListByStatus] = useState(() => createEmptyMyListByStatus())
+  const [statusByStatus, setStatusByStatus] = useState(() => createEmptyStatusByStatus())
+  const [errorByStatus, setErrorByStatus] = useState(() => createEmptyErrorByStatus())
   const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
   const catalogByKey = useMemo(
     () => new Map(catalogItems.map((item) => [getCatalogIdentityKey(item), item])),
     [catalogItems],
   )
   const items = useMemo(
-    () => myList.map((item) => ({
+    () => myListByStatus[activeStatus].map((item) => ({
       ...catalogByKey.get(getCatalogIdentityKey(item)),
       ...item,
     })),
-    [catalogByKey, myList],
+    [activeStatus, catalogByKey, myListByStatus],
+  )
+  const loadedItems = useMemo(
+    () => MY_LIST_STATUSES.flatMap((nextStatus) => myListByStatus[nextStatus]),
+    [myListByStatus],
   )
   const itemCounts = useMemo(
-    () => items.reduce((counts, item) => ({
+    () => loadedItems.reduce((counts, item) => ({
       ...counts,
       [item.my_list_status]: (counts[item.my_list_status] || 0) + 1,
     }), {}),
-    [items],
+    [loadedItems],
   )
-  const visibleItems = useMemo(
-    () => items.filter((item) => item.my_list_status === activeStatus),
-    [activeStatus, items],
-  )
+  const status = statusByStatus[activeStatus]
+  const error = errorByStatus[activeStatus]
 
   useEffect(() => {
-    let ignore = false
+    setMyListByStatus(createEmptyMyListByStatus())
+    setStatusByStatus(createEmptyStatusByStatus())
+    setErrorByStatus(createEmptyErrorByStatus())
+  }, [profileId])
 
-    fetchMyList(authToken, profileId)
+  useEffect(() => {
+    if (statusByStatus[activeStatus] !== 'idle') return undefined
+
+    let ignore = false
+    const requestedStatus = activeStatus
+
+    setStatusByStatus((currentStatuses) => ({ ...currentStatuses, [requestedStatus]: 'loading' }))
+    setErrorByStatus((currentErrors) => ({ ...currentErrors, [requestedStatus]: '' }))
+
+    fetchMyList(authToken, profileId, { status: requestedStatus })
       .then((nextItems) => {
         if (!ignore) {
-          setMyList(nextItems)
-          setStatus('ready')
+          setMyListByStatus((currentLists) => ({ ...currentLists, [requestedStatus]: nextItems }))
+          setStatusByStatus((currentStatuses) => ({ ...currentStatuses, [requestedStatus]: 'ready' }))
         }
       })
       .catch((requestError) => {
         if (!ignore) {
-          setError(requestError.message)
-          setStatus('error')
+          setErrorByStatus((currentErrors) => ({ ...currentErrors, [requestedStatus]: requestError.message }))
+          setStatusByStatus((currentStatuses) => ({ ...currentStatuses, [requestedStatus]: 'error' }))
         }
       })
 
     return () => {
       ignore = true
     }
-  }, [authToken, profileId])
+  }, [activeStatus, authToken, profileId, statusByStatus])
 
   return (
     <main className="my-list-page">
@@ -88,7 +104,7 @@ function MyListPage({
         <div className="dashboard-actions">
           <SearchBox
             catalogItems={catalogItems}
-            myList={items}
+            myList={[...loadedItems, ...profileMyList]}
             onFilterSelect={onFilterSelect}
             onHydrateItems={onHydrateItems}
             onOpenDetail={onOpenDetail}
@@ -97,31 +113,7 @@ function MyListPage({
             onSubmit={onOpenSearch}
             watchHistory={watchHistory}
           />
-          <div className="profile-menu">
-            <button
-              aria-expanded={showProfileMenu}
-              className="profile-menu-trigger"
-              onClick={() => setShowProfileMenu((isOpen) => !isOpen)}
-              type="button"
-            >
-              <span className="profile-menu-avatar" aria-hidden="true">
-                <img alt="" src={getProfileAvatarUrl(selectedProfile)} />
-              </span>
-              <ChevronDown size={16} />
-            </button>
-            {showProfileMenu && (
-              <div className="profile-menu-dropdown">
-                <button onClick={onChangeProfile} type="button">
-                  <UsersRound size={17} />
-                  <span>Ganti profil</span>
-                </button>
-                <button onClick={onLogout} type="button">
-                  <LogOut size={17} />
-                  <span>Logout</span>
-                </button>
-              </div>
-            )}
-          </div>
+          <ProfileMenu onChangeProfile={onChangeProfile} onLogout={onLogout} selectedProfile={selectedProfile} />
         </div>
       </nav>
 
@@ -135,27 +127,27 @@ function MyListPage({
         <nav className="my-list-tabs" aria-label="Kategori My List">
           <button className={activeStatus === 'plan_to_watch' ? 'active' : ''} onClick={() => setActiveStatus('plan_to_watch')} type="button">
             <span>Plan to Watch</span>
-            {status === 'ready' && <strong>{itemCounts.plan_to_watch || 0}</strong>}
+            {statusByStatus.plan_to_watch === 'ready' && <strong>{itemCounts.plan_to_watch || 0}</strong>}
           </button>
           <button className={activeStatus === 'completed' ? 'active' : ''} onClick={() => setActiveStatus('completed')} type="button">
             <span>Completed</span>
-            {status === 'ready' && <strong>{itemCounts.completed || 0}</strong>}
+            {statusByStatus.completed === 'ready' && <strong>{itemCounts.completed || 0}</strong>}
           </button>
         </nav>
 
         {status === 'loading' && <MyListLoading />}
         {status === 'error' && <MyListState text={error || 'My List gagal dimuat.'} />}
-        {status === 'ready' && visibleItems.length === 0 && (
+        {status === 'ready' && items.length === 0 && (
           <MyListState text={activeStatus === 'completed' ? 'Belum ada judul yang selesai ditonton.' : 'Belum ada judul di Plan to Watch.'} />
         )}
 
-        {status === 'ready' && visibleItems.length > 0 && (
+        {status === 'ready' && items.length > 0 && (
           <div className="my-list-grid">
-            {visibleItems.map((item) => {
+            {items.map((item) => {
               const genres = getGenres(item)
               const poster = getPosterUrl(item)
               const rating = getRating(item)
-              const isCompleted = isCatalogItemCompleted(item, { myList: [...items, ...profileMyList], watchHistory })
+              const isCompleted = isCatalogItemCompleted(item, { myList: [...loadedItems, ...profileMyList], watchHistory })
 
               return (
                 <button
@@ -209,6 +201,18 @@ function MyListState({ text }) {
       <p>{text}</p>
     </div>
   )
+}
+
+function createEmptyMyListByStatus() {
+  return { completed: [], plan_to_watch: [] }
+}
+
+function createEmptyStatusByStatus() {
+  return { completed: 'idle', plan_to_watch: 'idle' }
+}
+
+function createEmptyErrorByStatus() {
+  return { completed: '', plan_to_watch: '' }
 }
 
 export default MyListPage

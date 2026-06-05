@@ -503,6 +503,10 @@ def _invalidate_user_cache(cache_type, cache_key):
             _user_mylist_cache.pop(cache_key, None)
             _user_mylist_cache_ts.pop(cache_key, None)
 
+def _invalidate_mylist_cache(cache_key):
+    for key in (cache_key, f"{cache_key}_plan_to_watch", f"{cache_key}_completed"):
+        _invalidate_user_cache('mylist', key)
+
 def _is_user_cache_valid(cache_type, cache_key):
     """Cek apakah RAM cache masih valid vs cross-worker invalidation.
     Return True jika cache valid, False jika perlu reload dari DB."""
@@ -2737,7 +2741,11 @@ def delete_history(current_user):
 @token_required(check_expiry=True)
 def get_mylist(current_user):
     profile_id = request.args.get('profile_id')
-    cache_key = f"{current_user['id']}_{profile_id}"
+    status_filter = request.args.get('status')
+    if status_filter and status_filter not in ('plan_to_watch', 'completed'):
+        return orjson_jsonify({"message": "Invalid status"}, 400)
+    base_cache_key = f"{current_user['id']}_{profile_id}"
+    cache_key = f"{base_cache_key}_{status_filter}" if status_filter else base_cache_key
     redis_key = f"mylist:{cache_key}"
     
     # Tier 0: RAM
@@ -2758,12 +2766,17 @@ def get_mylist(current_user):
     conn, db_type = get_db_connection()
     try:
         ph = '%s' if db_type == 'postgres' else '?'
-        sql = f"SELECT folder_name, media_type, meta_json, COALESCE(status, 'plan_to_watch') as status FROM my_list WHERE user_id = {ph} AND profile_id = {ph} ORDER BY added_at DESC"
+        sql = f"SELECT folder_name, media_type, meta_json, COALESCE(status, 'plan_to_watch') as status FROM my_list WHERE user_id = {ph} AND profile_id = {ph}"
+        params = [current_user['id'], profile_id]
+        if status_filter:
+            sql += f" AND COALESCE(status, 'plan_to_watch') = {ph}"
+            params.append(status_filter)
+        sql += " ORDER BY added_at DESC"
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute(sql, (current_user['id'], profile_id))
+            cur.execute(sql, tuple(params))
             res = [dict(r) for r in cur.fetchall()]
-        else: res = [dict(r) for r in conn.execute(sql, (current_user['id'], profile_id)).fetchall()]
+        else: res = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
         for item in res:
              if item.get('meta_json'):
                  try: item['meta_json'] = json.loads(item['meta_json'])
@@ -2795,7 +2808,7 @@ def add_to_mylist(current_user):
         conn.commit()
         # Cross-worker invalidate mylist cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
-        _invalidate_user_cache('mylist', cache_key)
+        _invalidate_mylist_cache(cache_key)
         return orjson_jsonify({"message": "Added"}, 201)
     except: return orjson_jsonify({"message": "Error"}, 500)
     finally: release_db_connection(conn, db_type)
@@ -2812,7 +2825,7 @@ def remove_from_mylist(current_user):
         conn.commit()
         # Cross-worker invalidate mylist cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
-        _invalidate_user_cache('mylist', cache_key)
+        _invalidate_mylist_cache(cache_key)
         return orjson_jsonify({"message": "Removed"})
     finally: release_db_connection(conn, db_type)
 
@@ -2838,7 +2851,7 @@ def update_mylist_status(current_user):
             return orjson_jsonify({"message": "Item not found"}, 404)
         conn.commit()
         cache_key = f"{current_user['id']}_{profile_id}"
-        _invalidate_user_cache('mylist', cache_key)
+        _invalidate_mylist_cache(cache_key)
         return orjson_jsonify({"message": "Updated"})
     except Exception as e:
         return orjson_jsonify({"message": f"Error: {e}"}, 500)
