@@ -869,6 +869,7 @@ function App() {
         <MyListPage
           authToken={authToken}
           catalogData={catalogData}
+          key={selectedProfile.id}
           onChangeProfile={handleChangeProfile}
           onFilterSelect={handleOpenCatalogFilter}
           onHydrateItems={hydrateCatalogItems}

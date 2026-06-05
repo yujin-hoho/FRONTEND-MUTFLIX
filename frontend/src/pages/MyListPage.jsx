@@ -55,19 +55,10 @@ function MyListPage({
   const error = errorByStatus[activeStatus]
 
   useEffect(() => {
-    setMyListByStatus(createEmptyMyListByStatus())
-    setStatusByStatus(createEmptyStatusByStatus())
-    setErrorByStatus(createEmptyErrorByStatus())
-  }, [profileId])
-
-  useEffect(() => {
-    if (statusByStatus[activeStatus] !== 'idle') return undefined
+    if (statusByStatus[activeStatus] !== 'loading') return undefined
 
     let ignore = false
     const requestedStatus = activeStatus
-
-    setStatusByStatus((currentStatuses) => ({ ...currentStatuses, [requestedStatus]: 'loading' }))
-    setErrorByStatus((currentErrors) => ({ ...currentErrors, [requestedStatus]: '' }))
 
     fetchMyList(authToken, profileId, { status: requestedStatus })
       .then((nextItems) => {
@@ -87,6 +78,13 @@ function MyListPage({
       ignore = true
     }
   }, [activeStatus, authToken, profileId, statusByStatus])
+
+  function handleStatusSelect(nextStatus) {
+    setActiveStatus(nextStatus)
+    if (statusByStatus[nextStatus] !== 'idle') return
+    setStatusByStatus((currentStatuses) => ({ ...currentStatuses, [nextStatus]: 'loading' }))
+    setErrorByStatus((currentErrors) => ({ ...currentErrors, [nextStatus]: '' }))
+  }
 
   return (
     <main className="my-list-page">
@@ -125,11 +123,11 @@ function MyListPage({
         </div>
 
         <nav className="my-list-tabs" aria-label="Kategori My List">
-          <button className={activeStatus === 'plan_to_watch' ? 'active' : ''} onClick={() => setActiveStatus('plan_to_watch')} type="button">
+          <button className={activeStatus === 'plan_to_watch' ? 'active' : ''} onClick={() => handleStatusSelect('plan_to_watch')} type="button">
             <span>Plan to Watch</span>
             {statusByStatus.plan_to_watch === 'ready' && <strong>{itemCounts.plan_to_watch || 0}</strong>}
           </button>
-          <button className={activeStatus === 'completed' ? 'active' : ''} onClick={() => setActiveStatus('completed')} type="button">
+          <button className={activeStatus === 'completed' ? 'active' : ''} onClick={() => handleStatusSelect('completed')} type="button">
             <span>Completed</span>
             {statusByStatus.completed === 'ready' && <strong>{itemCounts.completed || 0}</strong>}
           </button>
@@ -208,7 +206,7 @@ function createEmptyMyListByStatus() {
 }
 
 function createEmptyStatusByStatus() {
-  return { completed: 'idle', plan_to_watch: 'idle' }
+  return { completed: 'idle', plan_to_watch: 'loading' }
 }
 
 function createEmptyErrorByStatus() {
