@@ -15,7 +15,7 @@ const LoadableImage = memo(function LoadableImage({
   const [imageState, setImageState] = useState(() => getInitialImageState(src || fallbackSrc))
   const renderImageState = imageState === 'loaded' && !hasLoadedImageUrl(resolvedSrc) ? 'loading' : imageState
   const showShimmer = renderImageState === 'loading' || (renderImageState === 'error' && shimmerOnError)
-  const shimmerClassName = loading === 'lazy' || renderImageState === 'error'
+  const shimmerClassName = renderImageState === 'error'
     ? 'image-shimmer image-shimmer-static'
     : 'image-shimmer'
 

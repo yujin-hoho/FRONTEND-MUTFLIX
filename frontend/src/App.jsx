@@ -210,7 +210,7 @@ function App() {
       const dashboardRequest = fetchDashboardData(authToken, selectedProfile.id)
         .then((dashboard) => ({ dashboard }))
         .catch((error) => ({ error }))
-      const myListRequest = fetchMyList(authToken, selectedProfile.id)
+      const myListRequest = fetchMyList(authToken, selectedProfile.id, isMyListRoute ? { status: 'plan_to_watch' } : undefined)
         .then((myList) => ({ myList }))
         .catch(() => ({ myList: [] }))
 
@@ -287,7 +287,7 @@ function App() {
     return () => {
       ignore = true
     }
-  }, [authToken, currentUser, selectedProfile])
+  }, [authToken, currentUser, isMyListRoute, selectedProfile])
 
   const loadDetail = useCallback(async (item) => {
     const detailItem = { ...item, media_type: getMediaType(item) }

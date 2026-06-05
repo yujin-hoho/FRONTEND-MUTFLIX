@@ -472,6 +472,10 @@
   margin-top: 32px;
 }
 
+.search-results-sentinel {
+  height: 1px;
+}
+
 .search-result-card {
   min-width: 0;
   border: 0;

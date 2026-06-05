@@ -6,6 +6,8 @@ import ProfileMenu from '../components/ProfileMenu'
 import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
+const RESULT_BATCH_SIZE = 36
+
 function SearchResultsPage({
   catalogData,
   initialFilter,
@@ -25,7 +27,10 @@ function SearchResultsPage({
 }) {
   const [query, setQuery] = useState(initialQuery)
   const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
+  const [lazyRenderState, setLazyRenderState] = useState({ count: RESULT_BATCH_SIZE, key: '' })
+  const searchPageRef = useRef(null)
   const requestedHydrationKey = useRef('')
+  const lazyLoadRef = useRef(null)
   const deferredQuery = useDeferredValue(query)
   const normalizedQuery = normalizeSearchQuery(deferredQuery)
   const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
@@ -44,9 +49,16 @@ function SearchResultsPage({
   )
   const isServerSearchPending = normalizedQuery.length >= 2
     && (serverSearch.query !== normalizedQuery || serverSearch.status === 'loading')
+  const resultKey = `${initialFilter?.type || 'all'}:${initialFilter?.value || 'all'}:${normalizedQuery}:${results.length}`
+  const visibleCount = lazyRenderState.key === resultKey ? lazyRenderState.count : RESULT_BATCH_SIZE
+  const visibleResults = useMemo(
+    () => results.slice(0, visibleCount),
+    [results, visibleCount],
+  )
+  const hasMoreResults = visibleResults.length < results.length
   const hydrationItems = useMemo(
-    () => results.slice(0, 24).filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
-    [results],
+    () => visibleResults.filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
+    [visibleResults],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
 
@@ -80,12 +92,35 @@ function SearchResultsPage({
     return () => window.clearTimeout(timeoutId)
   }, [hydrationItems, hydrationKey, onHydrateItems])
 
+  useEffect(() => {
+    const sentinel = lazyLoadRef.current
+    const scrollRoot = searchPageRef.current
+    if (!sentinel || !scrollRoot || !hasMoreResults) return undefined
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return
+        setLazyRenderState((currentState) => {
+          const currentCount = currentState.key === resultKey ? currentState.count : RESULT_BATCH_SIZE
+          return {
+            count: Math.min(currentCount + RESULT_BATCH_SIZE, results.length),
+            key: resultKey,
+          }
+        })
+      },
+      { root: scrollRoot, rootMargin: '520px 0px' },
+    )
+
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasMoreResults, resultKey, results.length])
+
   function handleQueryChange(nextQuery) {
     setQuery(nextQuery)
   }
 
   return (
-    <main className="search-page">
+    <main className="search-page" ref={searchPageRef}>
       <nav className="dashboard-topbar search-topbar" aria-label="Katalog">
         <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
           MUTFLIX
@@ -158,38 +193,41 @@ function SearchResultsPage({
         )}
 
         {results.length > 0 && (
-          <div className="search-results-grid">
-            {results.map((item) => {
-              const poster = getPosterUrl(item)
-              const rating = getRating(item)
-              const genres = getGenres(item)
-              const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
+          <>
+            <div className="search-results-grid">
+              {visibleResults.map((item) => {
+                const poster = getPosterUrl(item)
+                const rating = getRating(item)
+                const genres = getGenres(item)
+                const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
 
-              return (
-                <button
-                  className={`search-result-card${isCompleted ? ' item-completed' : ''}`}
-                  key={getItemKey(item)}
-                  onClick={() => onOpenDetail(item)}
-                  onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
-                  type="button"
-                >
-                  <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
-                    <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
-                    {isCompleted && (
-                      <span aria-label="Selesai" className="completion-badge item-completion-badge">
-                        <Check size={20} strokeWidth={3.4} />
-                      </span>
-                    )}
-                    {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
-                  </span>
-                  <span className="search-result-copy">
-                    <strong>{getTitle(item)}</strong>
-                    <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
-                  </span>
-                </button>
-              )
-            })}
-          </div>
+                return (
+                  <button
+                    className={`search-result-card${isCompleted ? ' item-completed' : ''}`}
+                    key={getItemKey(item)}
+                    onClick={() => onOpenDetail(item)}
+                    onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+                    type="button"
+                  >
+                    <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
+                      <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
+                      {isCompleted && (
+                        <span aria-label="Selesai" className="completion-badge item-completion-badge">
+                          <Check size={20} strokeWidth={3.4} />
+                        </span>
+                      )}
+                      {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
+                    </span>
+                    <span className="search-result-copy">
+                      <strong>{getTitle(item)}</strong>
+                      <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+            {hasMoreResults && <div className="search-results-sentinel" ref={lazyLoadRef} aria-hidden="true" />}
+          </>
         )}
       </section>
     </main>
