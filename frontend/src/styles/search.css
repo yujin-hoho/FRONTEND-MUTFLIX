@@ -486,6 +486,8 @@
   cursor: pointer;
   transition: transform 160ms ease;
   contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 
 .search-result-card:hover {

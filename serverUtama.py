@@ -504,7 +504,7 @@ def _invalidate_user_cache(cache_type, cache_key):
             _user_mylist_cache_ts.pop(cache_key, None)
 
 def _invalidate_mylist_cache(cache_key):
-    for key in (cache_key, f"{cache_key}_plan_to_watch", f"{cache_key}_completed"):
+    for key in (cache_key, f"{cache_key}_plan_to_watch", f"{cache_key}_completed", f"{cache_key}_counts"):
         _invalidate_user_cache('mylist', key)
 
 def _is_user_cache_valid(cache_type, cache_key):
@@ -2790,6 +2790,55 @@ def get_mylist(current_user):
         redis_set(redis_key, res, ttl_seconds=1800)
         return orjson_jsonify(res)
     finally: release_db_connection(conn, db_type)
+
+@app.route('/api/mylist/counts', methods=['GET'])
+@token_required(check_expiry=True)
+def get_mylist_counts(current_user):
+    profile_id = request.args.get('profile_id')
+    if not profile_id:
+        return orjson_jsonify({"message": "Missing profile_id"}, 400)
+
+    cache_key = f"{current_user['id']}_{profile_id}_counts"
+    redis_key = f"mylist:{cache_key}"
+
+    cached = _user_mylist_cache.get(cache_key)
+    if cached is not None and _is_user_cache_valid('mylist', cache_key):
+        return orjson_jsonify(cached)
+
+    redis_data = redis_get(redis_key)
+    if redis_data is not None:
+        now = time.time()
+        with _user_data_lock:
+            _user_mylist_cache[cache_key] = redis_data
+            _user_mylist_cache_ts[cache_key] = now
+        return orjson_jsonify(redis_data)
+
+    conn, db_type = get_db_connection()
+    try:
+        ph = '%s' if db_type == 'postgres' else '?'
+        sql = f"SELECT COALESCE(status, 'plan_to_watch') as status, COUNT(*) as count FROM my_list WHERE user_id = {ph} AND profile_id = {ph} GROUP BY COALESCE(status, 'plan_to_watch')"
+        if db_type == 'postgres':
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(sql, (current_user['id'], profile_id))
+            rows = [dict(r) for r in cur.fetchall()]
+        else:
+            rows = [dict(r) for r in conn.execute(sql, (current_user['id'], profile_id)).fetchall()]
+
+        counts = {'completed': 0, 'plan_to_watch': 0}
+        for row in rows:
+            status = row.get('status')
+            if status in counts:
+                counts[status] = int(row.get('count') or 0)
+
+        now = time.time()
+        with _user_data_lock:
+            _user_mylist_cache[cache_key] = counts
+            _user_mylist_cache_ts[cache_key] = now
+
+        redis_set(redis_key, counts, ttl_seconds=1800)
+        return orjson_jsonify(counts)
+    finally:
+        release_db_connection(conn, db_type)
 
 @app.route('/api/mylist/add', methods=['POST'])
 @token_required(check_expiry=True)

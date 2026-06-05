@@ -129,6 +129,19 @@ export async function fetchMyList(authToken, profileId, { status } = {}) {
   return Array.isArray(data) ? data.map(normalizeMyListItem) : []
 }
 
+export async function fetchMyListCounts(authToken, profileId) {
+  const params = new URLSearchParams({ profile_id: profileId })
+  const response = await fetch(`${API_BASE_URL}/api/mylist/counts?${params.toString()}`, {
+    headers: { 'x-access-token': authToken },
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to load My List counts.')
+  return {
+    completed: Number(data.completed || 0),
+    plan_to_watch: Number(data.plan_to_watch || 0),
+  }
+}
+
 export async function saveMyListItemStatus(authToken, { item, profileId, status = 'completed' }) {
   const folderName = getItemPath(item)
   if (!folderName || !profileId) throw new Error('Missing item or profile.')

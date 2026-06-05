@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Bookmark, Check } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
 import ProfileMenu from '../components/ProfileMenu'
 import SearchBox from '../components/search/SearchBox'
-import { fetchMyList } from '../services/api'
+import { fetchMyList, fetchMyListCounts } from '../services/api'
 import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 
 const MY_LIST_STATUSES = ['plan_to_watch', 'completed']
+const MY_LIST_BATCH_SIZE = 24
 
 function MyListPage({
   authToken,
@@ -26,8 +27,12 @@ function MyListPage({
 }) {
   const [activeStatus, setActiveStatus] = useState('plan_to_watch')
   const [myListByStatus, setMyListByStatus] = useState(() => createEmptyMyListByStatus())
+  const [itemCounts, setItemCounts] = useState(() => createEmptyItemCounts())
   const [statusByStatus, setStatusByStatus] = useState(() => createEmptyStatusByStatus())
   const [errorByStatus, setErrorByStatus] = useState(() => createEmptyErrorByStatus())
+  const [lazyRenderState, setLazyRenderState] = useState({ count: MY_LIST_BATCH_SIZE, key: '' })
+  const myListPageRef = useRef(null)
+  const lazyLoadRef = useRef(null)
   const catalogItems = useMemo(() => [...catalogData.movies, ...catalogData.series], [catalogData.movies, catalogData.series])
   const catalogByKey = useMemo(
     () => new Map(catalogItems.map((item) => [getCatalogIdentityKey(item), item])),
@@ -44,15 +49,36 @@ function MyListPage({
     () => MY_LIST_STATUSES.flatMap((nextStatus) => myListByStatus[nextStatus]),
     [myListByStatus],
   )
-  const itemCounts = useMemo(
-    () => loadedItems.reduce((counts, item) => ({
-      ...counts,
-      [item.my_list_status]: (counts[item.my_list_status] || 0) + 1,
-    }), {}),
-    [loadedItems],
+  const completedContextItems = useMemo(
+    () => [...loadedItems, ...profileMyList],
+    [loadedItems, profileMyList],
   )
+  const searchBoxMyList = completedContextItems
   const status = statusByStatus[activeStatus]
   const error = errorByStatus[activeStatus]
+  const listKey = `${profileId}:${activeStatus}:${items.length}`
+  const visibleCount = lazyRenderState.key === listKey ? lazyRenderState.count : MY_LIST_BATCH_SIZE
+  const visibleItems = useMemo(
+    () => items.slice(0, visibleCount),
+    [items, visibleCount],
+  )
+  const hasMoreItems = visibleItems.length < items.length
+
+  useEffect(() => {
+    let ignore = false
+
+    fetchMyListCounts(authToken, profileId)
+      .then((nextCounts) => {
+        if (!ignore) setItemCounts(nextCounts)
+      })
+      .catch(() => {
+        if (!ignore) setItemCounts(createEmptyItemCounts())
+      })
+
+    return () => {
+      ignore = true
+    }
+  }, [authToken, profileId])
 
   useEffect(() => {
     if (statusByStatus[activeStatus] !== 'loading') return undefined
@@ -64,6 +90,7 @@ function MyListPage({
       .then((nextItems) => {
         if (!ignore) {
           setMyListByStatus((currentLists) => ({ ...currentLists, [requestedStatus]: nextItems }))
+          setItemCounts((currentCounts) => ({ ...currentCounts, [requestedStatus]: nextItems.length }))
           setStatusByStatus((currentStatuses) => ({ ...currentStatuses, [requestedStatus]: 'ready' }))
         }
       })
@@ -79,6 +106,29 @@ function MyListPage({
     }
   }, [activeStatus, authToken, profileId, statusByStatus])
 
+  useEffect(() => {
+    const sentinel = lazyLoadRef.current
+    const scrollRoot = myListPageRef.current
+    if (!sentinel || !scrollRoot || !hasMoreItems) return undefined
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return
+        setLazyRenderState((currentState) => {
+          const currentCount = currentState.key === listKey ? currentState.count : MY_LIST_BATCH_SIZE
+          return {
+            count: Math.min(currentCount + MY_LIST_BATCH_SIZE, items.length),
+            key: listKey,
+          }
+        })
+      },
+      { root: scrollRoot, rootMargin: '520px 0px' },
+    )
+
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [hasMoreItems, items.length, listKey])
+
   function handleStatusSelect(nextStatus) {
     setActiveStatus(nextStatus)
     if (statusByStatus[nextStatus] !== 'idle') return
@@ -87,7 +137,7 @@ function MyListPage({
   }
 
   return (
-    <main className="my-list-page">
+    <main className="my-list-page" ref={myListPageRef}>
       <nav className="dashboard-topbar my-list-topbar" aria-label="My List">
         <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
           MUTFLIX
@@ -102,7 +152,7 @@ function MyListPage({
         <div className="dashboard-actions">
           <SearchBox
             catalogItems={catalogItems}
-            myList={[...loadedItems, ...profileMyList]}
+            myList={searchBoxMyList}
             onFilterSelect={onFilterSelect}
             onHydrateItems={onHydrateItems}
             onOpenDetail={onOpenDetail}
@@ -125,11 +175,11 @@ function MyListPage({
         <nav className="my-list-tabs" aria-label="Kategori My List">
           <button className={activeStatus === 'plan_to_watch' ? 'active' : ''} onClick={() => handleStatusSelect('plan_to_watch')} type="button">
             <span>Plan to Watch</span>
-            {statusByStatus.plan_to_watch === 'ready' && <strong>{itemCounts.plan_to_watch || 0}</strong>}
+            <strong>{itemCounts.plan_to_watch || 0}</strong>
           </button>
           <button className={activeStatus === 'completed' ? 'active' : ''} onClick={() => handleStatusSelect('completed')} type="button">
             <span>Completed</span>
-            {statusByStatus.completed === 'ready' && <strong>{itemCounts.completed || 0}</strong>}
+            <strong>{itemCounts.completed || 0}</strong>
           </button>
         </nav>
 
@@ -140,38 +190,22 @@ function MyListPage({
         )}
 
         {status === 'ready' && items.length > 0 && (
-          <div className="my-list-grid">
-            {items.map((item) => {
-              const genres = getGenres(item)
-              const poster = getPosterUrl(item)
-              const rating = getRating(item)
-              const isCompleted = isCatalogItemCompleted(item, { myList: [...loadedItems, ...profileMyList], watchHistory })
-
-              return (
-                <button
-                  className={`my-list-card${isCompleted ? ' item-completed' : ''}`}
+          <>
+            <div className="my-list-grid">
+              {visibleItems.map((item) => (
+                <MyListCard
+                  activeStatus={activeStatus}
+                  completedContextItems={completedContextItems}
+                  item={item}
                   key={getItemKey(item)}
-                  onClick={() => onOpenDetail(item)}
-                  onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
-                  type="button"
-                >
-                  <span className={`my-list-poster${isCompleted ? ' completed-poster' : ''}`}>
-                    <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
-                    {isCompleted && (
-                      <span aria-label="Selesai" className="completion-badge item-completion-badge">
-                        <Check size={20} strokeWidth={3.4} />
-                      </span>
-                    )}
-                    {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
-                  </span>
-                  <span className="my-list-copy">
-                    <strong>{getTitle(item)}</strong>
-                    <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
-                  </span>
-                </button>
-              )
-            })}
-          </div>
+                  onOpenContextMenu={onOpenContextMenu}
+                  onOpenDetail={onOpenDetail}
+                  watchHistory={watchHistory}
+                />
+              ))}
+            </div>
+            {hasMoreItems && <div className="my-list-sentinel" ref={lazyLoadRef} aria-hidden="true" />}
+          </>
         )}
       </section>
     </main>
@@ -201,8 +235,44 @@ function MyListState({ text }) {
   )
 }
 
+const MyListCard = memo(function MyListCard({ activeStatus, completedContextItems, item, onOpenContextMenu, onOpenDetail, watchHistory }) {
+  const genres = getGenres(item)
+  const poster = getPosterUrl(item)
+  const rating = getRating(item)
+  const title = getTitle(item)
+  const isCompleted = activeStatus === 'completed'
+    || isCatalogItemCompleted(item, { myList: completedContextItems, watchHistory })
+
+  return (
+    <button
+      className={`my-list-card${isCompleted ? ' item-completed' : ''}`}
+      onClick={() => onOpenDetail(item)}
+      onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+      type="button"
+    >
+      <span className={`my-list-poster${isCompleted ? ' completed-poster' : ''}`}>
+        <LoadableImage alt={title} key={poster} src={poster} />
+        {isCompleted && (
+          <span aria-label="Selesai" className="completion-badge item-completion-badge">
+            <Check size={20} strokeWidth={3.4} />
+          </span>
+        )}
+        {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
+      </span>
+      <span className="my-list-copy">
+        <strong>{title}</strong>
+        <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
+      </span>
+    </button>
+  )
+})
+
 function createEmptyMyListByStatus() {
   return { completed: [], plan_to_watch: [] }
+}
+
+function createEmptyItemCounts() {
+  return { completed: 0, plan_to_watch: 0 }
 }
 
 function createEmptyStatusByStatus() {

@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
@@ -6,7 +6,7 @@ import ProfileMenu from '../components/ProfileMenu'
 import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
-const RESULT_BATCH_SIZE = 36
+const RESULT_BATCH_SIZE = 24
 
 function SearchResultsPage({
   catalogData,
@@ -55,10 +55,14 @@ function SearchResultsPage({
     () => results.slice(0, visibleCount),
     [results, visibleCount],
   )
+  const currentBatchResults = useMemo(
+    () => visibleResults.slice(Math.max(0, visibleResults.length - RESULT_BATCH_SIZE)),
+    [visibleResults],
+  )
   const hasMoreResults = visibleResults.length < results.length
   const hydrationItems = useMemo(
-    () => visibleResults.filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
-    [visibleResults],
+    () => currentBatchResults.filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
+    [currentBatchResults],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
 
@@ -195,36 +199,16 @@ function SearchResultsPage({
         {results.length > 0 && (
           <>
             <div className="search-results-grid">
-              {visibleResults.map((item) => {
-                const poster = getPosterUrl(item)
-                const rating = getRating(item)
-                const genres = getGenres(item)
-                const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
-
-                return (
-                  <button
-                    className={`search-result-card${isCompleted ? ' item-completed' : ''}`}
-                    key={getItemKey(item)}
-                    onClick={() => onOpenDetail(item)}
-                    onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
-                    type="button"
-                  >
-                    <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
-                      <LoadableImage alt={getTitle(item)} key={poster} src={poster} />
-                      {isCompleted && (
-                        <span aria-label="Selesai" className="completion-badge item-completion-badge">
-                          <Check size={20} strokeWidth={3.4} />
-                        </span>
-                      )}
-                      {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
-                    </span>
-                    <span className="search-result-copy">
-                      <strong>{getTitle(item)}</strong>
-                      <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
-                    </span>
-                  </button>
-                )
-              })}
+              {visibleResults.map((item) => (
+                <SearchResultCard
+                  item={item}
+                  key={getItemKey(item)}
+                  myList={myList}
+                  onOpenContextMenu={onOpenContextMenu}
+                  onOpenDetail={onOpenDetail}
+                  watchHistory={watchHistory}
+                />
+              ))}
             </div>
             {hasMoreResults && <div className="search-results-sentinel" ref={lazyLoadRef} aria-hidden="true" />}
           </>
@@ -233,6 +217,37 @@ function SearchResultsPage({
     </main>
   )
 }
+
+const SearchResultCard = memo(function SearchResultCard({ item, myList, onOpenContextMenu, onOpenDetail, watchHistory }) {
+  const poster = getPosterUrl(item)
+  const rating = getRating(item)
+  const title = getTitle(item)
+  const genres = getGenres(item)
+  const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
+
+  return (
+    <button
+      className={`search-result-card${isCompleted ? ' item-completed' : ''}`}
+      onClick={() => onOpenDetail(item)}
+      onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
+      type="button"
+    >
+      <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
+        <LoadableImage alt={title} key={poster} src={poster} />
+        {isCompleted && (
+          <span aria-label="Selesai" className="completion-badge item-completion-badge">
+            <Check size={20} strokeWidth={3.4} />
+          </span>
+        )}
+        {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
+      </span>
+      <span className="search-result-copy">
+        <strong>{title}</strong>
+        <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
+      </span>
+    </button>
+  )
+})
 
 function isActiveFilter(filter, type, value) {
   return filter?.type === type && filter.value === value

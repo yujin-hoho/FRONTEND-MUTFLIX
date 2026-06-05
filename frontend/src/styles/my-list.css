@@ -107,6 +107,10 @@
   margin-top: 32px;
 }
 
+.my-list-sentinel {
+  height: 1px;
+}
+
 .my-list-loading-card {
   min-width: 0;
 }
@@ -145,6 +149,8 @@
   cursor: pointer;
   transition: transform 160ms ease;
   contain: layout style;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
 }
 
 .my-list-card:hover {
