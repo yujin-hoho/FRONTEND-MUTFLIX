@@ -237,8 +237,8 @@ AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCO
 AUDIO_TRANSCODE_INPUT_PROBESIZE = max(32 * 1024, int(os.environ.get('AUDIO_TRANSCODE_INPUT_PROBESIZE', str(512 * 1024))))
 AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION = max(0, int(os.environ.get('AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION', '1000000')))
 AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
-AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
-AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '60')))
+AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '10')))
+AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '180')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS', '1')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS', '0.35')))
 EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS = max(300, int(os.environ.get('EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS', str(7 * 24 * 60 * 60))))
@@ -4845,10 +4845,11 @@ def get_gdrive_audio_transcode_start(fid):
 
     requested_start = _clamp_audio_transcode_start(request.args.get('start_seconds'))
     timeline_offset_seconds, timeline_offset_source = _resolve_gdrive_audio_transcode_start_info(fid, requested_start)
+    timeline_offset_ready = timeline_offset_source in {"origin", "cache"} or timeline_offset_source.startswith("probe")
     response = orjson_jsonify({
         "stream_start_seconds": requested_start,
         "timeline_offset_seconds": timeline_offset_seconds,
-        "timeline_offset_ready": timeline_offset_source in {"origin", "cache", "probe"},
+        "timeline_offset_ready": timeline_offset_ready,
         "timeline_offset_source": timeline_offset_source,
     })
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -4872,19 +4873,113 @@ def _resolve_gdrive_audio_transcode_start_info(fid, requested_start):
     if not shutil.which("ffprobe"):
         return requested_start, "ffprobe-unavailable"
 
-    cache_key = f"audio_transcode_keyframe_v2_{fid}_{requested_start:g}"
+    cache_key = f"audio_transcode_keyframe_v3_{fid}_{requested_start:g}"
     cached_start = disk_cache.get(cache_key)
     if cached_start is not None:
         return float(cached_start), "cache"
 
-    token = _get_fresh_gdrive_token()
-    if not token:
-        return requested_start, "token-unavailable"
+    lock_acquired = acquire_lock(cache_key, timeout_seconds=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS + 5)
+    if not lock_acquired:
+        deadline = time.time() + min(5, AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS)
+        while time.time() < deadline:
+            cached_start = disk_cache.get(cache_key)
+            if cached_start is not None:
+                return float(cached_start), "cache"
+            time.sleep(0.1)
 
-    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
-    ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
-    probe_start = max(0, requested_start - AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS)
-    probe_duration = max(0.1, requested_start - probe_start + 0.1)
+    try:
+        token = _get_fresh_gdrive_token()
+        if not token:
+            return requested_start, "token-unavailable"
+
+        media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+        ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+        last_error = None
+
+        for lookbehind_seconds in _audio_transcode_keyframe_probe_lookbehinds(requested_start):
+            for attempt in range(AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS):
+                resolved_start, probe_error = _probe_gdrive_keyframe_packet_start(
+                    media_url,
+                    ffprobe_headers,
+                    requested_start,
+                    lookbehind_seconds,
+                )
+                if resolved_start is not None:
+                    disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
+                    return resolved_start, "probe-packet"
+                last_error = probe_error or last_error
+
+                resolved_start, probe_error = _probe_gdrive_keyframe_frame_start(
+                    media_url,
+                    ffprobe_headers,
+                    requested_start,
+                    lookbehind_seconds,
+                )
+                if resolved_start is not None:
+                    disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
+                    return resolved_start, "probe-frame"
+                last_error = probe_error or last_error
+
+                if attempt < AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS - 1 and AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS > 0:
+                    time.sleep(AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS)
+
+        return requested_start, f"fallback-{last_error or 'unknown'}"
+    finally:
+        if lock_acquired:
+            release_lock(cache_key)
+
+def _audio_transcode_keyframe_probe_lookbehinds(requested_start):
+    base_lookbehind = AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS
+    candidates = [
+        base_lookbehind,
+        base_lookbehind * 2,
+        max(600.0, base_lookbehind * 3),
+    ]
+    lookbehinds = []
+    for candidate in candidates:
+        bounded = round(min(requested_start, max(0.1, candidate)), 3)
+        if bounded > 0 and bounded not in lookbehinds:
+            lookbehinds.append(bounded)
+    return lookbehinds or [0.1]
+
+def _probe_gdrive_keyframe_packet_start(media_url, ffprobe_headers, requested_start, lookbehind_seconds):
+    probe_start = max(0, requested_start - lookbehind_seconds)
+    probe_duration = max(0.25, requested_start - probe_start + 0.25)
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-headers", ffprobe_headers,
+        "-read_intervals", f"{probe_start:g}%+{probe_duration:g}",
+        "-select_streams", "v:0",
+        "-show_packets",
+        "-show_entries", "packet=pts_time,dts_time,flags",
+        "-of", "json",
+        media_url,
+    ]
+    result, error = _run_audio_transcode_ffprobe(command)
+    if error:
+        return None, f"packet-{error}"
+
+    try:
+        packets = json.loads(result.stdout or '{}').get('packets', [])
+    except Exception as exc:
+        return None, f"packet-json-{exc.__class__.__name__}"
+
+    timestamps = []
+    for packet in packets:
+        if 'K' not in str(packet.get('flags') or ''):
+            continue
+        timestamp = _parse_ffprobe_seconds(packet.get('pts_time'))
+        if timestamp is None:
+            timestamp = _parse_ffprobe_seconds(packet.get('dts_time'))
+        if timestamp is not None:
+            timestamps.append(timestamp)
+    resolved_start = _select_audio_transcode_keyframe_timestamp(timestamps, requested_start)
+    return resolved_start, None if resolved_start is not None else "empty"
+
+def _probe_gdrive_keyframe_frame_start(media_url, ffprobe_headers, requested_start, lookbehind_seconds):
+    probe_start = max(0, requested_start - lookbehind_seconds)
+    probe_duration = max(0.25, requested_start - probe_start + 0.25)
     command = [
         "ffprobe",
         "-v", "error",
@@ -4892,42 +4987,65 @@ def _resolve_gdrive_audio_transcode_start_info(fid, requested_start):
         "-read_intervals", f"{probe_start:g}%+{probe_duration:g}",
         "-select_streams", "v:0",
         "-skip_frame", "nokey",
-        "-show_entries", "frame=best_effort_timestamp_time",
-        "-of", "csv=p=0",
+        "-show_frames",
+        "-show_entries", "frame=pts_time,pkt_pts_time,best_effort_timestamp_time,pkt_dts_time",
+        "-of", "json",
         media_url,
     ]
-    last_error = None
-    for attempt in range(AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS):
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
-            )
-            timestamps = [
-                float(match.group(0))
-                for line in (result.stdout or '').splitlines()
-                if (match := re.search(r'-?\d+(?:\.\d+)?', line))
-            ]
-            valid_timestamps = [
-                timestamp
-                for timestamp in timestamps
-                if 0 <= timestamp <= requested_start
-            ]
-            if valid_timestamps:
-                resolved_start = max(valid_timestamps)
-                disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
-                return resolved_start, "probe"
-            last_error = "empty"
-        except Exception as exc:
-            last_error = exc.__class__.__name__
+    result, error = _run_audio_transcode_ffprobe(command)
+    if error:
+        return None, f"frame-{error}"
 
-        if attempt < AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS - 1 and AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS > 0:
-            time.sleep(AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS)
+    try:
+        frames = json.loads(result.stdout or '{}').get('frames', [])
+    except Exception as exc:
+        return None, f"frame-json-{exc.__class__.__name__}"
 
-    return requested_start, f"fallback-{last_error or 'unknown'}"
+    timestamps = []
+    for frame in frames:
+        for key in ("best_effort_timestamp_time", "pts_time", "pkt_pts_time", "pkt_dts_time"):
+            timestamp = _parse_ffprobe_seconds(frame.get(key))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+                break
+    resolved_start = _select_audio_transcode_keyframe_timestamp(timestamps, requested_start)
+    return resolved_start, None if resolved_start is not None else "empty"
+
+def _run_audio_transcode_ffprobe(command):
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    except Exception as exc:
+        return None, exc.__class__.__name__
+    if result.returncode != 0:
+        return result, f"exit-{result.returncode}"
+    return result, None
+
+def _select_audio_transcode_keyframe_timestamp(timestamps, requested_start):
+    valid_timestamps = [
+        timestamp
+        for timestamp in timestamps
+        if 0 <= timestamp <= requested_start
+    ]
+    if not valid_timestamps:
+        return None
+    return max(valid_timestamps)
+
+def _parse_ffprobe_seconds(value):
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds in (float('inf'), float('-inf')):
+        return None
+    return seconds
 
 @app.route("/api/gdrive-embedded-subtitles/<fid>")
 @rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-list', cors=True)
