@@ -234,6 +234,8 @@ AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS = max(1_000_000, int(os.environ.get('AUD
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
 AUDIO_TRANSCODE_SLOT_WAIT_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_SLOT_WAIT_SECONDS', '3')))
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
+AUDIO_TRANSCODE_INPUT_PROBESIZE = max(32 * 1024, int(os.environ.get('AUDIO_TRANSCODE_INPUT_PROBESIZE', str(512 * 1024))))
+AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION = max(0, int(os.environ.get('AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION', '1000000')))
 AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
 AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '60')))
@@ -4524,6 +4526,12 @@ def _get_gdrive_stream_http_session():
     return session
 
 def _get_gdrive_audio_transcode_stream_map(fid, requested_stream_index=None):
+    if requested_stream_index is not None:
+        try:
+            return f"0:{int(requested_stream_index)}?"
+        except (TypeError, ValueError):
+            pass
+
     metadata = _get_gdrive_file_metadata(fid)
     audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
     requested_audio = _get_audio_stream_by_index(audio_streams, requested_stream_index)
@@ -4716,6 +4724,8 @@ def gdrive_audio_transcode(fid):
         "-reconnect_delay_max", "2",
         "-rw_timeout", str(AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS),
         "-headers", ffmpeg_headers,
+        "-probesize", str(AUDIO_TRANSCODE_INPUT_PROBESIZE),
+        "-analyzeduration", str(AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION),
     ]
     if start_seconds > 0:
         # Video stays stream-copied, so preserve the same keyframe preroll for

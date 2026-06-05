@@ -22,6 +22,10 @@ const CATALOG_METADATA_FIELDS = [
   'tmdb_backdrop_path',
   'tmdb_rating',
   'tmdb_genres',
+  'tmdb_original_language',
+  'origin_country',
+  'production_countries',
+  'original_language',
   'poster_path',
   'backdrop_path',
   'thumbnail_path',
@@ -372,6 +376,22 @@ function normalizeMetadataValue(field, value) {
       .map((genre) => typeof genre === 'string' ? genre : genre.name)
       .filter(Boolean)
       .slice(0, 12)
+  }
+  if (field === 'origin_country') {
+    return (Array.isArray(value) ? value : [value])
+      .map((country) => String(country || '').trim().toUpperCase())
+      .filter(Boolean)
+      .slice(0, 8)
+  }
+  if (field === 'production_countries') {
+    return (Array.isArray(value) ? value : [value])
+      .map((country) => {
+        if (typeof country === 'string') return country
+        return country?.iso_3166_1 || country?.code || country?.name || ''
+      })
+      .map((country) => String(country || '').trim().toUpperCase())
+      .filter(Boolean)
+      .slice(0, 8)
   }
   return value
 }

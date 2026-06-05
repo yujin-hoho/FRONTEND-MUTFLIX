@@ -77,6 +77,7 @@ function WatchPage({
   const fallbackPositionRef = useRef(null)
   const sourceDurationRef = useRef(0)
   const playbackSourceRequestRef = useRef(0)
+  const playbackSourceRef = useRef(null)
   const audioTracksRef = useRef([])
   const selectedAudioStreamIndexRef = useRef(null)
   const audioTranscodeBaseUrlRef = useRef('')
@@ -343,7 +344,7 @@ function WatchPage({
     setSeekPreviewTime(null)
   }, [])
 
-  const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, immediate = false } = {}) => {
+  const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, fastTimeline = false, immediate = false } = {}) => {
     const audioTranscodeUrl = audioTranscodeBaseUrlRef.current
     if (!audioTranscodeUrl) return false
 
@@ -376,6 +377,11 @@ function WatchPage({
     setIsBuffering(true)
     const resolveStreamStart = () => {
       audioTranscodeStartTimeoutRef.current = null
+      if (fastTimeline) {
+        pendingAudioTranscodeOffsetRef.current = boundedTarget
+        setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, boundedTarget, requestId))
+        return
+      }
       fetchAudioTranscodeStart(audioTranscodeStartUrlRef.current, boundedTarget, { signal: controller.signal })
         .catch((error) => error.name === 'AbortError'
           ? null
@@ -395,7 +401,7 @@ function WatchPage({
     return true
   }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame])
 
-  const applyPlaybackSource = useCallback((playbackSource, { autoplay = true, startSeconds = 0 } = {}) => {
+  const applyPlaybackSource = useCallback((playbackSource, { autoplay = true, fastAudioSwitch = false, startSeconds = 0 } = {}) => {
     const {
       audioCodecLabel: nextAudioCodecLabel,
       audioProbeStatus,
@@ -410,6 +416,7 @@ function WatchPage({
     const sourceDurationSeconds = Number(durationMs || 0) / 1000
     const selectedTrack = getSelectedAudioTrack(nextAudioTracks, selectedAudioStreamIndex)
 
+    playbackSourceRef.current = playbackSource
     sourceDurationRef.current = sourceDurationSeconds
     audioTranscodeBaseUrlRef.current = audioTranscodeUrl
     audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
@@ -423,7 +430,7 @@ function WatchPage({
     setAudioCodecLabel(nextAudioCodecLabel || formatAudioProbeStatus(audioProbeStatus))
     if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
     if (audioTranscodeUrl) {
-      restartAudioTranscodeAt(startSeconds, { autoplay, immediate: true })
+      restartAudioTranscodeAt(startSeconds, { autoplay, fastTimeline: fastAudioSwitch, immediate: true })
       return
     }
 
@@ -433,7 +440,7 @@ function WatchPage({
     setStreamUrl(url)
   }, [restartAudioTranscodeAt])
 
-  const loadPlaybackSource = useCallback((audioStreamIndex, { autoplay = true, startSeconds = 0 } = {}) => {
+  const loadPlaybackSource = useCallback((audioStreamIndex, { autoplay = true, fastAudioSwitch = false, startSeconds = 0 } = {}) => {
     const requestId = playbackSourceRequestRef.current + 1
     playbackSourceRequestRef.current = requestId
     setPlayerError('')
@@ -446,8 +453,11 @@ function WatchPage({
       { audioStreamIndex },
     ).then((playbackSource) => {
       if (playbackSourceRequestRef.current !== requestId) return null
-      applyPlaybackSource(playbackSource, { autoplay, startSeconds })
-      return playbackSource
+      const nextPlaybackSource = audioStreamIndex === null
+        ? getInitialPlaybackSourceForItem(playbackSource, item)
+        : playbackSource
+      applyPlaybackSource(nextPlaybackSource, { autoplay, fastAudioSwitch, startSeconds })
+      return nextPlaybackSource
     }).catch((error) => {
       if (playbackSourceRequestRef.current === requestId) {
         setPlayerError(error.message)
@@ -455,7 +465,7 @@ function WatchPage({
       }
       return null
     })
-  }, [applyPlaybackSource, authToken, videoName, videoOriginalName, videoPath])
+  }, [applyPlaybackSource, authToken, item, videoName, videoOriginalName, videoPath])
 
   const seekToPlaybackTime = useCallback((targetSeconds) => {
     const player = playerRef.current
@@ -574,6 +584,7 @@ function WatchPage({
     clearStreamStallTimeout()
     fallbackStreamUrlRef.current = ''
     fallbackPositionRef.current = null
+    playbackSourceRef.current = null
     sourceDurationRef.current = 0
     audioTranscodeBaseUrlRef.current = ''
     audioTranscodeOffsetRef.current = 0
@@ -927,6 +938,27 @@ function WatchPage({
       : currentTime
     const shouldResume = player ? !player.paused : isPlaying
 
+    if (!audioTranscodeBaseUrlRef.current && selectNativeAudioTrack(player, selectedTrack, audioTracksRef.current)) {
+      selectedAudioStreamIndexRef.current = selectedTrack.index
+      if (playbackSourceRef.current) {
+        playbackSourceRef.current = {
+          ...playbackSourceRef.current,
+          audioCodec: String(selectedTrack.codec || ''),
+          audioCodecLabel: getAudioTrackCodecLabel(selectedTrack),
+          audioTranscodeStartUrl: '',
+          audioTranscodeUrl: '',
+          browserAudioSupported: true,
+          selectedAudioStreamIndex: selectedTrack.index,
+          url: playbackSourceRef.current.directUrl || playbackSourceRef.current.url,
+        }
+      }
+      setSelectedAudioId(audioId)
+      setAudioCodecLabel(getAudioTrackCodecLabel(selectedTrack))
+      setNeedsAudioTranscode(false)
+      revealControls()
+      return
+    }
+
     selectedAudioStreamIndexRef.current = selectedTrack.index
     setSelectedAudioId(audioId)
     holdCurrentFrame()
@@ -943,10 +975,21 @@ function WatchPage({
     setCurrentTime(switchPosition)
     setIsBuffering(true)
     setPlayerError('')
-    loadPlaybackSource(selectedTrack.index, {
-      autoplay: shouldResume,
-      startSeconds: switchPosition,
-    })
+    const cachedPlaybackSource = playbackSourceRef.current
+    const nextPlaybackSource = createPlaybackSourceForAudioTrack(cachedPlaybackSource, selectedTrack)
+    if (nextPlaybackSource) {
+      applyPlaybackSource(nextPlaybackSource, {
+        autoplay: shouldResume,
+        fastAudioSwitch: true,
+        startSeconds: switchPosition,
+      })
+    } else {
+      loadPlaybackSource(selectedTrack.index, {
+        autoplay: shouldResume,
+        fastAudioSwitch: true,
+        startSeconds: switchPosition,
+      })
+    }
     revealControls()
   }
 
@@ -1557,6 +1600,20 @@ function getPreferredEmbeddedSubtitleTrack(tracks) {
     || tracks[0]
 }
 
+function getInitialPlaybackSourceForItem(playbackSource, item) {
+  const preferredTrack = getPreferredRegionalAudioTrack(playbackSource?.audioTracks, item)
+  if (!preferredTrack) return playbackSource
+
+  const selectedTrack = getSelectedAudioTrack(playbackSource.audioTracks, playbackSource.selectedAudioStreamIndex)
+  if (!selectedTrack || Number(selectedTrack.index) === Number(preferredTrack.index)) return playbackSource
+  if (playbackSource.isHlsStream) return playbackSource
+
+  const preferredPlaybackSource = createPlaybackSourceForAudioTrack(playbackSource, preferredTrack)
+  if (!preferredPlaybackSource) return playbackSource
+  if (preferredPlaybackSource.audioTranscodeUrl && !playbackSource.audioTranscodeUrl) return playbackSource
+  return preferredPlaybackSource
+}
+
 function getSelectedAudioTrack(tracks, selectedAudioStreamIndex) {
   const hasSelectedIndex = selectedAudioStreamIndex !== null
     && selectedAudioStreamIndex !== undefined
@@ -1568,6 +1625,100 @@ function getSelectedAudioTrack(tracks, selectedAudioStreamIndex) {
     || tracks.find((track) => track.default)
     || tracks[0]
     || null
+}
+
+function createPlaybackSourceForAudioTrack(playbackSource, track) {
+  if (!playbackSource || !track) return null
+
+  const selectedAudioStreamIndex = normalizeAudioStreamIndex(track.index)
+  if (selectedAudioStreamIndex === null) return null
+
+  const defaultAudioStreamIndex = normalizeAudioStreamIndex(playbackSource.defaultAudioStreamIndex)
+  const selectedNonDefaultAudio = defaultAudioStreamIndex !== null && selectedAudioStreamIndex !== defaultAudioStreamIndex
+  const needsAudioTranscode = !playbackSource.isHlsStream && (
+    track.browserSupported === false || selectedNonDefaultAudio
+  )
+  const baseAudioTranscodeUrl = playbackSource.baseAudioTranscodeUrl || playbackSource.audioTranscodeUrl || ''
+  const baseAudioTranscodeStartUrl = playbackSource.baseAudioTranscodeStartUrl || playbackSource.audioTranscodeStartUrl || ''
+  const audioTranscodeUrl = needsAudioTranscode
+    ? getAudioStreamUrl(baseAudioTranscodeUrl, selectedAudioStreamIndex)
+    : ''
+  const audioTranscodeStartUrl = needsAudioTranscode
+    ? getAudioStreamUrl(baseAudioTranscodeStartUrl, selectedAudioStreamIndex)
+    : ''
+
+  if (needsAudioTranscode && (!audioTranscodeUrl || !audioTranscodeStartUrl)) return null
+
+  return {
+    ...playbackSource,
+    audioCodec: String(track.codec || ''),
+    audioCodecLabel: getAudioTrackCodecLabel(track),
+    audioProbeStatus: playbackSource.audioProbeStatus || '',
+    audioTranscodeStartUrl,
+    audioTranscodeUrl,
+    browserAudioSupported: track.browserSupported !== false,
+    fallbackUrl: playbackSource.isHlsStream || selectedNonDefaultAudio ? '' : playbackSource.fallbackUrl,
+    selectedAudioStreamIndex,
+    url: audioTranscodeUrl || playbackSource.directUrl || playbackSource.url,
+  }
+}
+
+function selectNativeAudioTrack(player, selectedTrack, audioTracks) {
+  const nativeTracks = player?.audioTracks
+  const nativeTrackCount = Number(nativeTracks?.length || 0)
+  const metadataTrackCount = Array.isArray(audioTracks) ? audioTracks.length : 0
+  if (!nativeTrackCount || !selectedTrack) return false
+
+  const selectedOrder = Number(selectedTrack.audioOrder)
+  let targetIndex = Number.isInteger(selectedOrder)
+    && selectedOrder >= 0
+    && selectedOrder < nativeTrackCount
+    && nativeTrackCount === metadataTrackCount
+    ? selectedOrder
+    : null
+
+  if (targetIndex === null) {
+    const selectedLanguages = getAudioTrackLanguageCodes(selectedTrack)
+    const matches = []
+    for (let index = 0; index < nativeTrackCount; index += 1) {
+      const nativeTrack = nativeTracks[index]
+      const nativeId = normalizeAudioStreamIndex(nativeTrack.id)
+      const nativeLanguage = normalizeAudioLanguageCode(nativeTrack.language)
+      const nativeLabel = normalizeAudioLabel(`${nativeTrack.label || ''} ${nativeTrack.language || ''}`)
+      const titleLabel = normalizeAudioLabel(selectedTrack.title)
+      if (
+        nativeId === selectedTrack.index
+        || (nativeLanguage && selectedLanguages.includes(nativeLanguage))
+        || (titleLabel && nativeLabel.includes(titleLabel))
+      ) {
+        matches.push(index)
+      }
+    }
+    if (matches.length !== 1) return false
+    targetIndex = matches[0]
+  }
+
+  for (let index = 0; index < nativeTrackCount; index += 1) {
+    nativeTracks[index].enabled = index === targetIndex
+  }
+  return true
+}
+
+function getAudioStreamUrl(url, streamIndex) {
+  if (!url) return ''
+  try {
+    const parsedUrl = new URL(url, window.location.origin)
+    parsedUrl.searchParams.set('audio_stream_index', String(streamIndex))
+    return parsedUrl.toString()
+  } catch {
+    return url
+  }
+}
+
+function normalizeAudioStreamIndex(value) {
+  if (value === null || value === undefined || value === '') return null
+  const numericValue = Number(value)
+  return Number.isInteger(numericValue) ? numericValue : null
 }
 
 function getAudioTrackId(track) {
@@ -1620,6 +1771,92 @@ function getAudioTrackKindLabel(track) {
   return track.nonPrimary ? 'Alternate' : ''
 }
 
+function getPreferredRegionalAudioTrack(tracks, item) {
+  if (!Array.isArray(tracks) || !tracks.length) return null
+
+  const preferredLanguages = getPreferredAudioLanguageCodes(item)
+  if (!preferredLanguages.length) return null
+
+  const languageRank = new Map(preferredLanguages.map((language, index) => [language, index]))
+  const candidates = tracks.flatMap((track, index) => {
+    if (track.nonPrimary) return []
+    const matchedRanks = getAudioTrackLanguageCodes(track)
+      .map((language) => languageRank.get(language))
+      .filter((rank) => rank !== undefined)
+    if (!matchedRanks.length) return []
+    return [{
+      index,
+      rank: Math.min(...matchedRanks),
+      score: (Math.min(...matchedRanks) * 10)
+        + (track.default ? 0 : 1)
+        + (track.browserSupported === false ? 2 : 0),
+      track,
+    }]
+  })
+
+  candidates.sort((left, right) => left.score - right.score || left.index - right.index)
+  return candidates[0]?.track || null
+}
+
+function getPreferredAudioLanguageCodes(item = {}) {
+  const languages = []
+  const addLanguage = (language) => {
+    const normalizedLanguage = normalizeAudioLanguageCode(language)
+    if (normalizedLanguage && !languages.includes(normalizedLanguage)) languages.push(normalizedLanguage)
+  }
+
+  getCountryCodesForItem(item).forEach((countryCode) => {
+    ;(COUNTRY_AUDIO_LANGUAGE_CODES[countryCode] || []).forEach(addLanguage)
+  })
+  addLanguage(item.tmdb_original_language || item.original_language)
+  addLanguage(item.override_language)
+
+  return languages
+}
+
+function getCountryCodesForItem(item = {}) {
+  const countryCodes = []
+  const addCountry = (country) => {
+    const countryCode = getCountryCode(country)
+    if (countryCode && !countryCodes.includes(countryCode)) countryCodes.push(countryCode)
+  }
+
+  addCountry(item.override_region)
+  addCountry(item.region)
+  ;(Array.isArray(item.origin_country) ? item.origin_country : [item.origin_country]).forEach(addCountry)
+  ;(Array.isArray(item.production_countries) ? item.production_countries : [item.production_countries]).forEach(addCountry)
+  addCountry(item.country)
+
+  return countryCodes
+}
+
+function getCountryCode(country) {
+  if (!country) return ''
+  if (typeof country === 'string') return country.trim().toUpperCase()
+  return String(country.iso_3166_1 || country.code || country.name || '').trim().toUpperCase()
+}
+
+function getAudioTrackLanguageCodes(track) {
+  const candidates = new Set()
+  const addCandidate = (value) => {
+    const language = normalizeAudioLanguageCode(value)
+    if (language) candidates.add(language)
+  }
+  addCandidate(track.language)
+
+  const label = normalizeAudioLabel(`${track.title || ''} ${track.language || ''}`)
+  Object.entries(AUDIO_LANGUAGE_LABEL_ALIASES).forEach(([alias, language]) => {
+    if (label.includes(alias)) candidates.add(language)
+  })
+  return [...candidates]
+}
+
+function normalizeAudioLanguageCode(language) {
+  const normalizedLanguage = String(language || '').trim().toLowerCase()
+  if (!normalizedLanguage || normalizedLanguage === 'und' || normalizedLanguage === 'unknown') return ''
+  return AUDIO_LANGUAGE_CODE_ALIASES[normalizedLanguage] || normalizedLanguage
+}
+
 function getAudioLanguageLabel(language) {
   const normalizedLanguage = String(language || '').trim().toLowerCase()
   if (!normalizedLanguage || normalizedLanguage === 'und' || normalizedLanguage === 'unknown') return ''
@@ -1662,6 +1899,89 @@ function getAudioLanguageLabel(language) {
   }
   return languageLabels[normalizedLanguage] || normalizedLanguage.toUpperCase()
 }
+
+const COUNTRY_AUDIO_LANGUAGE_CODES = {
+  AR: ['es'],
+  AU: ['en'],
+  BR: ['pt'],
+  CA: ['en', 'fr'],
+  CN: ['zh'],
+  DE: ['de'],
+  ES: ['es'],
+  FR: ['fr'],
+  GB: ['en'],
+  HK: ['zh'],
+  ID: ['id'],
+  IN: ['hi'],
+  IT: ['it'],
+  JP: ['ja'],
+  KR: ['ko'],
+  MX: ['es'],
+  MY: ['ms'],
+  PH: ['en'],
+  PT: ['pt'],
+  RU: ['ru'],
+  SG: ['en', 'zh', 'ms'],
+  TH: ['th'],
+  TR: ['tr'],
+  TW: ['zh'],
+  US: ['en'],
+  VN: ['vi'],
+}
+
+const AUDIO_LANGUAGE_CODE_ALIASES = {
+  ara: 'ar',
+  arabic: 'ar',
+  chi: 'zh',
+  chinese: 'zh',
+  cmn: 'zh',
+  de: 'de',
+  deu: 'de',
+  dutch: 'nl',
+  eng: 'en',
+  english: 'en',
+  fre: 'fr',
+  french: 'fr',
+  ger: 'de',
+  german: 'de',
+  hin: 'hi',
+  hindi: 'hi',
+  id: 'id',
+  ind: 'id',
+  indonesia: 'id',
+  indonesian: 'id',
+  ita: 'it',
+  italian: 'it',
+  ja: 'ja',
+  japanese: 'ja',
+  jpn: 'ja',
+  ko: 'ko',
+  kor: 'ko',
+  korean: 'ko',
+  may: 'ms',
+  malay: 'ms',
+  msa: 'ms',
+  por: 'pt',
+  portuguese: 'pt',
+  ru: 'ru',
+  rus: 'ru',
+  russian: 'ru',
+  spa: 'es',
+  spanish: 'es',
+  tha: 'th',
+  thai: 'th',
+  tur: 'tr',
+  turkish: 'tr',
+  vi: 'vi',
+  vie: 'vi',
+  vietnamese: 'vi',
+  zh: 'zh',
+  zho: 'zh',
+}
+
+const AUDIO_LANGUAGE_LABEL_ALIASES = Object.fromEntries(
+  Object.entries(AUDIO_LANGUAGE_CODE_ALIASES).map(([alias, language]) => [normalizeAudioLabel(alias), language]),
+)
 
 function isDuplicateAudioLabel(candidate, existingLabel) {
   const normalizedCandidate = normalizeAudioLabel(candidate)

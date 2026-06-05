@@ -208,19 +208,24 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}, opti
   )
   const gdriveToken = String(data.headers?.Authorization || '').replace(/^Bearer\s+/i, '')
   const fileId = mediaPath.split('/', 2)[1]
+  const baseAudioTranscodeUrl = data.audio_transcode_url
+    ? stripAudioStreamIndex(resolveApiPath(data.audio_transcode_url))
+    : ''
+  const baseAudioTranscodeStartUrl = data.audio_transcode_start_url
+    ? stripAudioStreamIndex(resolveApiPath(data.audio_transcode_start_url))
+    : ''
   const audioTranscodeUrl = needsAudioTranscode && data.audio_transcode_url
     ? resolveApiPath(data.audio_transcode_url)
     : ''
   const audioTranscodeStartUrl = needsAudioTranscode && data.audio_transcode_start_url
     ? resolveApiPath(data.audio_transcode_start_url)
     : ''
-  const streamPath = audioTranscodeUrl
-    ? audioTranscodeUrl
-    : isHlsStream
-      ? data.hls_manifest_url
-      : gdriveToken && fileId
-        ? `${CLOUDFLARE_STREAM_PROXY_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(gdriveToken)}`
-        : data.stream_url
+  const directStreamPath = isHlsStream
+    ? data.hls_manifest_url
+    : gdriveToken && fileId
+      ? `${CLOUDFLARE_STREAM_PROXY_URL}/${encodeURIComponent(fileId)}?token=${encodeURIComponent(gdriveToken)}`
+      : data.stream_url
+  const streamPath = audioTranscodeUrl || directStreamPath
   const selectedAudioStreamIndex = normalizeAudioStreamIndex(data.selected_audio_stream_index)
   const defaultAudioStreamIndex = normalizeAudioStreamIndex(data.default_audio_stream_index)
   const selectedNonDefaultAudio = requestedAudioStreamIndex !== null
@@ -232,15 +237,19 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}, opti
   return {
     audioTranscodeStartUrl,
     audioTranscodeUrl,
+    baseAudioTranscodeStartUrl,
+    baseAudioTranscodeUrl,
     audioCodec: String(data.audio_codec || ''),
     audioCodecLabel: getAudioCodecLabel(data),
     audioProbeStatus: String(data.audio_probe_status || ''),
     audioTracks: normalizeAudioTracks(data.audio_streams),
     browserAudioSupported: probedBrowserAudioSupported,
     defaultAudioStreamIndex,
+    directUrl: directStreamPath ? resolvePublicPath(directStreamPath) : '',
     durationMs: Number(data.duration_ms || 0),
     embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
+    isHlsStream,
     selectedAudioStreamIndex,
     url: resolvePublicPath(streamPath),
   }
@@ -248,10 +257,11 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}, opti
 
 function normalizeAudioTracks(audioStreams) {
   return (Array.isArray(audioStreams) ? audioStreams : [])
-    .map((stream) => {
+    .map((stream, audioOrder) => {
       const streamIndex = normalizeAudioStreamIndex(stream.index)
       if (streamIndex === null) return null
       return {
+        audioOrder,
         bitRate: Number(stream.bit_rate || 0),
         browserSupported: stream.browser_supported !== false,
         channelLayout: String(stream.channel_layout || ''),
@@ -867,6 +877,9 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
       tmdb_overview: item.tmdb_overview || metadata.overview,
       tmdb_rating: item.tmdb_rating || metadata.vote_average,
       tmdb_genres: item.tmdb_genres?.length ? item.tmdb_genres : metadata.genres || [],
+      tmdb_original_language: item.tmdb_original_language || metadata.original_language,
+      origin_country: item.origin_country?.length ? item.origin_country : metadata.origin_country || [],
+      production_countries: item.production_countries?.length ? item.production_countries : metadata.production_countries || [],
       media_type: mediaType,
     }
   })
@@ -930,6 +943,9 @@ function getCatalogMetadataFromTmdb(meta) {
     tmdb_overview: meta.overview,
     tmdb_rating: meta.vote_average,
     tmdb_genres: meta.genres,
+    tmdb_original_language: meta.original_language,
+    origin_country: meta.origin_country,
+    production_countries: meta.production_countries,
   }
 }
 
@@ -963,6 +979,16 @@ function resolvePublicPath(path) {
 function resolveApiPath(path) {
   if (/^(?:https?:|blob:)/i.test(path)) return path
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
+}
+
+function stripAudioStreamIndex(url) {
+  try {
+    const parsedUrl = new URL(url, window.location.origin)
+    parsedUrl.searchParams.delete('audio_stream_index')
+    return parsedUrl.toString()
+  } catch {
+    return url
+  }
 }
 
 const AUDIO_TAG_BOUNDARY = String.raw`(?:^|[.\s_[\]()-])`
