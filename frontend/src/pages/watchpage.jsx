@@ -1858,7 +1858,7 @@ function normalizeAudioLanguageCode(language) {
 }
 
 function getAudioLanguageLabel(language) {
-  const normalizedLanguage = String(language || '').trim().toLowerCase()
+  const normalizedLanguage = normalizeAudioLanguageCode(language)
   if (!normalizedLanguage || normalizedLanguage === 'und' || normalizedLanguage === 'unknown') return ''
   const languageLabels = {
     ar: 'Arabic',
@@ -2014,7 +2014,16 @@ function getEmbeddedSubtitleTrackId(track) {
 }
 
 function getEmbeddedSubtitleTrackLabel(track) {
-  return track.label || track.language || `Subtitle ${track.stream_index}`
+  const languageLabel = getAudioLanguageLabel(track.language)
+  const title = String(track.label || '').trim()
+  const titleLanguageLabel = getAudioLanguageLabel(title)
+  const displayTitle = titleLanguageLabel || title
+  const parts = []
+
+  if (languageLabel) parts.push(languageLabel)
+  if (displayTitle && !isDuplicateAudioLabel(displayTitle, languageLabel)) parts.push(displayTitle)
+
+  return uniqueLabels(parts).join(' - ') || `Subtitle ${track.stream_index}`
 }
 
 function setTextTracksHidden(player) {
