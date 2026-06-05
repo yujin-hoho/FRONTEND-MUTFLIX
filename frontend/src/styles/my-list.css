@@ -147,14 +147,19 @@
   padding: 0;
   text-align: left;
   cursor: pointer;
-  transition: transform 160ms ease;
   contain: layout style;
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
 }
 
-.my-list-card:hover {
-  transform: translateY(-4px);
+@media (hover: hover) {
+  .my-list-card {
+    transition: transform 120ms ease;
+  }
+
+  .my-list-card:hover {
+    transform: translateY(-3px);
+  }
 }
 
 .my-list-poster {
@@ -164,8 +169,12 @@
   overflow: hidden;
   border-radius: 8px;
   background: #0f172a;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
   contain: paint;
+}
+
+.my-list-poster .image-shimmer::after {
+  display: none;
 }
 
 .my-list-poster img {

@@ -252,7 +252,8 @@ function App() {
 
         // Enrich metadata progressively in background — each batch updates UI + cache
         const profileId = selectedProfile.id
-        const enrichedCatalog = await enrichCatalogMetadata(authToken, refreshedDashboard, Infinity, {
+        const prioritizedDashboard = prioritizeFeaturedMetadata(refreshedDashboard, profileId, featuredItemKeys.current)
+        const enrichedCatalog = await enrichCatalogMetadata(authToken, prioritizedDashboard, Infinity, {
           onProgress: (enrichedSoFar) => {
             if (ignore) return
             setCatalogData((current) => {
@@ -995,6 +996,23 @@ function getFeaturedItemKey(featuredKeys, profileId, movies, series) {
   const itemKey = heroItem ? getItemKey(heroItem) : ''
   if (itemKey) featuredKeys.set(profileId, { itemKey, rotationKey })
   return itemKey
+}
+
+function prioritizeFeaturedMetadata(catalog, profileId, featuredKeys) {
+  const featuredItemKey = getFeaturedItemKey(featuredKeys, profileId, catalog.movies, catalog.series)
+  if (!featuredItemKey) return catalog
+
+  return {
+    ...catalog,
+    movies: moveItemToFront(catalog.movies, featuredItemKey),
+    series: moveItemToFront(catalog.series, featuredItemKey),
+  }
+}
+
+function moveItemToFront(items, itemKey) {
+  const index = items.findIndex((item) => getItemKey(item) === itemKey)
+  if (index <= 0) return items
+  return [items[index], ...items.slice(0, index), ...items.slice(index + 1)]
 }
 
 function decodeRouteValue(value) {

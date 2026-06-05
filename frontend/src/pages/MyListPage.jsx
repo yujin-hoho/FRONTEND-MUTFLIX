@@ -7,7 +7,7 @@ import { fetchMyList, fetchMyListCounts } from '../services/api'
 import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 
 const MY_LIST_STATUSES = ['plan_to_watch', 'completed']
-const MY_LIST_BATCH_SIZE = 24
+const MY_LIST_BATCH_SIZE = 16
 
 function MyListPage({
   authToken,
@@ -122,7 +122,7 @@ function MyListPage({
           }
         })
       },
-      { root: scrollRoot, rootMargin: '520px 0px' },
+      { root: scrollRoot, rootMargin: '280px 0px' },
     )
 
     observer.observe(sentinel)

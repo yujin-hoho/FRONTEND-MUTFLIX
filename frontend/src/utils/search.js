@@ -29,6 +29,7 @@ export function getCatalogFilters(items) {
   const mediaTypes = new Set(items.map(getMediaType))
   const genres = new Map()
   const hasVarietyShows = items.some(isVarietyShow)
+  const hasSeries = items.some((item) => getMediaType(item) === 'series' && !isVarietyShow(item))
 
   items.forEach((item) => {
     getGenres(item).forEach((genre) => {
@@ -39,7 +40,7 @@ export function getCatalogFilters(items) {
 
   return [
     mediaTypes.has('movie') ? { label: 'Movies', type: 'type', value: 'movie' } : null,
-    mediaTypes.has('series') ? { label: 'Series', type: 'type', value: 'series' } : null,
+    hasSeries ? { label: 'Series', type: 'type', value: 'series' } : null,
     hasVarietyShows ? { label: 'Variety Show', type: 'category', value: 'variety-show' } : null,
     ...[...genres.entries()]
       .sort(([, firstLabel], [, secondLabel]) => firstLabel.localeCompare(secondLabel))
@@ -52,7 +53,10 @@ export function filterCatalogItems(items, filter) {
   const normalizedValue = normalizeSearchQuery(filter.value)
 
   if (filter.type === 'type') {
-    return items.filter((item) => getMediaType(item) === normalizedValue)
+    return items.filter((item) => (
+      getMediaType(item) === normalizedValue
+      && (normalizedValue !== 'series' || !isVarietyShow(item))
+    ))
   }
   if (filter.type === 'genre') {
     return items.filter((item) => getGenres(item).some((genre) => normalizeSearchQuery(genre) === normalizedValue))

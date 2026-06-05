@@ -6,7 +6,7 @@ import ProfileMenu from '../components/ProfileMenu'
 import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
-const RESULT_BATCH_SIZE = 24
+const RESULT_BATCH_SIZE = 16
 
 function SearchResultsPage({
   catalogData,
@@ -112,7 +112,7 @@ function SearchResultsPage({
           }
         })
       },
-      { root: scrollRoot, rootMargin: '520px 0px' },
+      { root: scrollRoot, rootMargin: '280px 0px' },
     )
 
     observer.observe(sentinel)

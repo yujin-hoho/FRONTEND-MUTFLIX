@@ -9,6 +9,7 @@ import {
   getDetailArtworkUrl,
   getGenres,
   getItemKey,
+  getOverview,
   getPosterFallbackUrl,
   getPosterUrl,
   getRating,
@@ -93,7 +94,7 @@ function DashboardPage({
         <div className="dashboard-hero-content">
           <h1>{displayView.featuredItem ? getTitle(displayView.featuredItem) : 'Mutflix'}</h1>
           <p>
-            {displayView.featuredItem?.tmdb_overview
+            {getOverview(displayView.featuredItem)
               || 'Explore movies and series from your Mutflix catalog.'}
           </p>
           <button className="play-button" onClick={() => displayView.featuredItem && onOpenDetail(displayView.featuredItem)} type="button">
