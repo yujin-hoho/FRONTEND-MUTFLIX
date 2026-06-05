@@ -980,13 +980,11 @@ function WatchPage({
     if (nextPlaybackSource) {
       applyPlaybackSource(nextPlaybackSource, {
         autoplay: shouldResume,
-        fastAudioSwitch: true,
         startSeconds: switchPosition,
       })
     } else {
       loadPlaybackSource(selectedTrack.index, {
         autoplay: shouldResume,
-        fastAudioSwitch: true,
         startSeconds: switchPosition,
       })
     }
