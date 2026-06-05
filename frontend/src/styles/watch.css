@@ -494,18 +494,38 @@
 .watch-speed {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 7px;
   color: #cbd5e1;
   font-size: 0.74rem;
   font-weight: 750;
 }
 
 .watch-speed select {
-  border: 1px solid rgba(148, 163, 184, 0.42);
-  border-radius: 5px;
-  background: rgba(15, 23, 42, 0.78);
+  width: 68px;
+  height: 34px;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 7px;
+  background:
+    linear-gradient(45deg, transparent 50%, #cbd5e1 50%) calc(100% - 14px) 14px / 5px 5px no-repeat,
+    linear-gradient(135deg, #cbd5e1 50%, transparent 50%) calc(100% - 9px) 14px / 5px 5px no-repeat,
+    rgba(15, 23, 42, 0.9);
   color: #f8fafc;
-  padding: 5px;
+  padding: 0 24px 0 10px;
+  font: inherit;
+  cursor: pointer;
+  outline: none;
+  appearance: none;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.watch-speed select:hover {
+  border-color: rgba(124, 242, 173, 0.72);
+  background-color: rgba(15, 23, 42, 0.96);
+}
+
+.watch-speed select:focus-visible {
+  border-color: #7cf2ad;
+  box-shadow: 0 0 0 3px rgba(124, 242, 173, 0.18);
 }
 
 @media (max-width: 640px) {
