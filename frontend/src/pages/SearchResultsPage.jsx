@@ -1,5 +1,5 @@
 import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Search } from 'lucide-react'
+import { Check, Pencil, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
 import ProfileMenu from '../components/ProfileMenu'
@@ -12,10 +12,12 @@ function SearchResultsPage({
   catalogData,
   initialFilter,
   initialQuery,
+  isAdmin = false,
   onChangeProfile,
   onFilterSelect,
   onHydrateItems,
   onLogout,
+  onOpenCatalogEdit,
   onOpenDetail,
   onOpenMyList,
   onOpenContextMenu,
@@ -202,8 +204,10 @@ function SearchResultsPage({
               {visibleResults.map((item) => (
                 <SearchResultCard
                   item={item}
+                  isAdmin={isAdmin}
                   key={getItemKey(item)}
                   myList={myList}
+                  onOpenEdit={onOpenCatalogEdit}
                   onOpenContextMenu={onOpenContextMenu}
                   onOpenDetail={onOpenDetail}
                   watchHistory={watchHistory}
@@ -218,7 +222,7 @@ function SearchResultsPage({
   )
 }
 
-const SearchResultCard = memo(function SearchResultCard({ item, myList, onOpenContextMenu, onOpenDetail, watchHistory }) {
+const SearchResultCard = memo(function SearchResultCard({ isAdmin = false, item, myList, onOpenContextMenu, onOpenDetail, onOpenEdit, watchHistory }) {
   const poster = getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)
@@ -226,26 +230,49 @@ const SearchResultCard = memo(function SearchResultCard({ item, myList, onOpenCo
   const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
 
   return (
-    <button
+    <article
       className={`search-result-card${isCompleted ? ' item-completed' : ''}`}
-      onClick={() => onOpenDetail(item)}
       onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
-      type="button"
     >
-      <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
-        <LoadableImage alt={title} key={poster} src={poster} />
-        {isCompleted && (
-          <span aria-label="Selesai" className="completion-badge item-completion-badge">
-            <Check size={20} strokeWidth={3.4} />
-          </span>
-        )}
-        {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
-      </span>
-      <span className="search-result-copy">
-        <strong>{title}</strong>
-        <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
-      </span>
-    </button>
+      <button className="search-result-surface" onClick={() => onOpenDetail(item)} type="button">
+        <span className={`search-result-poster${isCompleted ? ' completed-poster' : ''}`}>
+          <LoadableImage alt={title} key={poster} src={poster} />
+          {isCompleted && (
+            <span aria-label="Selesai" className="completion-badge item-completion-badge">
+              <Check size={20} strokeWidth={3.4} />
+            </span>
+          )}
+          {rating > 0 && (
+            <span
+              aria-label={`Rating ${Math.round(rating * 10)} percent`}
+              className="rating-badge rating-pie"
+              style={{ '--rating-percent': `${Math.min(100, Math.max(0, rating * 10))}%` }}
+            >
+              {Math.round(rating * 10)}%
+            </span>
+          )}
+        </span>
+        <span className="search-result-copy">
+          <strong>{title}</strong>
+          <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
+        </span>
+      </button>
+      {isAdmin && (
+        <button
+          aria-label={`Edit ${title}`}
+          className="search-result-edit-button"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onOpenEdit?.(item)
+          }}
+          title="Edit"
+          type="button"
+        >
+          <Pencil size={15} strokeWidth={2.6} />
+        </button>
+      )}
+    </article>
   )
 })
 

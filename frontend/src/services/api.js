@@ -184,6 +184,76 @@ export async function fetchCatalogSearch(authToken, query, { signal } = {}) {
   return Array.isArray(data) ? data : []
 }
 
+export async function fetchTmdbSearchResults(authToken, { mediaType = 'tv', query, signal }) {
+  const normalizedQuery = String(query || '').trim()
+  if (!normalizedQuery) return []
+
+  const tmdbMediaType = mediaType === 'movie' ? 'movie' : 'tv'
+  const headers = { 'x-access-token': authToken }
+  const firstPage = await fetchTmdbSearchPage(headers, tmdbMediaType, normalizedQuery, 1, signal)
+  const totalPages = Math.min(Number(firstPage.total_pages || 1), 5)
+  const remainingPages = totalPages > 1
+    ? await Promise.all(
+      Array.from({ length: totalPages - 1 }, (_, index) => fetchTmdbSearchPage(headers, tmdbMediaType, normalizedQuery, index + 2, signal)),
+    )
+    : []
+
+  return [firstPage, ...remainingPages]
+    .flatMap((page) => Array.isArray(page.results) ? page.results : [])
+    .filter((result) => result?.id)
+}
+
+export async function saveTmdbOverride(authToken, payload) {
+  const response = await fetch(`${API_BASE_URL}/api/tmdb-overrides`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-token': authToken,
+    },
+    body: JSON.stringify(payload),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to save TMDB override.')
+  return data
+}
+
+export async function fetchTmdbOverride(authToken, folderName) {
+  const response = await fetch(`${API_BASE_URL}/api/tmdb-overrides`, {
+    headers: { 'x-access-token': authToken },
+  })
+  const data = await response.json().catch(() => [])
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to load TMDB overrides.')
+  return (Array.isArray(data) ? data : []).find((entry) => entry.folder_name === folderName) || null
+}
+
+export async function fetchResolvedTmdbMetadata(authToken, { folderName, mediaType = 'tv', signal }) {
+  const tmdbMediaType = mediaType === 'movie' ? 'movie' : 'tv'
+  const response = await fetch(`${API_BASE_URL}/api/tmdb-meta/${tmdbMediaType}?folder_name=${encodeURIComponent(folderName)}`, {
+    cache: 'no-store',
+    headers: { 'x-access-token': authToken },
+    signal,
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to load selected TMDB metadata.')
+  return data
+}
+
+async function fetchTmdbSearchPage(headers, mediaType, query, page, signal) {
+  const params = new URLSearchParams({
+    include_adult: 'false',
+    language: 'en-US',
+    page: String(page),
+    query,
+  })
+  const response = await fetch(`${API_BASE_URL}/api/tmdb/search/${mediaType}?${params.toString()}`, {
+    headers,
+    signal,
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to search TMDB.')
+  return data
+}
+
 export async function fetchPlaybackSource(authToken, mediaPath, video = {}, options = {}) {
   if (!mediaPath) throw new Error('No media file was selected.')
   if (/^https?:\/\//i.test(mediaPath)) return { fallbackUrl: '', url: mediaPath }
@@ -881,32 +951,50 @@ async function getCreditsFromServer(item, headers) {
 function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
   return items.map((item) => {
     const folderName = item.folder_name || item.name
-    const metadata = metadataMap.get(`${mediaType}:${folderName}`)
+    const metadataMediaType = getMetadataRequestType(item, mediaType)
+    const metadata = metadataMap.get(`${metadataMediaType}:${folderName}`)
     if (!metadata) return item
 
     return {
       ...item,
+      tmdb_id: metadata.id || item.tmdb_id,
       tmdb_metadata_resolved: true,
-      tmdb_title: item.tmdb_title || metadata.title || metadata.name,
-      tmdb_poster_path: item.tmdb_poster_path || metadata.poster_path,
-      tmdb_backdrop_path: item.tmdb_backdrop_path || metadata.backdrop_path,
-      tmdb_overview: item.tmdb_overview || metadata.overview,
-      tmdb_rating: item.tmdb_rating || metadata.vote_average,
-      tmdb_genres: item.tmdb_genres?.length ? item.tmdb_genres : metadata.genres || [],
-      tmdb_original_language: item.tmdb_original_language || metadata.original_language,
+      tmdb_title: metadata.title || metadata.name || item.tmdb_title,
+      tmdb_poster_path: metadata.poster_path || item.tmdb_poster_path,
+      tmdb_backdrop_path: metadata.backdrop_path || item.tmdb_backdrop_path,
+      tmdb_overview: metadata.overview || item.tmdb_overview,
+      tmdb_rating: metadata.vote_average || item.tmdb_rating,
+      tmdb_genres: metadata.genres?.length ? metadata.genres : item.tmdb_genres || [],
+      tmdb_original_language: metadata.original_language || item.tmdb_original_language,
       origin_country: item.origin_country?.length ? item.origin_country : metadata.origin_country || [],
       production_countries: item.production_countries?.length ? item.production_countries : metadata.production_countries || [],
-      media_type: mediaType,
+      media_type: metadataMediaType,
+      type: metadataMediaType === 'movie' ? 'movie' : 'series',
     }
   })
 }
 
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
-    .filter((item) => !item.tmdb_metadata_resolved && (!getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
+    .filter((item) => (
+      hasUnresolvedOverride(item)
+      || (!item.tmdb_metadata_resolved && (!getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
+    ))
     .slice(0, maxItems)
-    .map((item) => ({ media_type: mediaType, folder_name: item.folder_name || item.name }))
+    .map((item) => ({ media_type: getMetadataRequestType(item, mediaType), folder_name: item.folder_name || item.name }))
     .filter((item) => item.folder_name)
+}
+
+function getMetadataRequestType(item, fallbackMediaType) {
+  const overrideType = String(item.tmdb_override_media_type || '').trim()
+  if (overrideType === 'movie' || overrideType === 'tv') return overrideType
+  return fallbackMediaType
+}
+
+function hasUnresolvedOverride(item) {
+  const overrideId = Number(item.tmdb_override_id || 0)
+  if (!overrideId) return false
+  return Number(item.tmdb_id || 0) !== overrideId
 }
 
 async function fetchMetadataBatch(headers, items) {
@@ -945,14 +1033,37 @@ function mergeItemsByKey(items, updates) {
   const updatesByKey = new Map(updates.map((item) => [getCatalogIdentityKey(item), item]))
   return items.map((item) => {
     const update = updatesByKey.get(getCatalogIdentityKey(item))
-    return update ? mergeMeaningfulValues(item, update) : item
+    if (!update || isStaleOverrideUpdate(item, update)) return item
+    return mergeMeaningfulValues(item, update)
   })
+}
+
+function isStaleOverrideUpdate(item, update) {
+  const overrideId = Number(item.tmdb_override_id || 0)
+  if (!overrideId) return false
+
+  const updateTmdbId = Number(update.tmdb_id || 0)
+  if (updateTmdbId === overrideId) return false
+  return hasTmdbMetadata(update)
+}
+
+function hasTmdbMetadata(item) {
+  return Boolean(
+    item.tmdb_metadata_resolved
+    || item.tmdb_title
+    || item.tmdb_poster_path
+    || item.tmdb_backdrop_path
+    || item.tmdb_overview
+    || Number(item.tmdb_rating || 0) > 0
+    || item.tmdb_genres?.length,
+  )
 }
 
 function getCatalogMetadataFromTmdb(meta) {
   if (!meta) return {}
 
   return {
+    tmdb_id: meta.id,
     tmdb_title: meta.title || meta.name,
     tmdb_poster_path: meta.poster_path,
     tmdb_backdrop_path: meta.backdrop_path,

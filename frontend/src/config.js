@@ -1,6 +1,6 @@
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'https://melancholia112-mutflix.hf.space').replace(/\/$/, '')
 export const CLOUDFLARE_STREAM_PROXY_URL = (import.meta.env.VITE_CLOUDFLARE_STREAM_PROXY_URL || 'https://mutflix-stream.mutflix.workers.dev').replace(/\/$/, '')
-export const DASHBOARD_CACHE_KEY = 'mutflix_dashboard_cache_v2'
+export const DASHBOARD_CACHE_KEY = 'mutflix_dashboard_cache_v3'
 export const PROFILES_CACHE_KEY = 'mutflix_profiles_cache_v1'
 export const DASHBOARD_CACHE_TTL = 6 * 60 * 60 * 1000
 export const MAX_CACHED_PROFILES = 3

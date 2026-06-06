@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 import { PROFILES_CACHE_KEY } from './config'
 import DashboardSkeleton from './components/DashboardSkeleton'
+import AdminCatalogEditPage from './pages/AdminCatalogEditPage'
 import AuthPage from './pages/AuthPage'
 import DashboardPage from './pages/DashboardPage'
 import DetailPage from './pages/DetailPage'
@@ -32,6 +33,7 @@ import {
   mergeDashboardCache,
   readDashboardCache,
   readProfilesCache,
+  writeLocalTmdbOverride,
   writeDashboardCache,
   writeProfilesCache,
 } from './utils/cache'
@@ -66,6 +68,7 @@ function App() {
   const location = useLocation()
   const navigate = useNavigate()
   const isDetailRoute = location.pathname.startsWith('/detail/')
+  const isAdminEditRoute = location.pathname.startsWith('/admin/catalog/edit/')
   const isMyListRoute = location.pathname === '/my-list'
   const isSearchRoute = location.pathname === '/search'
   const isWatchRoute = location.pathname.startsWith('/watch/')
@@ -581,6 +584,47 @@ function App() {
     loadDetail(item)
   }
 
+  function handleOpenCatalogEdit(item) {
+    const itemPath = getItemPath(item) || getTitle(item)
+    if (!itemPath) return
+    navigate(`/admin/catalog/edit/${encodeURIComponent(itemPath)}`, {
+      state: {
+        from: getCurrentRoute(location),
+        fromState: location.state,
+        item,
+      },
+    })
+  }
+
+  const handleCatalogOverrideSaved = useCallback((item, tmdbResult, mediaType) => {
+    if (!item || !tmdbResult) return
+
+    const originalKey = getCatalogIdentityKey(item)
+    const updatedItem = createCatalogOverrideItem(item, tmdbResult, mediaType)
+    writeLocalTmdbOverride(updatedItem)
+    setCatalogData((currentData) => {
+      const nextData = {
+        ...currentData,
+        isFromCache: false,
+        rows: null,
+        movies: replaceCatalogItem(currentData.movies, originalKey, updatedItem),
+        series: replaceCatalogItem(currentData.series, originalKey, updatedItem),
+      }
+
+      if (selectedProfile) {
+        dashboardRowsCacheKey.current = ''
+        writeDashboardCache(selectedProfile.id, {
+          history: profileData.watchHistory,
+          movies: nextData.movies,
+          rows: null,
+          series: nextData.series,
+        })
+      }
+
+      return nextData
+    })
+  }, [profileData.watchHistory, selectedProfile])
+
   function handleDetailBack() {
     setDetailData(EMPTY_DETAIL_DATA)
     navigateBackToStoredRoute(navigate, location.state)
@@ -829,6 +873,20 @@ function App() {
         />
       )
     }
+    if (isAdminEditRoute && currentUser?.role === 'admin') {
+      const routeItemPath = decodeRouteValue(location.pathname.slice('/admin/catalog/edit/'.length))
+      const editItem = location.state?.item || [...catalogData.movies, ...catalogData.series]
+        .find((item) => getItemPath(item) === routeItemPath || getTitle(item) === routeItemPath)
+
+      return (
+        <AdminCatalogEditPage
+          authToken={authToken}
+          item={editItem || { name: routeItemPath }}
+          onBack={() => navigateBackToStoredRoute(navigate, location.state)}
+          onOverrideSaved={handleCatalogOverrideSaved}
+        />
+      )
+    }
     if (isDetailRoute && detailData.item) {
       return renderWithContextMenu(
         <DetailPage
@@ -849,10 +907,12 @@ function App() {
           catalogData={catalogData}
           initialFilter={searchFilter}
           initialQuery={new URLSearchParams(location.search).get('q') || ''}
+          isAdmin={currentUser?.role === 'admin'}
           onChangeProfile={handleChangeProfile}
           onFilterSelect={(filter) => handleOpenCatalogFilter(filter, { replace: true })}
           onHydrateItems={hydrateCatalogItems}
           onLogout={handleLogout}
+          onOpenCatalogEdit={handleOpenCatalogEdit}
           onOpenDetail={handleOpenDetail}
           onOpenMyList={handleOpenMyList}
           onOpenContextMenu={openCompletedContextMenu}
@@ -889,11 +949,13 @@ function App() {
     return renderWithContextMenu(
       <DashboardPage
         catalogData={catalogData}
+        isAdmin={currentUser?.role === 'admin'}
         onChangeProfile={handleChangeProfile}
         onDashboardRowsReady={handleDashboardRowsReady}
         onLogout={handleLogout}
         onHydrateItems={hydrateCatalogItems}
         onOpenCatalogFilter={handleOpenCatalogFilter}
+        onOpenCatalogEdit={handleOpenCatalogEdit}
         onOpenMyList={handleOpenMyList}
         onOpenDetail={handleOpenDetail}
         onOpenContextMenu={openCompletedContextMenu}
@@ -975,6 +1037,30 @@ function readCatalogFilter(search) {
 
 function navigateBackToStoredRoute(navigate, routeState) {
   navigate(routeState?.from || '/dashboard', { state: routeState?.fromState || null })
+}
+
+function createCatalogOverrideItem(item, tmdbResult, mediaType) {
+  const nextMediaType = mediaType === 'movie' ? 'movie' : 'tv'
+  return {
+    ...item,
+    media_type: nextMediaType,
+    type: nextMediaType === 'movie' ? 'movie' : 'series',
+    tmdb_backdrop_path: tmdbResult.backdrop_path || '',
+    tmdb_id: tmdbResult.id || item.tmdb_id,
+    tmdb_metadata_resolved: true,
+    tmdb_override_id: tmdbResult.id || item.tmdb_override_id,
+    tmdb_original_language: tmdbResult.original_language || '',
+    tmdb_overview: tmdbResult.overview || '',
+    tmdb_poster_path: tmdbResult.poster_path || '',
+    tmdb_rating: Number(tmdbResult.vote_average || 0),
+    tmdb_title: tmdbResult.title || tmdbResult.name || tmdbResult.original_title || tmdbResult.original_name || getTitle(item),
+  }
+}
+
+function replaceCatalogItem(items, originalKey, updatedItem) {
+  return items.map((item) => (
+    getCatalogIdentityKey(item) === originalKey ? { ...item, ...updatedItem } : item
+  ))
 }
 
 function getFeaturedItemKey(featuredKeys, profileId, movies, series) {

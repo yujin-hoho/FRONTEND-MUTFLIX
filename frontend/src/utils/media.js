@@ -273,7 +273,7 @@ export async function preloadImages(urls, { concurrency = 12 } = {}) {
   )
 }
 
-function getTmdbImageUrl(path, size) {
+export function getTmdbImageUrl(path, size) {
   if (!path) return ''
   if (/^(?:https?:|data:|blob:)/.test(path)) return path
   return `${API_BASE_URL}/api/tmdb-image/${size}/${path.replace(/^\//, '')}`

@@ -732,6 +732,7 @@ def init_db():
                 id {pk_type},
                 folder_name VARCHAR(255) UNIQUE NOT NULL,
                 tmdb_query VARCHAR(255) NOT NULL,
+                tmdb_id INTEGER,
                 media_type VARCHAR(20) DEFAULT 'tv',
                 override_year INTEGER,
                 override_language VARCHAR(10),
@@ -742,7 +743,7 @@ def init_db():
             );
         """)
         # Migrations for existing databases: add new columns if they don't exist
-        for col, col_type in [('override_year', 'INTEGER'), ('override_language', 'VARCHAR(10)'), ('include_adult', 'BOOLEAN DEFAULT FALSE'), ('override_region', 'VARCHAR(10)')]:
+        for col, col_type in [('tmdb_id', 'INTEGER'), ('override_year', 'INTEGER'), ('override_language', 'VARCHAR(10)'), ('include_adult', 'BOOLEAN DEFAULT FALSE'), ('override_region', 'VARCHAR(10)')]:
             try:
                 cur.execute(f"ALTER TABLE tmdb_overrides ADD COLUMN {col} {col_type}")
                 conn.commit()
@@ -1241,6 +1242,7 @@ def _tmdb_meta_cache_key(media_type, folder_name, override):
     if override:
         override_snapshot = {
             'tmdb_query': override.get('tmdb_query'),
+            'tmdb_id': override.get('tmdb_id'),
             'override_year': override.get('override_year'),
             'override_language': override.get('override_language'),
             'include_adult': override.get('include_adult'),
@@ -1449,6 +1451,24 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
         search_path = 'search/movie'
         detail_prefix = 'movie'
         detail_params = {'append_to_response': 'videos'}
+
+    override_tmdb_id = override.get('tmdb_id') if override else None
+    try:
+        override_tmdb_id = int(override_tmdb_id) if override_tmdb_id else None
+    except Exception:
+        override_tmdb_id = None
+
+    if override_tmdb_id:
+        detail_status, detail_data = _fetch_tmdb_json_server(f'{detail_prefix}/{override_tmdb_id}', detail_params)
+        if detail_status != 200:
+            return detail_status, {
+                'error': 'TMDB detail failed',
+                'status': detail_status,
+                'folder_name': folder_name,
+                'query': query,
+                'tmdb_id': override_tmdb_id,
+            }
+        return 200, detail_data
 
     if override:
         language = (override.get('override_language') or '').strip()
@@ -1782,7 +1802,7 @@ def get_tmdb_overrides(current_user):
     """Get all TMDB query overrides. Any authenticated user can read."""
     conn, db_type = get_db_connection()
     try:
-        select_cols = 'folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region'
+        select_cols = 'folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region'
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(f'SELECT {select_cols} FROM tmdb_overrides ORDER BY folder_name')
@@ -1811,6 +1831,11 @@ def set_tmdb_override(current_user):
     folder_name = (data.get('folder_name') or '').strip()
     tmdb_query = (data.get('tmdb_query') or '').strip()
     media_type = str(data.get('media_type') or 'tv').strip() or 'tv'
+    tmdb_id = data.get('tmdb_id')
+    try:
+        tmdb_id = int(tmdb_id) if tmdb_id else None
+    except Exception:
+        tmdb_id = None
     override_year = data.get('override_year')  # int or None
     override_language = (data.get('override_language') or '').strip() or None
     include_adult = bool(data.get('include_adult', False))
@@ -1826,29 +1851,29 @@ def set_tmdb_override(current_user):
         
         if db_type == 'postgres':
             cur.execute(f"""
-                INSERT INTO tmdb_overrides (folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region, updated_by, updated_at)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, NOW())
+                INSERT INTO tmdb_overrides (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, updated_by, updated_at)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, NOW())
                 ON CONFLICT (folder_name) DO UPDATE SET 
-                    tmdb_query = EXCLUDED.tmdb_query, media_type = EXCLUDED.media_type,
+                    tmdb_query = EXCLUDED.tmdb_query, tmdb_id = EXCLUDED.tmdb_id, media_type = EXCLUDED.media_type,
                     override_year = EXCLUDED.override_year, override_language = EXCLUDED.override_language,
                     include_adult = EXCLUDED.include_adult, override_region = EXCLUDED.override_region,
                     updated_by = EXCLUDED.updated_by, updated_at = NOW()
-            """, (folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
+            """, (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
         else:
             cur.execute(f"""
-                INSERT INTO tmdb_overrides (folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region, updated_by)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                INSERT INTO tmdb_overrides (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, updated_by)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
                 ON CONFLICT (folder_name) DO UPDATE SET 
-                    tmdb_query = excluded.tmdb_query, media_type = excluded.media_type,
+                    tmdb_query = excluded.tmdb_query, tmdb_id = excluded.tmdb_id, media_type = excluded.media_type,
                     override_year = excluded.override_year, override_language = excluded.override_language,
                     include_adult = excluded.include_adult, override_region = excluded.override_region,
                     updated_by = excluded.updated_by
-            """, (folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
+            """, (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
         
         conn.commit()
         _invalidate_tmdb_override_cache()
-        print(f"[TMDB-OVERRIDE] Admin {current_user['username']} set override: '{folder_name}' -> '{tmdb_query}' ({media_type}, year={override_year}, lang={override_language}, adult={include_adult}, region={override_region})", flush=True)
-        return orjson_jsonify({'success': True, 'folder_name': folder_name, 'tmdb_query': tmdb_query})
+        print(f"[TMDB-OVERRIDE] Admin {current_user['username']} set override: '{folder_name}' -> '{tmdb_query}' ({media_type}, tmdb_id={tmdb_id}, year={override_year}, lang={override_language}, adult={include_adult}, region={override_region})", flush=True)
+        return orjson_jsonify({'success': True, 'folder_name': folder_name, 'tmdb_query': tmdb_query, 'tmdb_id': tmdb_id})
     except Exception as e:
         return orjson_jsonify({'error': str(e)}, 500)
     finally:
@@ -1966,6 +1991,7 @@ def _merge_tmdb_overrides_into_folders(all_c):
                     continue
                 o = by_name[name]
                 item['tmdb_query'] = o['tmdb_query']
+                item['tmdb_override_id'] = o.get('tmdb_id')
                 item['tmdb_override_media_type'] = (o.get('media_type') or 'tv').strip()
                 item['override_year'] = o.get('override_year')
                 item['override_region'] = o.get('override_region')

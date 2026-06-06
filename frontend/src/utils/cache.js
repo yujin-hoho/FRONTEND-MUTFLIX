@@ -10,6 +10,7 @@ import {
   getBackdropUrl,
   getCatalogIdentityKey,
   getGenres,
+  getItemPath,
   getPosterUrl,
   getRating,
   normalizeWatchHistory,
@@ -17,6 +18,8 @@ import {
 
 const CATALOG_METADATA_FIELDS = [
   'tmdb_metadata_resolved',
+  'tmdb_id',
+  'tmdb_override_id',
   'tmdb_title',
   'tmdb_poster_path',
   'tmdb_backdrop_path',
@@ -33,7 +36,8 @@ const CATALOG_METADATA_FIELDS = [
   'vote_average',
   'genres',
 ]
-const LEGACY_DASHBOARD_CACHE_KEYS = ['mutflix_dashboard_cache_v1']
+const LEGACY_DASHBOARD_CACHE_KEYS = ['mutflix_dashboard_cache_v1', 'mutflix_dashboard_cache_v2']
+const TMDB_OVERRIDE_CACHE_KEY = 'mutflix_tmdb_override_cache_v1'
 
 export function readDashboardCache(profileId) {
   try {
@@ -46,9 +50,9 @@ export function readDashboardCache(profileId) {
       ...entry,
       history: normalizeWatchHistory(entry.history),
       metadata: normalizeCatalogMetadataCache(entry.metadata),
-      movies: entry.movies.map((item) => ({ ...item, media_type: 'movie', type: 'movie' })),
+      movies: entry.movies.map((item) => applyLocalTmdbOverride({ ...item, media_type: 'movie', type: 'movie' })),
       rows: normalizeDashboardRowsSnapshot(entry.rows),
-      series: entry.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' })),
+      series: entry.series.map((item) => applyLocalTmdbOverride({ ...item, media_type: 'tv', type: 'series' })),
     }
   } catch {
     localStorage.removeItem(DASHBOARD_CACHE_KEY)
@@ -115,6 +119,26 @@ export function mergeDashboardCache(catalog, cachedDashboard) {
     ...catalog,
     movies: mergeCachedCatalogItems(catalog.movies, cachedDashboard, 'movie'),
     series: mergeCachedCatalogItems(catalog.series, cachedDashboard, 'series'),
+  }
+}
+
+export function writeLocalTmdbOverride(item) {
+  try {
+    const folderName = getLocalOverrideFolderName(item)
+    if (!folderName || !Number(item?.tmdb_id || 0)) return
+
+    const cache = readLocalTmdbOverrides()
+    cache[folderName] = {
+      ...snapshotCatalogItem(item),
+      folder_name: folderName,
+      media_type: item.media_type,
+      type: item.type,
+      tmdb_override_id: Number(item.tmdb_id),
+      _cachedAt: Date.now(),
+    }
+    localStorage.setItem(TMDB_OVERRIDE_CACHE_KEY, JSON.stringify(cache))
+  } catch {
+    localStorage.removeItem(TMDB_OVERRIDE_CACHE_KEY)
   }
 }
 
@@ -186,13 +210,16 @@ function mergeCachedCatalogItems(items = [], cachedDashboard, type) {
   return items.map((item) => {
     const typedItem = normalizeCatalogItemType(item, type)
     const itemKey = getCatalogIdentityKey(typedItem)
+    const cachedItem = cachedByKey.get(itemKey) || {}
+    const cachedMetadata = metadata[itemKey] || {}
+    const hasMismatchedOverride = hasOverrideMetadataMismatch(typedItem, cachedItem, cachedMetadata)
 
-    return mergeMeaningfulValues(
-      cachedByKey.get(itemKey) || {},
-      metadata[itemKey] || {},
+    return applyLocalTmdbOverride(mergeMeaningfulValues(
+      hasMismatchedOverride ? stripCatalogMetadata(cachedItem) : cachedItem,
+      hasMismatchedOverride ? {} : cachedMetadata,
       typedItem,
       normalizeCatalogItemType({}, type),
-    )
+    ))
   })
 }
 
@@ -206,7 +233,12 @@ function buildCatalogMetadataCache(previousMetadata, movies, series) {
     const itemKey = getCatalogIdentityKey(item)
     if (!itemKey) return
 
-    metadata[itemKey] = pickCatalogMetadata(item, metadata[itemKey], now)
+    const existingMetadata = metadata[itemKey] || {}
+    metadata[itemKey] = pickCatalogMetadata(
+      item,
+      hasOverrideMetadataMismatch(item, {}, existingMetadata) ? {} : existingMetadata,
+      now,
+    )
   })
 
   return metadata
@@ -370,6 +402,7 @@ function normalizeCatalogItemType(item, type) {
 
 function normalizeMetadataValue(field, value) {
   if (field === 'tmdb_metadata_resolved') return value === true
+  if (field === 'tmdb_id' || field === 'tmdb_override_id') return Number(value)
   if (field === 'tmdb_rating' || field === 'vote_average') return Number(value)
   if (field === 'tmdb_genres' || field === 'genres') {
     return (Array.isArray(value) ? value : [value])
@@ -449,9 +482,68 @@ function mergeMeaningfulValues(...sources) {
 function isMeaningfulValue(key, value) {
   if (value === null || value === undefined || value === '') return false
   if (key === 'tmdb_metadata_resolved') return value === true
+  if (key === 'tmdb_id' || key === 'tmdb_override_id') return Number(value) > 0
   if (key === 'tmdb_rating' || key === 'vote_average') return Number(value) > 0
   if (Array.isArray(value)) return value.length > 0
   return true
+}
+
+function hasOverrideMetadataMismatch(item, cachedItem, cachedMetadata) {
+  const overrideId = Number(item.tmdb_override_id || 0)
+  if (!overrideId) return false
+  const cachedTmdbId = Number(cachedItem.tmdb_id || cachedMetadata.tmdb_id || 0)
+  return cachedTmdbId !== overrideId
+}
+
+function stripCatalogMetadata(item) {
+  if (!item || typeof item !== 'object') return {}
+  const stripped = { ...item }
+  CATALOG_METADATA_FIELDS.forEach((field) => {
+    if (field !== 'tmdb_override_id') delete stripped[field]
+  })
+  return stripped
+}
+
+function applyLocalTmdbOverride(item) {
+  const folderName = getLocalOverrideFolderName(item)
+  if (!folderName) return item
+
+  const override = readLocalTmdbOverrides()[folderName]
+  if (!override) return item
+
+  const serverOverrideId = Number(item.tmdb_override_id || 0)
+  const localOverrideId = Number(override.tmdb_id || override.tmdb_override_id || 0)
+  if (serverOverrideId && localOverrideId && serverOverrideId !== localOverrideId) return item
+
+  return mergeMeaningfulValues(item, override, {
+    tmdb_id: localOverrideId || item.tmdb_id,
+    tmdb_metadata_resolved: true,
+    tmdb_override_id: serverOverrideId || localOverrideId || item.tmdb_override_id,
+  })
+}
+
+function readLocalTmdbOverrides() {
+  try {
+    const cache = JSON.parse(localStorage.getItem(TMDB_OVERRIDE_CACHE_KEY) || '{}')
+    if (!cache || typeof cache !== 'object' || Array.isArray(cache)) return {}
+    const now = Date.now()
+    return Object.fromEntries(
+      Object.entries(cache).filter(([, entry]) => (
+        entry
+        && typeof entry === 'object'
+        && !Array.isArray(entry)
+        && Number(entry.tmdb_id || entry.tmdb_override_id || 0) > 0
+        && now - Number(entry._cachedAt || entry.cachedAt || now) <= DASHBOARD_CACHE_TTL
+      )),
+    )
+  } catch {
+    localStorage.removeItem(TMDB_OVERRIDE_CACHE_KEY)
+    return {}
+  }
+}
+
+function getLocalOverrideFolderName(item) {
+  return String(getItemPath(item) || item?.folder_name || item?.name || '').trim()
 }
 
 function areMetadataValuesEqual(first, second) {

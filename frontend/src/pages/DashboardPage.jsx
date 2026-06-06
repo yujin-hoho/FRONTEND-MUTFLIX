@@ -22,10 +22,12 @@ import {
 function DashboardPage({
   catalogData,
   featuredItemKey,
+  isAdmin = false,
   onChangeProfile,
   onHydrateItems,
   onLogout,
   onOpenCatalogFilter,
+  onOpenCatalogEdit,
   onOpenContextMenu,
   onOpenMyList,
   onOpenDetail,
@@ -114,11 +116,18 @@ function DashboardPage({
         {!catalogData.error && (
           <>
             <HistoryRow items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onOpenContextMenu={onOpenContextMenu} onPlay={onPlayHistory} />
-            {displayView.curatedRows.map((row) => (
-              <CatalogRow items={row.items} key={row.genre} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} title={row.genre} />
-            ))}
-            {displayView.catalogRows.map((row) => (
-              <CatalogRow items={row.items} key={row.genre} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} ranked={row.ranked} title={row.genre} />
+            {[...displayView.curatedRows, ...displayView.catalogRows].map((row, index) => (
+              <CatalogRow
+                items={row.items}
+                isAdmin={isAdmin}
+                key={row.genre}
+                layout={(index + 1) % 3 === 0 ? 'horizontal' : 'vertical'}
+                onOpenEdit={onOpenCatalogEdit}
+                onOpenContextMenu={onOpenContextMenu}
+                onOpenDetail={onOpenDetail}
+                ranked={row.ranked}
+                title={row.genre}
+              />
             ))}
           </>
         )}

@@ -1,7 +1,8 @@
-import { ChevronLeft, ChevronRight, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Pencil, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import LoadableImage from '../LoadableImage'
 import {
+  getDetailArtworkUrl,
   getItemKey,
   getEpisodeHistoryLabel,
   getPosterFallbackUrl,
@@ -12,48 +13,72 @@ import {
   getWatchProgress,
 } from '../../utils/media'
 
-export const CatalogRow = memo(function CatalogRow({ emptyMessage, items, onOpenContextMenu, onOpenDetail, ranked = false, title }) {
+export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, title }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return emptyMessage ? <p className="empty-catalog">{emptyMessage}</p> : null
   const visibleItems = showAll ? items : items.slice(0, 15)
+  const isHorizontal = layout === 'horizontal'
 
   return (
-    <section className="catalog-row" aria-label={title}>
+    <section className={`catalog-row ${isHorizontal ? 'catalog-row-horizontal' : ''}`} aria-label={title}>
       <div className="catalog-row-heading">
         <h2>{title}</h2>
         <button onClick={() => setShowAll((isOpen) => !isOpen)} type="button">
           {showAll ? 'Show less' : 'See more'}
         </button>
       </div>
-      <DraggableScroller className={`catalog-scroller ${ranked ? 'ranked-scroller' : ''}`}>
+      <DraggableScroller className={`catalog-scroller ${isHorizontal ? 'horizontal-scroller' : ''} ${ranked ? 'ranked-scroller' : ''}`} variant={isHorizontal ? 'horizontal' : ''}>
         {visibleItems.map((item, index) => (
-          <CatalogCard item={item} key={getItemKey(item)} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} rank={ranked ? index + 1 : null} />
+          <CatalogCard horizontal={isHorizontal} isAdmin={isAdmin} item={item} key={getItemKey(item)} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} onOpenEdit={onOpenEdit} rank={ranked ? index + 1 : null} />
         ))}
       </DraggableScroller>
     </section>
   )
 })
 
-const CatalogCard = memo(function CatalogCard({ item, onOpenContextMenu, onOpenDetail, rank }) {
-  const poster = getPosterUrl(item)
+const CatalogCard = memo(function CatalogCard({ horizontal = false, isAdmin = false, item, onOpenContextMenu, onOpenDetail, onOpenEdit, rank }) {
+  const artwork = horizontal ? getDetailArtworkUrl(item) : getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)
 
   return (
-    <button
-      className={`catalog-card ${rank ? 'ranked-card' : ''}`}
-      onClick={() => onOpenDetail(item)}
+    <article
+      className={`catalog-card ${horizontal ? 'horizontal-card' : ''} ${rank ? 'ranked-card' : ''}`}
       onContextMenu={(event) => onOpenContextMenu?.(event, { item })}
-      type="button"
     >
-      {rank && <span className="ranked-number">{rank}</span>}
-      <div className={rank ? 'ranked-frame' : 'poster-frame'}>
-        {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
-        <LoadableImage alt={title} fallbackSrc={getPosterFallbackUrl(item)} key={poster} src={poster} />
-      </div>
-      <h3>{title}</h3>
-    </button>
+      <button className="catalog-card-surface" onClick={() => onOpenDetail(item)} type="button">
+        {rank && <span className="ranked-number">{rank}</span>}
+        <div className={horizontal ? 'horizontal-frame' : rank ? 'ranked-frame' : 'poster-frame'}>
+          {rating > 0 && (
+            <span
+              aria-label={`Rating ${Math.round(rating * 10)} percent`}
+              className="rating-badge rating-pie"
+              style={{ '--rating-percent': `${Math.min(100, Math.max(0, rating * 10))}%` }}
+            >
+              {Math.round(rating * 10)}%
+            </span>
+          )}
+          <LoadableImage alt={title} fallbackSrc={getPosterFallbackUrl(item)} key={artwork} src={artwork} />
+        </div>
+        <h3>{title}</h3>
+      </button>
+      {isAdmin && (
+        <button
+          aria-label={`Edit ${title}`}
+          className="catalog-edit-button"
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onOpenEdit?.(item)
+          }}
+          title="Edit"
+          type="button"
+        >
+          <Pencil size={15} strokeWidth={2.6} />
+        </button>
+      )}
+    </article>
   )
 })
 
