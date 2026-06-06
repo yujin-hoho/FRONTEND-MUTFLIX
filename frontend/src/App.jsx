@@ -26,6 +26,7 @@ import {
   fetchVideoQueue,
   hideWatchHistory,
   mergeCatalogMetadataUpdates,
+  removeMyListItem,
   saveWatchProgress,
   saveMyListItemStatus,
 } from './services/api'
@@ -514,6 +515,36 @@ function App() {
     }))
   }, [authToken, closeCompletedContextMenu, contextMenu, detailData.videos, profileData.myList, profileData.watchHistory, selectedProfile])
 
+  const handleToggleContextPlanToWatch = useCallback(async () => {
+    const menu = contextMenu
+    closeCompletedContextMenu()
+    if (!menu || !selectedProfile) return
+
+    const item = getContextMenuItem(menu, catalogDataRef.current)
+    if (!item) return
+    if (isPlanToWatchMyListItem(item, profileData.myList)) {
+      await removeMyListItem(authToken, {
+        item,
+        profileId: selectedProfile.id,
+      })
+      setProfileData((currentData) => ({
+        ...currentData,
+        myList: removeMyListItemFromState(currentData.myList, item),
+      }))
+      return
+    }
+
+    const planItem = await saveMyListItemStatus(authToken, {
+      item,
+      profileId: selectedProfile.id,
+      status: 'plan_to_watch',
+    })
+    setProfileData((currentData) => ({
+      ...currentData,
+      myList: mergeMyListItem(currentData.myList, planItem),
+    }))
+  }, [authToken, closeCompletedContextMenu, contextMenu, profileData.myList, selectedProfile])
+
   useEffect(() => {
     if (!contextMenu) return undefined
     window.addEventListener('click', closeCompletedContextMenu)
@@ -851,6 +882,8 @@ function App() {
   }
 
   function renderWithContextMenu(content) {
+    const contextItem = contextMenu ? getContextMenuItem(contextMenu, catalogDataRef.current) : null
+    const isContextItemPlanToWatch = contextItem ? isPlanToWatchMyListItem(contextItem, profileData.myList) : false
     return (
       <>
         {content}
@@ -858,6 +891,9 @@ function App() {
           <div className="mutflix-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} role="menu">
             <button onClick={handleMarkContextCompleted} role="menuitem" type="button">
               Mark as completed
+            </button>
+            <button onClick={handleToggleContextPlanToWatch} role="menuitem" type="button">
+              {isContextItemPlanToWatch ? 'Remove from Plan to Watch' : 'Add to Plan to Watch'}
             </button>
           </div>
         )}
@@ -1111,11 +1147,19 @@ async function promoteCompletedMyListItem({
 }
 
 function isPlanToWatchMyListItem(item, myList) {
-  const itemKey = getCatalogIdentityKey(item)
   return (Array.isArray(myList) ? myList : []).some((entry) => (
-    getCatalogIdentityKey(entry) === itemKey
+    isSameMyListItem(entry, item)
     && (entry.status || entry.my_list_status || 'plan_to_watch') === 'plan_to_watch'
   ))
+}
+
+function getContextMenuItem(menu = {}, catalogData = {}) {
+  if (menu.item) return menu.item
+  if (!menu.historyEntry) return null
+
+  const historyItem = historyEntryToItem(menu.historyEntry)
+  if (getMediaType(historyItem) !== 'series') return historyItem
+  return findCatalogItemForHistory(menu.historyEntry, catalogData.series || []) || historyItem
 }
 
 function isPlaybackContextCompleted({ item, video, videos = [] } = {}, watchHistory = []) {
@@ -1328,13 +1372,34 @@ function mergeWatchHistory(history, payload) {
 }
 
 function mergeMyListItem(myList, item) {
-  const itemKey = getCatalogIdentityKey(item)
-  const nextItem = { ...item, my_list_status: 'completed' }
+  const nextStatus = item.my_list_status || item.status || 'plan_to_watch'
+  const nextItem = { ...item, my_list_status: nextStatus, status: nextStatus }
   const existingItems = Array.isArray(myList) ? myList : []
-  if (!existingItems.some((entry) => getCatalogIdentityKey(entry) === itemKey)) return [nextItem, ...existingItems]
+  if (!existingItems.some((entry) => isSameMyListItem(entry, item))) return [nextItem, ...existingItems]
   return existingItems.map((entry) => (
-    getCatalogIdentityKey(entry) === itemKey ? { ...entry, ...nextItem } : entry
+    isSameMyListItem(entry, item) ? { ...entry, ...nextItem } : entry
   ))
+}
+
+function removeMyListItemFromState(myList, item) {
+  return (Array.isArray(myList) ? myList : []).filter((entry) => !isSameMyListItem(entry, item))
+}
+
+function isSameMyListItem(first, second) {
+  if (!first || !second) return false
+  const firstIdentity = getCatalogIdentityKey(first)
+  const secondIdentity = getCatalogIdentityKey(second)
+  if (firstIdentity && secondIdentity && firstIdentity === secondIdentity) return true
+
+  const firstPath = normalizeMyListLookupPath(first)
+  const secondPath = normalizeMyListLookupPath(second)
+  return Boolean(firstPath && secondPath && firstPath === secondPath)
+}
+
+function normalizeMyListLookupPath(item) {
+  return String(getItemPath(item) || item.folder_name || item.source || item.name || '')
+    .trim()
+    .toLowerCase()
 }
 
 function hideHistoryEntry(history, historyEntry) {

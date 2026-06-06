@@ -1039,6 +1039,26 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
   })
 }
 
+export async function removeMyListItem(authToken, { item, profileId }) {
+  const folderName = getItemPath(item)
+  if (!folderName || !profileId) throw new Error('Missing item or profile.')
+
+  const response = await fetch(`${API_BASE_URL}/api/mylist/remove`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-access-token': authToken,
+    },
+    body: JSON.stringify({
+      folder_name: folderName,
+      profile_id: profileId,
+    }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to remove My List item.')
+  return data
+}
+
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
     .filter((item) => (

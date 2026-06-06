@@ -141,6 +141,9 @@
 
 .my-list-card {
   min-width: 0;
+  display: grid;
+  grid-template-rows: auto 62px;
+  align-content: start;
   border: 0;
   background: transparent;
   color: inherit;
@@ -186,8 +189,11 @@
 
 .my-list-copy {
   display: grid;
+  align-content: start;
   gap: 5px;
+  min-height: 0;
   margin-top: 10px;
+  overflow: hidden;
 }
 
 .my-list-copy strong {
