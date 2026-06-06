@@ -263,6 +263,35 @@ async function fetchTmdbSearchPage(headers, mediaType, query, page, signal) {
   return data
 }
 
+export async function fetchTmdbPeopleSearch(authToken, query, { signal } = {}) {
+  const params = new URLSearchParams({
+    include_adult: 'false',
+    language: 'en-US',
+    page: '1',
+    query,
+  })
+  const response = await fetch(`${API_BASE_URL}/api/tmdb/search/person?${params.toString()}`, {
+    headers: { 'x-access-token': authToken },
+    signal,
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to search people.')
+  return Array.isArray(data.results) ? data.results : []
+}
+
+export async function fetchTmdbPersonCombinedCredits(authToken, personId, { signal } = {}) {
+  const response = await fetch(`${API_BASE_URL}/api/tmdb/person/${personId}/combined_credits?language=en-US`, {
+    headers: { 'x-access-token': authToken },
+    signal,
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.message || data.error || 'Failed to load person credits.')
+  return {
+    cast: Array.isArray(data.cast) ? data.cast : [],
+    crew: Array.isArray(data.crew) ? data.crew : [],
+  }
+}
+
 export async function fetchPlaybackSource(authToken, mediaPath, video = {}, options = {}) {
   if (!mediaPath) throw new Error('No media file was selected.')
   if (/^https?:\/\//i.test(mediaPath)) return { fallbackUrl: '', url: mediaPath }

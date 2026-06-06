@@ -5,6 +5,7 @@ import {
   AudioLines,
   Captions,
   Loader2,
+  List,
   Maximize,
   Minimize,
   Pause,
@@ -26,7 +27,18 @@ import {
   fetchSubtitleTrack,
   getTimestampedAudioTranscodeUrl,
 } from '../services/api'
-import { getEpisodeHistoryLabel, getItemPath, getMediaType, getTitle } from '../utils/media'
+import LoadableImage from '../components/LoadableImage'
+import {
+  getEpisodeHistoryLabel,
+  getItemPath,
+  getMediaType,
+  getPosterFallbackUrl,
+  getPosterUrl,
+  getStillUrl,
+  getTitle,
+  getWatchProgress,
+  normalizeMediaPath,
+} from '../utils/media'
 
 const SAVE_INTERVAL_MS = 10000
 const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
@@ -68,6 +80,7 @@ function WatchPage({
   resumeEntry,
   video,
   videos,
+  watchHistory = [],
 }) {
   const playerRef = useRef(null)
   const shellRef = useRef(null)
@@ -110,6 +123,7 @@ function WatchPage({
   const [markers, setMarkers] = useState({ introEndSeconds: 0, outroStartSeconds: 0 })
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [playbackRate, setPlaybackRate] = useState(1)
   const [volume, setVolume] = useState(1)
   const [isMuted, setIsMuted] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -126,6 +140,7 @@ function WatchPage({
   const [embeddedSubtitleTrackUrl, setEmbeddedSubtitleTrackUrl] = useState('')
   const [selectedSubtitleId, setSelectedSubtitleId] = useState('')
   const [isSubtitlePanelOpen, setIsSubtitlePanelOpen] = useState(false)
+  const [isEpisodeListOpen, setIsEpisodeListOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [seekPreviewTime, setSeekPreviewTime] = useState(null)
   const [heldFrameUrl, setHeldFrameUrl] = useState('')
@@ -135,6 +150,7 @@ function WatchPage({
   const currentIndex = queue.findIndex((entry) => entry.path === video.path)
   const previousVideo = currentIndex > 0 ? queue[currentIndex - 1] : null
   const nextVideo = currentIndex >= 0 ? queue[currentIndex + 1] : null
+  const hasEpisodeList = queue.length > 1
   const markerFolderName = item.folder_name || item.name || getItemPath(item)
   const videoName = video.name || ''
   const videoOriginalName = video.original_name || ''
@@ -176,6 +192,10 @@ function WatchPage({
     streamUrl && audioTranscodeBaseUrlRef.current && streamUrl.startsWith(audioTranscodeBaseUrlRef.current),
   )
   const visiblePlaybackTime = seekPreviewTime ?? currentTime
+  const finishedAtLabel = useMemo(
+    () => getFinishedAtLabel(duration, visiblePlaybackTime, playbackRate),
+    [duration, playbackRate, visiblePlaybackTime],
+  )
   const subtitlePlaybackTime = Number.isFinite(seekPreviewTime) ? seekPreviewTime : currentTime
   const activeSubtitleCues = useMemo(
     () => isCaptionsEnabled
@@ -191,7 +211,7 @@ function WatchPage({
     () => ({ top: `${subtitleSettings.positionPercent}%` }),
     [subtitleSettings.positionPercent],
   )
-  const shouldHideCursor = isPlaying && !showControls && !isSubtitlePanelOpen && !isAudioPanelOpen && !isBuffering && !playerError
+  const shouldHideCursor = !showControls && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen && !playerError
 
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
@@ -225,15 +245,16 @@ function WatchPage({
   const revealControls = useCallback(() => {
     setShowControls(true)
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen])
+  }, [isAudioPanelOpen, isEpisodeListOpen, isPlaying, isSubtitlePanelOpen])
 
   const toggleControls = useCallback(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isSubtitlePanelOpen || isAudioPanelOpen) {
+    if (isSubtitlePanelOpen || isAudioPanelOpen || isEpisodeListOpen) {
       setIsAudioPanelOpen(false)
+      setIsEpisodeListOpen(false)
       setIsSubtitlePanelOpen(false)
       setShowControls(true)
       if (isPlaying) {
@@ -248,10 +269,10 @@ function WatchPage({
     }
 
     setShowControls(true)
-    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen, showControls])
+  }, [isAudioPanelOpen, isEpisodeListOpen, isPlaying, isSubtitlePanelOpen, showControls])
 
   const togglePlay = useCallback(() => {
     const player = playerRef.current
@@ -933,7 +954,10 @@ function WatchPage({
   }
 
   function handlePlaybackRate(event) {
-    if (playerRef.current) playerRef.current.playbackRate = Number(event.target.value)
+    const nextPlaybackRate = Number(event.target.value)
+    if (!Number.isFinite(nextPlaybackRate) || nextPlaybackRate <= 0) return
+    if (playerRef.current) playerRef.current.playbackRate = nextPlaybackRate
+    setPlaybackRate(nextPlaybackRate)
   }
 
   function handleSubtitleSetting(event) {
@@ -1025,6 +1049,7 @@ function WatchPage({
 
   function handleOpenEpisode(nextEpisode, { complete = false } = {}) {
     if (!nextEpisode) return
+    setIsEpisodeListOpen(false)
     persistProgress({ complete, force: true })
     onOpenVideo(nextEpisode)
   }
@@ -1117,7 +1142,7 @@ function WatchPage({
         <button aria-label="Back" className="watch-icon-button" onClick={handleBack} type="button">
           <ArrowLeft size={24} />
         </button>
-        <div>
+        <div className="watch-title-block">
           <p>{episodeLabel}</p>
           <div className="watch-title-row">
             <h1>{isSeries ? getTitle(item) : video.name || getTitle(item)}</h1>
@@ -1133,6 +1158,74 @@ function WatchPage({
           </div>
           {isSeries && <span>{video.name}</span>}
         </div>
+        {hasEpisodeList && (
+          <div className="watch-episode-menu">
+            <button
+              aria-controls="episode-list"
+              aria-expanded={isEpisodeListOpen}
+              aria-label="Episode list"
+              className={`watch-icon-button ${isEpisodeListOpen ? 'active' : ''}`}
+              onClick={() => {
+                setIsEpisodeListOpen((isOpen) => !isOpen)
+                setIsAudioPanelOpen(false)
+                setIsSubtitlePanelOpen(false)
+              }}
+              type="button"
+            >
+              <List size={23} />
+            </button>
+            {isEpisodeListOpen && (
+              <section aria-label="Episode list" className="watch-episode-list-panel" id="episode-list">
+                <div className="watch-episode-list-header">
+                  <h2>Episodes</h2>
+                  <button aria-label="Close episode list" className="watch-subtitle-close" onClick={() => setIsEpisodeListOpen(false)} type="button">
+                    <X size={18} />
+                  </button>
+                </div>
+                <div className="watch-episode-list">
+                  {queue.map((episode, index) => {
+                    const isCurrentEpisode = episode.path === video.path
+                    const episodeTitle = getEpisodeListTitle(episode, index)
+                    const episodeArtworkUrl = getEpisodeArtworkUrl(episode, item)
+                    const episodeProgress = isCurrentEpisode
+                      ? getLiveWatchProgress(visiblePlaybackTime, duration)
+                      : getEpisodeWatchProgress(episode, watchHistory)
+                    return (
+                      <button
+                        aria-current={isCurrentEpisode ? 'true' : undefined}
+                        className={`watch-episode-list-item ${isCurrentEpisode ? 'active' : ''}`}
+                        key={episode.path || `${episode.name}-${index}`}
+                        onClick={() => handleOpenEpisode(episode, { complete: false })}
+                        type="button"
+                      >
+                        <span className="watch-episode-list-artwork" aria-hidden="true">
+                          <LoadableImage
+                            alt=""
+                            className="watch-episode-list-poster"
+                            fallbackSrc={getPosterFallbackUrl({ ...item, ...episode, name: episodeTitle })}
+                            src={episodeArtworkUrl}
+                          />
+                          {episodeProgress > 0 && (
+                            <span aria-label={`Progress ${Math.round(episodeProgress)}%`} className="watch-episode-progress-track">
+                              <span style={{ width: `${episodeProgress}%` }} />
+                            </span>
+                          )}
+                        </span>
+                        <span className="watch-episode-list-copy">
+                          <span className="watch-episode-list-index">E{episode.episode || index + 1}</span>
+                          <span className="watch-episode-list-title">{episodeTitle}</span>
+                          {episodeProgress > 0 && (
+                            <span className="watch-episode-list-progress">{Math.round(episodeProgress)}% watched</span>
+                          )}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </section>
+            )}
+          </div>
+        )}
       </div>
 
       {isBuffering && !playerError && (
@@ -1373,6 +1466,11 @@ function WatchPage({
               value={isMuted ? 0 : volume}
             />
             <span className="watch-time">{formatPlaybackTime(visiblePlaybackTime)} / {formatPlaybackTime(duration)}</span>
+            {finishedAtLabel && (
+              <span className="watch-finished-at" aria-label={`Finished at ${finishedAtLabel} at ${playbackRate}x speed`}>
+                Finished at {finishedAtLabel}
+              </span>
+            )}
           </div>
           <div className="watch-controls-group">
             <button
@@ -1425,7 +1523,7 @@ function WatchPage({
             )}
             <label className="watch-speed">
               <span>Speed</span>
-              <select aria-label="Playback speed" defaultValue="1" onChange={handlePlaybackRate}>
+              <select aria-label="Playback speed" onChange={handlePlaybackRate} value={playbackRate}>
                 <option value="0.75">0.75x</option>
                 <option value="1">1x</option>
                 <option value="1.25">1.25x</option>
@@ -1475,6 +1573,49 @@ function formatPlaybackTime(seconds) {
   const remainingSeconds = roundedSeconds % 60
   const segments = hours > 0 ? [hours, minutes, remainingSeconds] : [minutes, remainingSeconds]
   return segments.map((segment) => String(segment).padStart(2, '0')).join(':')
+}
+
+function getFinishedAtLabel(durationSeconds, currentSeconds, playbackRate) {
+  const duration = Number(durationSeconds)
+  const current = Number(currentSeconds)
+  const rate = Number(playbackRate)
+  if (!Number.isFinite(duration) || !Number.isFinite(current) || !Number.isFinite(rate)) return ''
+  if (duration <= 0 || rate <= 0) return ''
+
+  const remainingSeconds = Math.max(0, duration - current)
+  const finishedAt = new Date(Date.now() + Math.ceil(remainingSeconds / rate) * 1000)
+  return `${String(finishedAt.getHours()).padStart(2, '0')}.${String(finishedAt.getMinutes()).padStart(2, '0')}`
+}
+
+function getEpisodeListTitle(episode = {}, index = 0) {
+  const explicitTitle = String(episode.title || episode.episode_title || episode.name || '').trim()
+  return explicitTitle || `Episode ${episode.episode || index + 1}`
+}
+
+function getEpisodeArtworkUrl(episode = {}, item = {}) {
+  return getStillUrl(episode)
+    || getPosterUrl(episode, 'w342')
+    || getStillUrl(item)
+    || getPosterUrl(item, 'w342')
+}
+
+function getLiveWatchProgress(currentSeconds, durationSeconds) {
+  const current = Number(currentSeconds)
+  const duration = Number(durationSeconds)
+  if (!Number.isFinite(current) || !Number.isFinite(duration) || duration <= 0) return 0
+  return Math.min(100, Math.max(0, (current / duration) * 100))
+}
+
+function getEpisodeWatchProgress(episode = {}, watchHistory = []) {
+  const historyEntry = findEpisodeWatchEntry(episode, watchHistory)
+  return getWatchProgress(historyEntry || {})
+}
+
+function findEpisodeWatchEntry(episode = {}, watchHistory = []) {
+  const episodePath = normalizeMediaPath(episode.path)
+  return (Array.isArray(watchHistory) ? watchHistory : []).find((entry) => (
+    episodePath && normalizeMediaPath(entry.media_path) === episodePath
+  )) || null
 }
 
 function formatAudioProbeStatus(status) {

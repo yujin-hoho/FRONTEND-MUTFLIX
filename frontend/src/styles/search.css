@@ -465,6 +465,99 @@
   font-size: 0.92rem;
 }
 
+.people-search-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+.people-search-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.people-search-heading h2 {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1rem;
+}
+
+.people-search-list {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(124, 242, 173, 0.28) transparent;
+}
+
+.person-search-card {
+  min-width: 290px;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.58);
+  color: #f8fafc;
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.person-search-card:hover,
+.person-search-card:focus-visible,
+.person-search-card.active {
+  border-color: rgba(0, 220, 100, 0.7);
+  background: rgba(5, 46, 22, 0.74);
+}
+
+.person-search-avatar {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #0f172a;
+}
+
+.person-search-avatar > img,
+.person-search-avatar > .image-shimmer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.person-search-avatar > img {
+  object-fit: cover;
+}
+
+.person-search-copy {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.person-search-copy strong,
+.person-search-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.person-search-copy strong {
+  font-size: 1rem;
+}
+
+.person-search-copy small {
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
 .search-results-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(clamp(118px, 12vw, 150px), 1fr));

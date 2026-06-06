@@ -89,6 +89,17 @@
   background: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent);
 }
 
+.watch-title-block {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.watch-episode-menu {
+  position: relative;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
 .watch-topbar h1,
 .watch-topbar p,
 .watch-topbar span {
@@ -184,6 +195,128 @@
 .watch-icon-button:disabled:hover {
   background: rgba(15, 23, 42, 0.68);
   color: #64748b;
+}
+
+.watch-episode-list-panel {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(360px, calc(100vw - 32px));
+  max-height: min(58vh, 430px);
+  overflow-y: auto;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 10px;
+  backdrop-filter: blur(18px);
+  background: rgba(2, 6, 23, 0.72);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
+  color: #f8fafc;
+  padding: 12px;
+}
+
+.watch-episode-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.watch-episode-list-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.watch-episode-list {
+  display: grid;
+  gap: 7px;
+}
+
+.watch-episode-list-item {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 64px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #f8fafc;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.watch-episode-list-artwork {
+  position: relative;
+  width: 92px;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.watch-episode-list-artwork .image-shimmer,
+.watch-episode-list-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.watch-episode-list-poster {
+  object-fit: cover;
+}
+
+.watch-episode-progress-track {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(148, 163, 184, 0.32);
+}
+
+.watch-episode-progress-track > span {
+  display: block;
+  height: 100%;
+  background: #00dc64;
+}
+
+.watch-episode-list-copy {
+  display: grid !important;
+  min-width: 0;
+  margin: 0 !important;
+  gap: 4px;
+}
+
+.watch-episode-list-item:hover,
+.watch-episode-list-item.active {
+  border-color: rgba(0, 220, 100, 0.76);
+  background: rgba(5, 46, 22, 0.78);
+}
+
+.watch-episode-list-index {
+  margin: 0 !important;
+  color: #7cf2ad !important;
+  font-size: 0.72rem !important;
+  font-weight: 850;
+}
+
+.watch-episode-list-title {
+  overflow: hidden;
+  margin: 0 !important;
+  color: #e2e8f0 !important;
+  font-size: 0.78rem !important;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.watch-episode-list-progress {
+  margin: 0 !important;
+  color: #94a3b8 !important;
+  font-size: 0.68rem !important;
+  font-weight: 720;
 }
 
 .watch-center-state {
@@ -468,6 +601,10 @@
   gap: 8px;
 }
 
+.watch-controls-group:first-child {
+  min-width: 0;
+}
+
 .watch-controls .watch-icon-button {
   background: transparent;
 }
@@ -490,6 +627,15 @@
   color: #e2e8f0;
   font-size: 0.8rem;
   font-variant-numeric: tabular-nums;
+}
+
+.watch-finished-at {
+  color: #94a3b8;
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .watch-speed {
@@ -534,7 +680,7 @@
     padding: 16px;
   }
 
-  .watch-topbar span,
+  .watch-title-block > span,
   .watch-speed span {
     display: none;
   }
@@ -578,7 +724,8 @@
     width: 58px;
   }
 
-  .watch-time {
+  .watch-time,
+  .watch-finished-at {
     font-size: 0.7rem;
   }
 }

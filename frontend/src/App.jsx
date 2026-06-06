@@ -908,6 +908,7 @@ function App() {
           resumeEntry={historyEntry}
           video={video}
           videos={videos}
+          watchHistory={profileData.watchHistory}
         />
       )
     }
@@ -961,6 +962,7 @@ function App() {
       const searchFilter = readCatalogFilter(location.search)
       return renderWithContextMenu(
         <SearchResultsPage
+          authToken={authToken}
           key={location.search || '__empty__'}
           catalogData={catalogData}
           initialFilter={searchFilter}
