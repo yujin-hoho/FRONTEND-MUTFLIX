@@ -19,7 +19,7 @@ import {
   preloadImage,
 } from '../utils/media'
 
-function DetailPage({ detailData, onBack, onOpenContextMenu, onPlayVideo, watchHistory = [] }) {
+function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPlayVideo, watchHistory = [] }) {
   const { credits, error, isLoading, item, videos } = detailData
   const seasons = useMemo(
     () => [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b),
@@ -95,7 +95,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onPlayVideo, watchH
         {error && <p className="detail-error">{error}</p>}
         {isMovie && (
           <div className="detail-content-grid movie-detail-content-grid">
-            <CreditsPanel credits={credits} mediaType="movie" />
+            <CreditsPanel credits={credits} mediaType="movie" onOpenPerson={onOpenPerson} />
           </div>
         )}
         {!isMovie && (
@@ -210,7 +210,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onPlayVideo, watchH
                   </div>
                 )}
               </div>
-              <CreditsPanel credits={credits} />
+              <CreditsPanel credits={credits} onOpenPerson={onOpenPerson} />
             </div>
           </>
         )}

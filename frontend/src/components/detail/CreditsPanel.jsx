@@ -2,7 +2,7 @@ import { memo } from 'react'
 import LoadableImage from '../LoadableImage'
 import { getPersonFallbackUrl, getPosterUrl, getStillUrl } from '../../utils/media'
 
-const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series' }) {
+const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series', onOpenPerson }) {
   const cast = credits?.cast || []
   const crew = credits?.crew || []
   const meta = credits?.meta
@@ -93,8 +93,15 @@ const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series' 
         <section className="cast-section">
           <h2>Cast</h2>
           <div className="cast-list">
-            {cast.map((person) => (
-              <article className="cast-card" key={`${person.id}-${person.character}`}>
+            {cast.map((person) => {
+              const PersonCard = onOpenPerson ? 'button' : 'article'
+              return (
+              <PersonCard
+                className="cast-card"
+                key={`${person.id}-${person.character}`}
+                onClick={onOpenPerson ? () => onOpenPerson(person) : undefined}
+                type={onOpenPerson ? 'button' : undefined}
+              >
                 <div className="cast-avatar">
                   <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
                 </div>
@@ -102,8 +109,9 @@ const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series' 
                   <h3>{person.name}</h3>
                   {person.character && <p>{person.character}</p>}
                 </div>
-              </article>
-            ))}
+              </PersonCard>
+              )
+            })}
           </div>
         </section>
       )}
@@ -111,8 +119,15 @@ const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series' 
         <section className="crew-section">
           <h2>Crew</h2>
           <div className="crew-list">
-            {uniqueCrew.slice(0, 5).map((person, index) => (
-              <article className="cast-card" key={`${person.id || person.name}-${index}`}>
+            {uniqueCrew.slice(0, 5).map((person, index) => {
+              const PersonCard = onOpenPerson ? 'button' : 'article'
+              return (
+              <PersonCard
+                className="cast-card"
+                key={`${person.id || person.name}-${index}`}
+                onClick={onOpenPerson ? () => onOpenPerson(person) : undefined}
+                type={onOpenPerson ? 'button' : undefined}
+              >
                 <div className="cast-avatar">
                   <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
                 </div>
@@ -120,8 +135,9 @@ const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series' 
                   <h3>{person.name}</h3>
                   <p>{person.roles.join('/')}</p>
                 </div>
-              </article>
-            ))}
+              </PersonCard>
+              )
+            })}
           </div>
         </section>
       )}

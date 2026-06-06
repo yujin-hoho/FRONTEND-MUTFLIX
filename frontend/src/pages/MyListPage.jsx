@@ -257,7 +257,15 @@ const MyListCard = memo(function MyListCard({ activeStatus, completedContextItem
             <Check size={20} strokeWidth={3.4} />
           </span>
         )}
-        {rating > 0 && <span className="rating-badge">{rating.toFixed(1)}</span>}
+        {rating > 0 && (
+          <span
+            aria-label={`Rating ${Math.round(rating * 10)} percent`}
+            className="rating-badge rating-pie"
+            style={{ '--rating-percent': `${Math.min(100, Math.max(0, rating * 10))}%` }}
+          >
+            {Math.round(rating * 10)}%
+          </span>
+        )}
       </span>
       <span className="my-list-copy">
         <strong>{title}</strong>

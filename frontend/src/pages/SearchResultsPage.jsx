@@ -23,6 +23,7 @@ function SearchResultsPage({
   authToken,
   catalogData,
   initialFilter,
+  initialPersonId = 0,
   initialQuery,
   isAdmin = false,
   onChangeProfile,
@@ -42,7 +43,7 @@ function SearchResultsPage({
   const [query, setQuery] = useState(initialQuery)
   const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const [peopleSearch, setPeopleSearch] = useState({ people: [], query: '', status: 'idle' })
-  const [selectedPersonId, setSelectedPersonId] = useState(null)
+  const [selectedPersonId, setSelectedPersonId] = useState(initialPersonId || null)
   const [lazyRenderState, setLazyRenderState] = useState({ count: RESULT_BATCH_SIZE, key: '' })
   const searchPageRef = useRef(null)
   const requestedHydrationKey = useRef('')
@@ -114,7 +115,7 @@ function SearchResultsPage({
   }, [deferredQuery, normalizedQuery, onSearchCatalog])
 
   useEffect(() => {
-    setSelectedPersonId(null)
+    setSelectedPersonId(initialPersonId || null)
     if (!authToken || normalizedQuery.length < 2) {
       setPeopleSearch({ people: [], query: normalizedQuery, status: 'idle' })
       return undefined
@@ -139,7 +140,14 @@ function SearchResultsPage({
       controller.abort()
       window.clearTimeout(timeoutId)
     }
-  }, [authToken, deferredQuery, filteredCatalogItems, normalizedQuery])
+  }, [authToken, deferredQuery, filteredCatalogItems, initialPersonId, normalizedQuery])
+
+  useEffect(() => {
+    if (!initialPersonId || peopleSearch.query !== normalizedQuery || peopleSearch.status !== 'ready') return
+    if (peopleSearch.people.some((person) => person.id === initialPersonId)) {
+      setSelectedPersonId(initialPersonId)
+    }
+  }, [initialPersonId, normalizedQuery, peopleSearch])
 
   useEffect(() => {
     if (!hydrationKey || hydrationKey === requestedHydrationKey.current) return
@@ -452,6 +460,7 @@ function getLocalProjectsForPersonCredits(credits, tmdbCatalog) {
       seen.add(key)
       return [item]
     })
+    .sort((first, second) => getRating(second) - getRating(first) || getTitle(first).localeCompare(getTitle(second)))
 }
 
 export default SearchResultsPage

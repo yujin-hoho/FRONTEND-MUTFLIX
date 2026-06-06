@@ -675,6 +675,21 @@
   grid-template-columns: 82px 1fr;
   align-items: center;
   gap: 18px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+button.cast-card {
+  cursor: pointer;
+}
+
+button.cast-card:hover h3,
+button.cast-card:focus-visible h3 {
+  color: #7cf2ad;
 }
 
 .cast-avatar {

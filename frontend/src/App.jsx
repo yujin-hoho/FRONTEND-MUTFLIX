@@ -744,6 +744,16 @@ function App() {
     })
   }
 
+  function handleOpenPersonSearch(person) {
+    if (!person?.name) return
+    navigate(buildSearchUrl(person.name, null, { personId: person.id }), {
+      state: {
+        from: getCurrentRoute(location),
+        fromState: location.state,
+      },
+    })
+  }
+
   function handleOpenCatalogAll() {
     navigate('/catalog', {
       state: {
@@ -932,6 +942,7 @@ function App() {
           detailData={detailData}
           onBack={handleDetailBack}
           onOpenContextMenu={openCompletedContextMenu}
+          onOpenPerson={handleOpenPersonSearch}
           onPlayVideo={(video) => handleOpenWatch(detailData.item, video, detailData.videos)}
           watchHistory={profileData.watchHistory}
         />,
@@ -967,6 +978,7 @@ function App() {
           catalogData={catalogData}
           initialFilter={searchFilter}
           initialQuery={new URLSearchParams(location.search).get('q') || ''}
+          initialPersonId={Number(new URLSearchParams(location.search).get('person') || 0)}
           isAdmin={currentUser?.role === 'admin'}
           onChangeProfile={handleChangeProfile}
           onFilterSelect={(filter) => handleOpenCatalogFilter(filter, { replace: true })}
@@ -1133,10 +1145,11 @@ function getCurrentRoute(location) {
   return `${location.pathname}${location.search}`
 }
 
-function buildSearchUrl(query, filter) {
+function buildSearchUrl(query, filter, { personId } = {}) {
   const params = new URLSearchParams()
   const normalizedQuery = String(query || '').trim()
   if (normalizedQuery) params.set('q', normalizedQuery)
+  if (personId) params.set('person', String(personId))
   if (filter?.type && filter.value) {
     params.set('filter', filter.type)
     params.set('value', filter.value)
