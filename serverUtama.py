@@ -4208,7 +4208,8 @@ def get_gdrive_stream_details(current_user,file_path):
                     _gdrive_token = token
                     _gdrive_token_ts = time.time()
         
-        file_metadata = _get_gdrive_file_metadata(fid)
+        force_probe = request.args.get('refresh_probe', '').lower() in ('1', 'true', 'yes')
+        file_metadata = _get_gdrive_file_metadata(fid, force_probe=force_probe)
         requested_audio_stream_index = _parse_audio_stream_index(request.args.get('audio_stream_index'))
         audio_streams = file_metadata.get('audio_streams') if isinstance(file_metadata.get('audio_streams'), list) else []
         selected_audio = _get_audio_stream_by_index(audio_streams, requested_audio_stream_index)
@@ -4308,23 +4309,25 @@ def _get_fresh_gdrive_token():
         _gdrive_token_ts = time.time()
         return token
 
-def _get_gdrive_file_metadata(fid):
+def _get_gdrive_file_metadata(fid, force_probe=False):
     now = time.time()
-    with _gdrive_file_metadata_cache_lock:
-        cached_metadata = _gdrive_file_metadata_cache.get(fid)
-        cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
-        if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
-            return cached_metadata
-
-    with _gdrive_file_metadata_key_locks_lock:
-        key_lock = _gdrive_file_metadata_key_locks.setdefault(fid, threading.Lock())
-    with key_lock:
-        now = time.time()
+    if not force_probe:
         with _gdrive_file_metadata_cache_lock:
             cached_metadata = _gdrive_file_metadata_cache.get(fid)
             cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
             if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
                 return cached_metadata
+
+    with _gdrive_file_metadata_key_locks_lock:
+        key_lock = _gdrive_file_metadata_key_locks.setdefault(fid, threading.Lock())
+    with key_lock:
+        now = time.time()
+        if not force_probe:
+            with _gdrive_file_metadata_cache_lock:
+                cached_metadata = _gdrive_file_metadata_cache.get(fid)
+                cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
+                if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
+                    return cached_metadata
 
         svc = get_gdrive_service()
         if not svc:
@@ -4359,10 +4362,27 @@ def _probe_gdrive_duration_ms(fid):
 def _probe_gdrive_media_metadata(fid):
     if not shutil.which("ffprobe"):
         return {"audio_probe_status": "ffprobe-unavailable", "duration_ms": 0}
-    token = _get_fresh_gdrive_token()
-    if not token:
-        return {"audio_probe_status": "token-unavailable", "duration_ms": 0}
+    last_result = {"audio_probe_status": "failed", "duration_ms": 0}
+    for attempt in range(2):
+        if attempt > 0:
+            with _gdrive_token_lock:
+                global _gdrive_token, _gdrive_token_ts
+                _gdrive_token = None
+                _gdrive_token_ts = 0
+            time.sleep(0.35)
 
+        token = _get_fresh_gdrive_token()
+        if not token:
+            last_result = {"audio_probe_status": "token-unavailable", "duration_ms": 0}
+            continue
+
+        probed = _run_gdrive_media_ffprobe(fid, token)
+        last_result = probed
+        if probed.get("audio_probe_status") in ("ok", "no-audio"):
+            return probed
+    return last_result
+
+def _run_gdrive_media_ffprobe(fid, token):
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
     command = [

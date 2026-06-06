@@ -12,6 +12,7 @@ import {
 
 const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v4'
 const AUDIO_TRANSCODE_START_RETRY_DELAYS_MS = [900]
+const PLAYBACK_SOURCE_PROBE_RETRY_DELAYS_MS = [650, 1400]
 
 export function createEmptyCredits() {
   return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
@@ -267,12 +268,7 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}, opti
   if (requestedAudioStreamIndex !== null) {
     searchParams.set('audio_stream_index', String(requestedAudioStreamIndex))
   }
-  const queryString = searchParams.toString()
-  const response = await fetch(`${API_BASE_URL}/api/gdrive-stream-details/${encodeServerPath(mediaPath)}${queryString ? `?${queryString}` : ''}`, {
-    headers: { 'x-access-token': authToken },
-  })
-  const data = await response.json().catch(() => ({}))
-  if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the video stream.')
+  const data = await fetchPlaybackSourceDetails(authToken, mediaPath, searchParams)
 
   const fileName = video.original_name || data.file_name || video.name || mediaPath
   const isHlsStream = /\.m3u8(?:$|\?)/i.test(fileName)
@@ -339,6 +335,38 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}, opti
     selectedAudioStreamIndex,
     url: resolvePublicPath(streamPath),
   }
+}
+
+async function fetchPlaybackSourceDetails(authToken, mediaPath, searchParams) {
+  const retryDelays = [0, ...PLAYBACK_SOURCE_PROBE_RETRY_DELAYS_MS]
+  let lastData = null
+
+  for (let attemptIndex = 0; attemptIndex < retryDelays.length; attemptIndex += 1) {
+    const retryDelayMs = retryDelays[attemptIndex]
+    if (retryDelayMs > 0) await waitForRetry(retryDelayMs)
+
+    const requestParams = new URLSearchParams(searchParams)
+    if (attemptIndex > 0) requestParams.set('refresh_probe', 'true')
+    const queryString = requestParams.toString()
+    const response = await fetch(`${API_BASE_URL}/api/gdrive-stream-details/${encodeServerPath(mediaPath)}${queryString ? `?${queryString}` : ''}`, {
+      cache: 'no-store',
+      headers: { 'x-access-token': authToken },
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the video stream.')
+    lastData = data
+
+    if (!shouldRetryPlaybackProbe(data) || attemptIndex === retryDelays.length - 1) return data
+  }
+
+  return lastData || {}
+}
+
+function shouldRetryPlaybackProbe(data) {
+  const status = String(data.audio_probe_status || '').trim()
+  if (['failed', 'token-unavailable'].includes(status)) return true
+  if (!status && !Array.isArray(data.audio_streams)) return true
+  return false
 }
 
 function normalizeAudioTracks(audioStreams) {
