@@ -655,7 +655,6 @@ function App() {
   }, [profileData.watchHistory, selectedProfile])
 
   function handleDetailBack() {
-    setDetailData(EMPTY_DETAIL_DATA)
     navigateBackToStoredRoute(navigate, location.state)
   }
 
@@ -900,7 +899,6 @@ function App() {
         <WatchPage
           authToken={authToken}
           item={item}
-          key={video.path}
           onBack={handleWatchBack}
           onOpenVideo={(nextVideo) => {
             navigate(getWatchUrl(nextVideo.path), {
@@ -1172,7 +1170,7 @@ function readCatalogFilter(search) {
 }
 
 function navigateBackToStoredRoute(navigate, routeState) {
-  navigate(routeState?.from || '/dashboard', { state: routeState?.fromState || null })
+  navigate(routeState?.from || '/dashboard', { flushSync: true, state: routeState?.fromState || null })
 }
 
 function createCatalogOverrideItem(item, tmdbResult, mediaType) {

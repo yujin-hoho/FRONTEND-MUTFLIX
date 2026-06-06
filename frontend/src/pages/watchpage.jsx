@@ -57,6 +57,7 @@ const SUBTITLE_POSITION_MAX_PERCENT = 90
 const EMBEDDED_SUBTITLE_WINDOW_SECONDS = 180
 const EMBEDDED_SUBTITLE_WINDOW_LOOKBEHIND_SECONDS = 10
 const EMBEDDED_SUBTITLE_PREFETCH_LEAD_SECONDS = 30
+const PLAYBACK_RATE_STORAGE_KEY = 'mutflix.playback-rate'
 const SUBTITLE_SETTINGS_STORAGE_KEY = 'mutflix.subtitle-settings'
 const DEFAULT_SUBTITLE_SETTINGS = {
   background: 'translucent',
@@ -123,7 +124,7 @@ function WatchPage({
   const [markers, setMarkers] = useState({ introEndSeconds: 0, outroStartSeconds: 0 })
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
-  const [playbackRate, setPlaybackRate] = useState(1)
+  const [playbackRate, setPlaybackRate] = useState(readPlaybackRate)
   const [volume, setVolume] = useState(1)
   const [isMuted, setIsMuted] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -522,6 +523,7 @@ function WatchPage({
     audioTranscodeBaseUrlRef.current = ''
     audioTranscodeStartUrlRef.current = ''
     cancelAudioTranscodeStartRequest()
+    initialResumePositionRef.current = Number(resumeEntry?.position_ms || 0) / 1000
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     clearStreamStallTimeout()
@@ -819,16 +821,21 @@ function WatchPage({
 
   useEffect(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
     return () => window.clearTimeout(controlsTimeoutRef.current)
-  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen])
+  }, [isAudioPanelOpen, isEpisodeListOpen, isPlaying, isSubtitlePanelOpen])
+
+  useEffect(() => {
+    if (playerRef.current) playerRef.current.playbackRate = playbackRate
+  }, [playbackRate])
 
   function handleLoadedMetadata() {
     const player = playerRef.current
     if (!player) return
 
+    player.playbackRate = playbackRate
     clearStreamStallTimeout()
     const playbackDuration = getPlaybackDuration(player.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current)
     setDuration(playbackDuration)
@@ -957,6 +964,7 @@ function WatchPage({
     const nextPlaybackRate = Number(event.target.value)
     if (!Number.isFinite(nextPlaybackRate) || nextPlaybackRate <= 0) return
     if (playerRef.current) playerRef.current.playbackRate = nextPlaybackRate
+    writePlaybackRate(nextPlaybackRate)
     setPlaybackRate(nextPlaybackRate)
   }
 
@@ -1585,6 +1593,29 @@ function getFinishedAtLabel(durationSeconds, currentSeconds, playbackRate) {
   const remainingSeconds = Math.max(0, duration - current)
   const finishedAt = new Date(Date.now() + Math.ceil(remainingSeconds / rate) * 1000)
   return `${String(finishedAt.getHours()).padStart(2, '0')}.${String(finishedAt.getMinutes()).padStart(2, '0')}`
+}
+
+function readPlaybackRate() {
+  try {
+    const playbackRate = Number(window.localStorage.getItem(PLAYBACK_RATE_STORAGE_KEY))
+    return clampPlaybackRate(playbackRate)
+  } catch {
+    return 1
+  }
+}
+
+function writePlaybackRate(playbackRate) {
+  try {
+    window.localStorage.setItem(PLAYBACK_RATE_STORAGE_KEY, String(clampPlaybackRate(playbackRate)))
+  } catch {
+    // Playback speed remains usable if local storage is unavailable.
+  }
+}
+
+function clampPlaybackRate(playbackRate) {
+  const numericPlaybackRate = Number(playbackRate)
+  if (!Number.isFinite(numericPlaybackRate) || numericPlaybackRate <= 0) return 1
+  return Math.min(2, Math.max(0.75, numericPlaybackRate))
 }
 
 function getEpisodeListTitle(episode = {}, index = 0) {
