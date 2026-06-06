@@ -146,7 +146,9 @@ function App() {
   const featuredItemKeys = useRef(new Map())
   const historyQueueRequestId = useRef(0)
   const pendingMetadataKeys = useRef(new Set())
+  const pendingMyListPromotionKeys = useRef(new Set())
   const catalogDataRef = useRef(catalogData)
+  const profileDataRef = useRef(profileData)
   const dashboardRowsCacheKey = useRef('')
 
   const isRegister = mode === 'register'
@@ -156,6 +158,7 @@ function App() {
     && !isLoading
 
   catalogDataRef.current = catalogData
+  profileDataRef.current = profileData
 
   useEffect(() => {
     if (location.pathname === '/') {
@@ -358,7 +361,10 @@ function App() {
     })
   }, [profileData.watchHistory, selectedProfile])
 
-  const handleSaveProgress = useCallback(async (payload) => {
+  const handleSaveProgress = useCallback(async (payload, playbackContext = {}) => {
+    const previousProfileData = profileDataRef.current
+    const nextWatchHistory = mergeWatchHistory(previousProfileData.watchHistory, payload)
+    const currentMyList = previousProfileData.myList
     setProfileData((currentData) => {
       const watchHistory = mergeWatchHistory(currentData.watchHistory, payload)
       const currentCatalog = catalogDataRef.current
@@ -370,6 +376,15 @@ function App() {
       return { ...currentData, watchHistory }
     })
     await saveWatchProgress(authToken, payload)
+    await promoteCompletedMyListItem({
+      authToken,
+      myList: currentMyList,
+      pendingKeys: pendingMyListPromotionKeys.current,
+      playbackContext,
+      profileId: selectedProfile?.id,
+      setProfileData,
+      watchHistory: nextWatchHistory,
+    })
   }, [authToken, selectedProfile])
 
   const handleHideHistory = useCallback(async (historyEntry) => {
@@ -449,6 +464,15 @@ function App() {
         return { ...currentData, watchHistory }
       })
       await saveWatchProgress(authToken, payload)
+      await promoteCompletedMyListItem({
+        authToken,
+        myList: profileData.myList,
+        pendingKeys: pendingMyListPromotionKeys.current,
+        playbackContext: { item: menu.item, video: menu.video, videos: detailData.videos },
+        profileId: selectedProfile.id,
+        setProfileData,
+        watchHistory: mergeWatchHistory(profileData.watchHistory, payload),
+      })
       return
     }
 
@@ -483,7 +507,7 @@ function App() {
       ...currentData,
       myList: mergeMyListItem(currentData.myList, completedItem),
     }))
-  }, [authToken, closeCompletedContextMenu, contextMenu, selectedProfile])
+  }, [authToken, closeCompletedContextMenu, contextMenu, detailData.videos, profileData.myList, profileData.watchHistory, selectedProfile])
 
   useEffect(() => {
     if (!contextMenu) return undefined
@@ -1005,6 +1029,66 @@ function readStoredJson(key) {
   }
 }
 
+async function promoteCompletedMyListItem({
+  authToken,
+  myList,
+  pendingKeys,
+  playbackContext,
+  profileId,
+  setProfileData,
+  watchHistory,
+}) {
+  const item = playbackContext?.item
+  if (!authToken || !profileId || !item || !isPlanToWatchMyListItem(item, myList)) return
+  if (!isPlaybackContextCompleted(playbackContext, watchHistory)) return
+
+  const itemKey = getCatalogIdentityKey(item)
+  if (!itemKey || pendingKeys.has(itemKey)) return
+  pendingKeys.add(itemKey)
+
+  try {
+    const completedItem = await saveMyListItemStatus(authToken, {
+      item,
+      profileId,
+      status: 'completed',
+    })
+    setProfileData((currentData) => ({
+      ...currentData,
+      myList: mergeMyListItem(currentData.myList, completedItem),
+    }))
+  } finally {
+    pendingKeys.delete(itemKey)
+  }
+}
+
+function isPlanToWatchMyListItem(item, myList) {
+  const itemKey = getCatalogIdentityKey(item)
+  return (Array.isArray(myList) ? myList : []).some((entry) => (
+    getCatalogIdentityKey(entry) === itemKey
+    && (entry.status || entry.my_list_status || 'plan_to_watch') === 'plan_to_watch'
+  ))
+}
+
+function isPlaybackContextCompleted({ item, video, videos = [] } = {}, watchHistory = []) {
+  if (!item) return false
+  if (getMediaType(item) === 'movie') {
+    return isWatchHistoryVideoCompleted(video, watchHistory)
+  }
+
+  const episodeVideos = (Array.isArray(videos) ? videos : [])
+    .filter((entry) => entry?.path)
+  if (!episodeVideos.length) return false
+  return episodeVideos.every((entry) => isWatchHistoryVideoCompleted(entry, watchHistory))
+}
+
+function isWatchHistoryVideoCompleted(video, watchHistory = []) {
+  if (!video?.path) return false
+  return (Array.isArray(watchHistory) ? watchHistory : []).some((entry) => (
+    normalizeMediaPath(entry.media_path) === normalizeMediaPath(video.path)
+    && Number(entry.duration_ms || 0) > 0
+    && Number(entry.position_ms || 0) >= Number(entry.duration_ms || 0) * 0.9
+  ))
+}
 
 function getCurrentRoute(location) {
   return `${location.pathname}${location.search}`

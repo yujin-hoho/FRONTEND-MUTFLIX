@@ -218,10 +218,10 @@ function WatchPage({
     if (force) lastForcedSaveRef.current = { positionMs, savedAt: now }
     lastSavedAtRef.current = now
     lastSavedPositionRef.current = positionMs
-    return onSaveProgress(createHistoryPayload(context, positionMs, durationMs)).catch(() => {
+    return onSaveProgress(createHistoryPayload(context, positionMs, durationMs), { item, video, videos: queue }).catch(() => {
       // Playback must continue even if a background progress sync fails.
     })
-  }, [onSaveProgress])
+  }, [item, onSaveProgress, queue, video])
 
   const revealControls = useCallback(() => {
     setShowControls(true)
