@@ -347,7 +347,6 @@
 }
 
 .watch-subtitle-setting select,
-.watch-subtitle-delay input,
 .watch-subtitle-range-setting input {
   box-sizing: border-box;
   width: 100%;
@@ -437,18 +436,11 @@
   flex: 1 1 auto;
 }
 
-.watch-subtitle-delay label > span:last-child {
-  position: absolute;
-  right: 9px;
-  color: #94a3b8;
-  font-size: 0.72rem;
-  pointer-events: none;
-}
-
 .watch-subtitle-delay input {
-  height: var(--watch-subtitle-field-height);
-  padding-right: 22px;
-  font-variant-numeric: tabular-nums;
+  width: 100%;
+  height: 18px;
+  padding: 0;
+  accent-color: #00dc64;
 }
 
 .watch-seek,
