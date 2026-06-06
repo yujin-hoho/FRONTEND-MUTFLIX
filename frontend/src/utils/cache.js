@@ -36,7 +36,7 @@ const CATALOG_METADATA_FIELDS = [
   'vote_average',
   'genres',
 ]
-const LEGACY_DASHBOARD_CACHE_KEYS = ['mutflix_dashboard_cache_v1', 'mutflix_dashboard_cache_v2']
+const LEGACY_DASHBOARD_CACHE_KEYS = ['mutflix_dashboard_cache_v1', 'mutflix_dashboard_cache_v2', 'mutflix_dashboard_cache_v3']
 const TMDB_OVERRIDE_CACHE_KEY = 'mutflix_tmdb_override_cache_v1'
 
 export function readDashboardCache(profileId) {
@@ -53,6 +53,10 @@ export function readDashboardCache(profileId) {
       movies: entry.movies.map((item) => applyLocalTmdbOverride({ ...item, media_type: 'movie', type: 'movie' })),
       rows: normalizeDashboardRowsSnapshot(entry.rows),
       series: entry.series.map((item) => applyLocalTmdbOverride({ ...item, media_type: 'tv', type: 'series' })),
+      totals: {
+        movies: Number(entry.totals?.movies || entry.totalMovies || entry.movies.length || 0),
+        series: Number(entry.totals?.series || entry.totalSeries || entry.series.length || 0),
+      },
     }
   } catch {
     localStorage.removeItem(DASHBOARD_CACHE_KEY)
@@ -68,6 +72,10 @@ export function writeDashboardCache(profileId, { history, movies, rows, series }
     const previousEntry = cache[profileKey] || {}
     const movieItems = Array.isArray(movies) ? movies : []
     const seriesItems = Array.isArray(series) ? series : []
+    const totals = {
+      movies: movieItems.length || Number(previousEntry.totals?.movies || previousEntry.totalMovies || 0),
+      series: seriesItems.length || Number(previousEntry.totals?.series || previousEntry.totalSeries || 0),
+    }
     const metadata = buildCatalogMetadataCache(previousEntry.metadata, movieItems, seriesItems)
     const dashboardRows = normalizeDashboardRowsSnapshot(rows || previousEntry.rows)
     const entries = Object.entries(cache)
@@ -98,6 +106,7 @@ export function writeDashboardCache(profileId, { history, movies, rows, series }
         rowItemLimit: attempt.rowItemLimit,
         rows: dashboardRows,
         series: seriesItems,
+        totals,
       })
 
       try {
@@ -191,6 +200,7 @@ function createDashboardCacheEntry({
   rowItemLimit,
   rows,
   series,
+  totals,
 }) {
   return {
     cachedAt: Date.now(),
@@ -199,6 +209,10 @@ function createDashboardCacheEntry({
     movies: selectCachedCatalogItems(movies, itemLimit, previousMovies),
     rows: limitDashboardRowsSnapshot(rows, rowItemLimit),
     series: selectCachedCatalogItems(series, itemLimit, previousSeries),
+    totals: {
+      movies: Number(totals?.movies || movies?.length || 0),
+      series: Number(totals?.series || series?.length || 0),
+    },
   }
 }
 

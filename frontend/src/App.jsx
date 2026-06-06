@@ -128,6 +128,7 @@ function App() {
           movies: cachedCatalog.movies,
           rows: cached.rows,
           series: cachedCatalog.series,
+          totals: cached.totals || { movies: cachedCatalog.movies.length, series: cachedCatalog.series.length },
           isLoading: true, // we still fetch fresh list in background
           isFromCache: true,
           error: null,
@@ -138,6 +139,7 @@ function App() {
       movies: [],
       rows: null,
       series: [],
+      totals: { movies: 0, series: 0 },
       isLoading: true,
       isFromCache: false,
       error: null,
@@ -232,6 +234,7 @@ function App() {
             movies: cachedDashboard.movies,
             rows: cachedDashboard.rows,
             series: cachedDashboard.series,
+            totals: cachedDashboard.totals || { movies: cachedDashboard.movies.length, series: cachedDashboard.series.length },
             isLoading: true,
             isFromCache: true,
             error: null,
@@ -254,7 +257,7 @@ function App() {
               { movies: refreshedDashboard.movies, series: refreshedDashboard.series },
               current,
             )
-            return { ...merged, rows: null, isLoading: false, isFromCache: false, error: null }
+            return { ...merged, totals: refreshedDashboard.totals || { movies: merged.movies.length, series: merged.series.length }, rows: null, isLoading: false, isFromCache: false, error: null }
           })
         }
 
@@ -266,7 +269,7 @@ function App() {
             setCatalogData((current) => {
               const merged = mergeCatalogMetadataUpdates(current, enrichedSoFar)
               writeDashboardCache(profileId, { history: refreshedDashboard.history, movies: merged.movies, series: merged.series })
-              return { ...merged, rows: null, isLoading: false, isFromCache: false, error: null }
+              return { ...merged, totals: refreshedDashboard.totals || current.totals || { movies: merged.movies.length, series: merged.series.length }, rows: null, isLoading: false, isFromCache: false, error: null }
             })
           },
         })
@@ -276,13 +279,13 @@ function App() {
           setCatalogData((current) => {
             const merged = mergeCatalogMetadataUpdates(current, enrichedCatalog)
             writeDashboardCache(profileId, { history: refreshedDashboard.history, movies: merged.movies, series: merged.series })
-            return { ...merged, rows: null, isLoading: false, isFromCache: false, error: null }
+            return { ...merged, totals: refreshedDashboard.totals || current.totals || { movies: merged.movies.length, series: merged.series.length }, rows: null, isLoading: false, isFromCache: false, error: null }
           })
         }
       } catch (error) {
         if (!ignore && !cachedDashboard) {
           setProfileData({ myList: [], watchHistory: [], isLoading: false, error: error.message })
-          setCatalogData({ movies: [], rows: null, series: [], isLoading: false, isFromCache: false, error: error.message })
+          setCatalogData({ movies: [], rows: null, series: [], totals: { movies: 0, series: 0 }, isLoading: false, isFromCache: false, error: error.message })
         } else if (!ignore) {
           setProfileData((currentData) => ({ ...currentData, isLoading: false, error: error.message }))
           setCatalogData((currentData) => ({ ...currentData, isLoading: false, error: null }))
@@ -933,7 +936,6 @@ function App() {
         />,
       )
     }
-    if (catalogData.isLoading && !catalogData.movies.length && !catalogData.series.length) return <DashboardSkeleton />
     if (isCatalogAllRoute) {
       return renderWithContextMenu(
         <CatalogAllPage
@@ -1001,6 +1003,8 @@ function App() {
         />,
       )
     }
+
+    if (catalogData.isLoading && !catalogData.movies.length && !catalogData.series.length) return <DashboardSkeleton />
 
     return renderWithContextMenu(
       <DashboardPage

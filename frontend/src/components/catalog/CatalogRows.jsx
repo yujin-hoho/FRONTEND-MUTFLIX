@@ -83,18 +83,13 @@ const CatalogCard = memo(function CatalogCard({ horizontal = false, isAdmin = fa
 })
 
 export const HistoryRow = memo(function HistoryRow({ items, onHide, onOpenContextMenu, onPlay }) {
-  const [showAll, setShowAll] = useState(false)
-
   if (!items.length) return null
-  const visibleItems = showAll ? items : items.slice(0, 15)
+  const visibleItems = items.slice(0, 15)
 
   return (
     <section className="catalog-row" aria-label="Continue watching">
       <div className="catalog-row-heading">
         <h2>Continue Watching</h2>
-        <button onClick={() => setShowAll((isOpen) => !isOpen)} type="button">
-          {showAll ? 'Show less' : 'See more'}
-        </button>
       </div>
       <DraggableScroller className="catalog-scroller history-scroller" variant="history">
         {visibleItems.map((item) => (

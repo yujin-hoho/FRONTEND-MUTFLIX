@@ -67,6 +67,7 @@ function SearchResultsPage({
     [currentBatchResults],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
+  const showLoadingShimmer = catalogData.isLoading && !catalogItems.length
 
   useEffect(() => {
     if (!onSearchCatalog || normalizedQuery.length < 2) return undefined
@@ -167,38 +168,40 @@ function SearchResultsPage({
         <div className="search-results-heading">
           <p>{initialFilter ? 'Filter' : 'Search'}</p>
           <h1>{getResultsTitle(initialFilter, deferredQuery)}</h1>
-          <span>{normalizedQuery || initialFilter ? `${results.length} judul ditemukan` : 'Ketik keyword untuk menampilkan hasil.'}</span>
+          <span>{showLoadingShimmer ? 'Menyiapkan katalog...' : normalizedQuery || initialFilter ? `${results.length} judul ditemukan` : 'Ketik keyword untuk menampilkan hasil.'}</span>
         </div>
 
-        {!normalizedQuery && !initialFilter && (
+        {showLoadingShimmer && <SearchResultsShimmer />}
+
+        {!showLoadingShimmer && !normalizedQuery && !initialFilter && (
           <div className="search-empty-state">
             <Search size={30} />
             <p>Mulai ketik judul atau genre di kolom pencarian.</p>
           </div>
         )}
 
-        {normalizedQuery && results.length === 0 && isServerSearchPending && (
+        {!showLoadingShimmer && normalizedQuery && results.length === 0 && isServerSearchPending && (
           <div className="search-empty-state">
             <Search size={30} />
             <p>Mencari &quot;{deferredQuery.trim()}&quot; di katalog...</p>
           </div>
         )}
 
-        {normalizedQuery && results.length === 0 && !isServerSearchPending && (
+        {!showLoadingShimmer && normalizedQuery && results.length === 0 && !isServerSearchPending && (
           <div className="search-empty-state">
             <Search size={30} />
             <p>Tidak ada hasil yang cocok untuk &quot;{deferredQuery.trim()}&quot;.</p>
           </div>
         )}
 
-        {!normalizedQuery && initialFilter && results.length === 0 && (
+        {!showLoadingShimmer && !normalizedQuery && initialFilter && results.length === 0 && (
           <div className="search-empty-state">
             <Search size={30} />
             <p>Belum ada judul untuk filter {initialFilter.label}.</p>
           </div>
         )}
 
-        {results.length > 0 && (
+        {!showLoadingShimmer && results.length > 0 && (
           <>
             <div className="search-results-grid">
               {visibleResults.map((item) => (
@@ -275,6 +278,20 @@ export const SearchResultCard = memo(function SearchResultCard({ isAdmin = false
     </article>
   )
 })
+
+function SearchResultsShimmer() {
+  return (
+    <div className="search-results-grid search-results-loading-grid" aria-hidden="true">
+      {Array.from({ length: 18 }, (_, index) => (
+        <article className="catalog-all-loading-card" key={index}>
+          <span className="skeleton-block catalog-all-loading-poster" />
+          <span className="skeleton-block catalog-all-loading-title" />
+          <span className="skeleton-block catalog-all-loading-meta" />
+        </article>
+      ))}
+    </div>
+  )
+}
 
 function isActiveFilter(filter, type, value) {
   return filter?.type === type && filter.value === value

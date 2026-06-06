@@ -35,6 +35,10 @@ function CatalogAllPage({
   const [lazyRenderState, setLazyRenderState] = useState({ count: CATALOG_BATCH_SIZE, key: '' })
   const visibleCount = lazyRenderState.key === catalogKey ? lazyRenderState.count : CATALOG_BATCH_SIZE
   const visibleItems = useMemo(() => catalogItems.slice(0, visibleCount), [catalogItems, visibleCount])
+  const catalogTotal = Math.max(
+    catalogItems.length,
+    Number(catalogData.totals?.movies || 0) + Number(catalogData.totals?.series || 0),
+  )
   const currentBatchItems = useMemo(
     () => visibleItems.slice(Math.max(0, visibleItems.length - CATALOG_BATCH_SIZE)),
     [visibleItems],
@@ -45,6 +49,7 @@ function CatalogAllPage({
     [currentBatchItems],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
+  const showLoadingShimmer = catalogData.isLoading && !catalogItems.length
 
   useEffect(() => {
     pageRef.current?.scrollTo({ top: 0 })
@@ -117,10 +122,18 @@ function CatalogAllPage({
         <div className="search-results-heading">
           <p>Catalog</p>
           <h1>Semua katalog</h1>
-          <span>{catalogItems.length} judul tersedia</span>
+          <span>{showLoadingShimmer ? 'Menyiapkan katalog...' : `${catalogTotal} judul tersedia`}</span>
         </div>
 
-        {catalogItems.length > 0 && (
+        {showLoadingShimmer && <CatalogAllShimmer />}
+
+        {!showLoadingShimmer && catalogItems.length === 0 && (
+          <div className="search-empty-state">
+            <p>Katalog belum tersedia.</p>
+          </div>
+        )}
+
+        {!showLoadingShimmer && catalogItems.length > 0 && (
           <>
             <div className="search-results-grid catalog-all-grid">
               {visibleItems.map((item) => (
@@ -141,6 +154,20 @@ function CatalogAllPage({
         )}
       </section>
     </main>
+  )
+}
+
+function CatalogAllShimmer() {
+  return (
+    <div className="search-results-grid catalog-all-loading-grid" aria-hidden="true">
+      {Array.from({ length: 24 }, (_, index) => (
+        <article className="catalog-all-loading-card" key={index}>
+          <span className="skeleton-block catalog-all-loading-poster" />
+          <span className="skeleton-block catalog-all-loading-title" />
+          <span className="skeleton-block catalog-all-loading-meta" />
+        </article>
+      ))}
+    </div>
   )
 }
 

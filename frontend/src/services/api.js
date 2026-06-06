@@ -115,7 +115,15 @@ export async function fetchDashboardData(authToken, profileId) {
     ? catalog.series.map((item) => ({ ...item, media_type: 'tv', type: 'series' }))
     : []
 
-  return { history: normalizeWatchHistory(historyData), movies, series }
+  return {
+    history: normalizeWatchHistory(historyData),
+    movies,
+    series,
+    totals: {
+      movies: Number(catalog.totals?.movies || catalog.totalMovies || movies.length),
+      series: Number(catalog.totals?.series || catalog.totalSeries || series.length),
+    },
+  }
 }
 
 export async function fetchMyList(authToken, profileId, { status } = {}) {
