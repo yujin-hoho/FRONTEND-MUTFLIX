@@ -5,6 +5,7 @@ import { PROFILES_CACHE_KEY } from './config'
 import DashboardSkeleton from './components/DashboardSkeleton'
 import AdminCatalogEditPage from './pages/AdminCatalogEditPage'
 import AuthPage from './pages/AuthPage'
+import CatalogAllPage from './pages/CatalogAllPage'
 import DashboardPage from './pages/DashboardPage'
 import DetailPage from './pages/DetailPage'
 import MyListPage from './pages/MyListPage'
@@ -69,6 +70,7 @@ function App() {
   const navigate = useNavigate()
   const isDetailRoute = location.pathname.startsWith('/detail/')
   const isAdminEditRoute = location.pathname.startsWith('/admin/catalog/edit/')
+  const isCatalogAllRoute = location.pathname === '/catalog'
   const isMyListRoute = location.pathname === '/my-list'
   const isSearchRoute = location.pathname === '/search'
   const isWatchRoute = location.pathname.startsWith('/watch/')
@@ -735,7 +737,16 @@ function App() {
         : {
             from: getCurrentRoute(location),
             fromState: location.state,
-          },
+      },
+    })
+  }
+
+  function handleOpenCatalogAll() {
+    navigate('/catalog', {
+      state: {
+        from: getCurrentRoute(location),
+        fromState: location.state,
+      },
     })
   }
 
@@ -923,6 +934,27 @@ function App() {
       )
     }
     if (catalogData.isLoading && !catalogData.movies.length && !catalogData.series.length) return <DashboardSkeleton />
+    if (isCatalogAllRoute) {
+      return renderWithContextMenu(
+        <CatalogAllPage
+          catalogData={catalogData}
+          isAdmin={currentUser?.role === 'admin'}
+          myList={profileData.myList}
+          onChangeProfile={handleChangeProfile}
+          onFilterSelect={handleOpenCatalogFilter}
+          onHydrateItems={hydrateCatalogItems}
+          onLogout={handleLogout}
+          onOpenCatalogEdit={handleOpenCatalogEdit}
+          onOpenContextMenu={openCompletedContextMenu}
+          onOpenDetail={handleOpenDetail}
+          onOpenMyList={handleOpenMyList}
+          onOpenSearch={handleOpenSearch}
+          onSearchCatalog={handleSearchCatalog}
+          selectedProfile={selectedProfile}
+          watchHistory={profileData.watchHistory}
+        />,
+      )
+    }
     if (isSearchRoute) {
       const searchFilter = readCatalogFilter(location.search)
       return renderWithContextMenu(
@@ -979,6 +1011,7 @@ function App() {
         onLogout={handleLogout}
         onHydrateItems={hydrateCatalogItems}
         onOpenCatalogFilter={handleOpenCatalogFilter}
+        onOpenCatalogAll={handleOpenCatalogAll}
         onOpenCatalogEdit={handleOpenCatalogEdit}
         onOpenMyList={handleOpenMyList}
         onOpenDetail={handleOpenDetail}

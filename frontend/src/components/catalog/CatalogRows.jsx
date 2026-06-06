@@ -13,7 +13,7 @@ import {
   getWatchProgress,
 } from '../../utils/media'
 
-export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, title }) {
+export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenCatalogAll, onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, title }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return emptyMessage ? <p className="empty-catalog">{emptyMessage}</p> : null
@@ -24,8 +24,8 @@ export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = fal
     <section className={`catalog-row ${isHorizontal ? 'catalog-row-horizontal' : ''}`} aria-label={title}>
       <div className="catalog-row-heading">
         <h2>{title}</h2>
-        <button onClick={() => setShowAll((isOpen) => !isOpen)} type="button">
-          {showAll ? 'Show less' : 'See more'}
+        <button onClick={() => (onOpenCatalogAll ? onOpenCatalogAll() : setShowAll((isOpen) => !isOpen))} type="button">
+          {onOpenCatalogAll ? 'See more' : showAll ? 'Show less' : 'See more'}
         </button>
       </div>
       <DraggableScroller className={`catalog-scroller ${isHorizontal ? 'horizontal-scroller' : ''} ${ranked ? 'ranked-scroller' : ''}`} variant={isHorizontal ? 'horizontal' : ''}>

@@ -6,7 +6,7 @@ import ProfileMenu from '../components/ProfileMenu'
 import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
-const RESULT_BATCH_SIZE = 16
+export const RESULT_BATCH_SIZE = 16
 
 function SearchResultsPage({
   catalogData,
@@ -222,7 +222,7 @@ function SearchResultsPage({
   )
 }
 
-const SearchResultCard = memo(function SearchResultCard({ isAdmin = false, item, myList, onOpenContextMenu, onOpenDetail, onOpenEdit, watchHistory }) {
+export const SearchResultCard = memo(function SearchResultCard({ isAdmin = false, item, myList, onOpenContextMenu, onOpenDetail, onOpenEdit, watchHistory }) {
   const poster = getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)

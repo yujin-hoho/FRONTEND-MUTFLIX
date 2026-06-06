@@ -26,6 +26,7 @@ function DashboardPage({
   onChangeProfile,
   onHydrateItems,
   onLogout,
+  onOpenCatalogAll,
   onOpenCatalogFilter,
   onOpenCatalogEdit,
   onOpenContextMenu,
@@ -122,6 +123,7 @@ function DashboardPage({
                 isAdmin={isAdmin}
                 key={row.genre}
                 layout={(index + 1) % 3 === 0 ? 'horizontal' : 'vertical'}
+                onOpenCatalogAll={onOpenCatalogAll}
                 onOpenEdit={onOpenCatalogEdit}
                 onOpenContextMenu={onOpenContextMenu}
                 onOpenDetail={onOpenDetail}
