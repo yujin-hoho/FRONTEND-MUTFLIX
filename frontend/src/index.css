@@ -6,12 +6,20 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 html {
   min-width: 320px;
   height: 100%;
   overflow: hidden;
+  scroll-behavior: smooth;
   background: #020617;
 }
 
@@ -27,6 +35,27 @@ body {
 #root {
   height: 100%;
   overflow: hidden;
+}
+
+.dashboard-page,
+.detail-page,
+.search-page,
+.my-list-page,
+.admin-edit-page,
+.profile-modal,
+.search-filter-body,
+.watch-subtitle-panel {
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+.catalog-scroller,
+.search-filter-body,
+.profile-avatar-tabs {
+  overscroll-behavior-inline: contain;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
 }
 
 button,

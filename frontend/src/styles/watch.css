@@ -331,12 +331,14 @@
 }
 
 .watch-subtitle-settings-grid {
+  --watch-subtitle-field-height: 50px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
 }
 
 .watch-subtitle-setting {
+  align-content: start;
   display: grid;
   gap: 5px;
   color: #cbd5e1;
@@ -347,6 +349,7 @@
 .watch-subtitle-setting select,
 .watch-subtitle-delay input,
 .watch-subtitle-range-setting input {
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
   border: 1px solid rgba(148, 163, 184, 0.4);
@@ -354,6 +357,11 @@
   background: rgba(15, 23, 42, 0.92);
   color: #f8fafc;
   padding: 7px 8px;
+}
+
+.watch-subtitle-setting select,
+.watch-subtitle-delay {
+  height: var(--watch-subtitle-field-height);
 }
 
 .watch-audio-select {
@@ -417,8 +425,8 @@
 }
 
 .watch-subtitle-delay button {
-  width: 34px;
-  height: 34px;
+  width: var(--watch-subtitle-field-height);
+  height: var(--watch-subtitle-field-height);
   flex: 0 0 auto;
   font-size: 1.12rem;
   font-weight: 850;
@@ -438,6 +446,7 @@
 }
 
 .watch-subtitle-delay input {
+  height: var(--watch-subtitle-field-height);
   padding-right: 22px;
   font-variant-numeric: tabular-nums;
 }

@@ -21,6 +21,7 @@
   margin: 0 auto;
   padding: 24px;
   text-align: center;
+  transform: translateY(clamp(-42px, -4vh, -20px));
 }
 
 .profile-selector h1 {

@@ -155,7 +155,6 @@ function SearchResultsPage({
               setQuery(nextQuery)
               onQueryChange(nextQuery)
             }}
-            placeholder="Cari film, series, atau genre"
             query={query}
             showPreview={false}
             watchHistory={watchHistory}
