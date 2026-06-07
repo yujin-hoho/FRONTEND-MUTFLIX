@@ -89,7 +89,7 @@ def execute_query(query, args=(), fetchone=False, commit=False):
         release_db_connection(conn, db_type)
 
 # ==========================================
-# PYROGRAM MTProto SINGLETON (runs in its own asyncio thread)
+# PYROGRAM MTProto SIfrrrfsNGLETON (runs in its own asyncio thread)
 # ==========================================
 # Pyrogram is async-only. Flask is sync. We bridge them via a dedicated event loop
 # running in a background daemon thread.
