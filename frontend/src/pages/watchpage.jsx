@@ -179,6 +179,8 @@ function WatchPage({
     : audioCodecLabel
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
+  const mediaTitle = getTitle(item)
+  const watchTitle = isSeries ? mediaTitle : mediaTitle || videoName
   const episodeLabel = isSeries
     ? `Season ${video.season || 1} · Episode ${video.episode || currentIndex + 1}`
     : 'Movie'
@@ -1153,7 +1155,7 @@ function WatchPage({
         <div className="watch-title-block">
           <p>{episodeLabel}</p>
           <div className="watch-title-row">
-            <h1>{isSeries ? getTitle(item) : video.name || getTitle(item)}</h1>
+            <h1>{watchTitle}</h1>
             {needsAudioTranscode && (
               <aside className="watch-transcode-notice">
                 <AlertTriangle aria-hidden="true" size={15} />
