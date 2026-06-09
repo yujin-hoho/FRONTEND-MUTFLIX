@@ -42,7 +42,7 @@ function SearchResultsPage({
   const [query, setQuery] = useState(initialQuery)
   const [serverSearch, setServerSearch] = useState({ query: '', results: [], status: 'idle' })
   const [peopleSearch, setPeopleSearch] = useState({ people: [], query: '', status: 'idle' })
-  const [selectedPersonId, setSelectedPersonId] = useState(initialPersonId || null)
+  const [manualPersonSelection, setManualPersonSelection] = useState({ id: null, query: '' })
   const [lazyRenderState, setLazyRenderState] = useState({ count: RESULT_BATCH_SIZE, key: '' })
   const searchPageRef = useRef(null)
   const requestedHydrationKey = useRef('')
@@ -63,17 +63,36 @@ function SearchResultsPage({
     ),
     [initialFilter, localResults, normalizedQuery, serverSearch],
   )
+  const selectedPersonId = manualPersonSelection.query === normalizedQuery
+    ? manualPersonSelection.id
+    : initialPersonId || null
+  const visiblePeople = useMemo(
+    () => normalizedQuery.length >= 2 && peopleSearch.query === normalizedQuery ? peopleSearch.people : [],
+    [normalizedQuery, peopleSearch.people, peopleSearch.query],
+  )
   const selectedPerson = useMemo(
-    () => peopleSearch.people.find((person) => person.id === selectedPersonId) || null,
-    [peopleSearch.people, selectedPersonId],
+    () => visiblePeople.find((person) => person.id === selectedPersonId) || null,
+    [selectedPersonId, visiblePeople],
   )
   const displayResults = selectedPerson ? selectedPerson.projects : results
+  const actorProjectGroups = useMemo(
+    () => {
+      if (!selectedPerson) return { completed: [], planToWatch: [] }
+
+      return selectedPerson.projects.reduce((groups, item) => {
+        const groupKey = isCatalogItemCompleted(item, { myList, watchHistory }) ? 'completed' : 'planToWatch'
+        groups[groupKey].push(item)
+        return groups
+      }, { completed: [], planToWatch: [] })
+    },
+    [myList, selectedPerson, watchHistory],
+  )
   const isPeopleSearchPending = normalizedQuery.length >= 2
     && (peopleSearch.query !== normalizedQuery || peopleSearch.status === 'loading')
   const shouldSuppressTitleEmptyState = normalizedQuery
     && !selectedPerson
     && results.length === 0
-    && (peopleSearch.people.length > 0 || isPeopleSearchPending || looksLikePersonName(deferredQuery))
+    && (visiblePeople.length > 0 || isPeopleSearchPending || looksLikePersonName(deferredQuery))
   const isServerSearchPending = normalizedQuery.length >= 2
     && (serverSearch.query !== normalizedQuery || serverSearch.status === 'loading')
   const resultKey = `${initialFilter?.type || 'all'}:${initialFilter?.value || 'all'}:${normalizedQuery}:${selectedPerson?.id || 'catalog'}:${displayResults.length}`
@@ -88,8 +107,11 @@ function SearchResultsPage({
   )
   const hasMoreResults = visibleResults.length < displayResults.length
   const hydrationItems = useMemo(
-    () => currentBatchResults.filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
-    [currentBatchResults],
+    () => {
+      const itemsToHydrate = selectedPerson ? displayResults : currentBatchResults
+      return itemsToHydrate.filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved)
+    },
+    [currentBatchResults, displayResults, selectedPerson],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
   const showLoadingShimmer = catalogData.isLoading && !catalogItems.length
@@ -114,11 +136,7 @@ function SearchResultsPage({
   }, [deferredQuery, normalizedQuery, onSearchCatalog])
 
   useEffect(() => {
-    setSelectedPersonId(initialPersonId || null)
-    if (!authToken || normalizedQuery.length < 2) {
-      setPeopleSearch({ people: [], query: normalizedQuery, status: 'idle' })
-      return undefined
-    }
+    if (!authToken || normalizedQuery.length < 2) return undefined
 
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => {
@@ -139,14 +157,7 @@ function SearchResultsPage({
       controller.abort()
       window.clearTimeout(timeoutId)
     }
-  }, [authToken, deferredQuery, filteredCatalogItems, initialPersonId, normalizedQuery])
-
-  useEffect(() => {
-    if (!initialPersonId || peopleSearch.query !== normalizedQuery || peopleSearch.status !== 'ready') return
-    if (peopleSearch.people.some((person) => person.id === initialPersonId)) {
-      setSelectedPersonId(initialPersonId)
-    }
-  }, [initialPersonId, normalizedQuery, peopleSearch])
+  }, [authToken, deferredQuery, filteredCatalogItems, normalizedQuery])
 
   useEffect(() => {
     if (!hydrationKey || hydrationKey === requestedHydrationKey.current) return
@@ -184,6 +195,7 @@ function SearchResultsPage({
 
   function handleQueryChange(nextQuery) {
     setQuery(nextQuery)
+    setManualPersonSelection({ id: null, query: '' })
   }
 
   return (
@@ -213,6 +225,7 @@ function SearchResultsPage({
             onSearchCatalog={onSearchCatalog}
             onSubmit={(nextQuery) => {
               setQuery(nextQuery)
+              setManualPersonSelection({ id: null, query: '' })
               onQueryChange(nextQuery)
             }}
             query={query}
@@ -260,17 +273,17 @@ function SearchResultsPage({
           </div>
         )}
 
-        {!showLoadingShimmer && normalizedQuery && peopleSearch.people.length > 0 && (
+        {!showLoadingShimmer && normalizedQuery && visiblePeople.length > 0 && (
           <section className="people-search-section" aria-label="People">
             <div className="people-search-heading">
               <h2>People</h2>
             </div>
             <div className="people-search-list">
-              {peopleSearch.people.map((person) => (
+              {visiblePeople.map((person) => (
                 <button
                   className={`person-search-card ${selectedPersonId === person.id ? 'active' : ''}`}
                   key={person.id}
-                  onClick={() => setSelectedPersonId(person.id)}
+                  onClick={() => setManualPersonSelection({ id: person.id, query: normalizedQuery })}
                   type="button"
                 >
                   <span className="person-search-avatar">
@@ -293,7 +306,34 @@ function SearchResultsPage({
           </div>
         )}
 
-        {!showLoadingShimmer && displayResults.length > 0 && (
+        {!showLoadingShimmer && selectedPerson && displayResults.length > 0 && (
+          <div className="actor-project-sections">
+            <ActorProjectSection
+              emptyText={`Belum ada proyek ${selectedPerson.name} yang belum ditonton.`}
+              isAdmin={isAdmin}
+              items={actorProjectGroups.planToWatch}
+              myList={myList}
+              onOpenCatalogEdit={onOpenCatalogEdit}
+              onOpenContextMenu={onOpenContextMenu}
+              onOpenDetail={onOpenDetail}
+              title="Belum Ditonton"
+              watchHistory={watchHistory}
+            />
+            <ActorProjectSection
+              emptyText={`Belum ada proyek ${selectedPerson.name} yang sudah ditonton.`}
+              isAdmin={isAdmin}
+              items={actorProjectGroups.completed}
+              myList={myList}
+              onOpenCatalogEdit={onOpenCatalogEdit}
+              onOpenContextMenu={onOpenContextMenu}
+              onOpenDetail={onOpenDetail}
+              title="Sudah Ditonton"
+              watchHistory={watchHistory}
+            />
+          </div>
+        )}
+
+        {!showLoadingShimmer && !selectedPerson && displayResults.length > 0 && (
           <>
             <div className="search-results-grid">
               {visibleResults.map((item) => (
@@ -368,6 +408,47 @@ export const SearchResultCard = memo(function SearchResultCard({ isAdmin = false
     </article>
   )
 })
+
+function ActorProjectSection({
+  emptyText,
+  isAdmin,
+  items,
+  myList,
+  onOpenCatalogEdit,
+  onOpenContextMenu,
+  onOpenDetail,
+  title,
+  watchHistory,
+}) {
+  return (
+    <section className="actor-project-section" aria-label={title}>
+      <div className="actor-project-heading">
+        <h2>{title}</h2>
+        <strong>{items.length}</strong>
+      </div>
+      {items.length > 0 ? (
+        <div className="search-results-grid actor-project-grid">
+          {items.map((item) => (
+            <SearchResultCard
+              item={item}
+              isAdmin={isAdmin}
+              key={getItemKey(item)}
+              myList={myList}
+              onOpenEdit={onOpenCatalogEdit}
+              onOpenContextMenu={onOpenContextMenu}
+              onOpenDetail={onOpenDetail}
+              watchHistory={watchHistory}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="actor-project-empty">
+          <p>{emptyText}</p>
+        </div>
+      )}
+    </section>
+  )
+}
 
 function SearchResultsShimmer() {
   return (
