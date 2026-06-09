@@ -5,7 +5,6 @@ import LoadableImage from '../components/LoadableImage'
 import ProfileMenu from '../components/ProfileMenu'
 import { fetchTmdbPeopleSearch, fetchTmdbPersonCombinedCredits } from '../services/api'
 import {
-  getGenres,
   getItemKey,
   getMediaType,
   getPersonFallbackUrl,
@@ -322,7 +321,6 @@ export const SearchResultCard = memo(function SearchResultCard({ isAdmin = false
   const poster = getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)
-  const genres = getGenres(item)
   const isCompleted = isCatalogItemCompleted(item, { myList, watchHistory })
 
   return (
@@ -350,7 +348,6 @@ export const SearchResultCard = memo(function SearchResultCard({ isAdmin = false
         </span>
         <span className="search-result-copy">
           <strong>{title}</strong>
-          <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
         </span>
       </button>
       {isAdmin && (

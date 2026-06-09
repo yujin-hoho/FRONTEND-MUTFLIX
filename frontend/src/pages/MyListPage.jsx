@@ -4,7 +4,7 @@ import LoadableImage from '../components/LoadableImage'
 import ProfileMenu from '../components/ProfileMenu'
 import SearchBox from '../components/search/SearchBox'
 import { fetchMyList, fetchMyListCounts } from '../services/api'
-import { getCatalogIdentityKey, getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
+import { getCatalogIdentityKey, getItemKey, getPosterUrl, getRating, getTitle, isCatalogItemCompleted } from '../utils/media'
 
 const MY_LIST_STATUSES = ['plan_to_watch', 'completed']
 const MY_LIST_BATCH_SIZE = 16
@@ -236,7 +236,6 @@ function MyListState({ text }) {
 }
 
 const MyListCard = memo(function MyListCard({ activeStatus, completedContextItems, item, onOpenContextMenu, onOpenDetail, watchHistory }) {
-  const genres = getGenres(item)
   const poster = getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)
@@ -269,7 +268,6 @@ const MyListCard = memo(function MyListCard({ activeStatus, completedContextItem
       </span>
       <span className="my-list-copy">
         <strong>{title}</strong>
-        <span>{getMediaType(item) === 'movie' ? 'Movie' : 'Series'}{genres[0] ? ` / ${genres[0]}` : ''}</span>
       </span>
     </button>
   )

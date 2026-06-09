@@ -1031,6 +1031,8 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
       tmdb_rating: metadata.vote_average || item.tmdb_rating,
       tmdb_genres: metadata.genres?.length ? metadata.genres : item.tmdb_genres || [],
       tmdb_original_language: metadata.original_language || item.tmdb_original_language,
+      release_date: metadata.release_date || metadata.first_air_date || item.release_date,
+      first_air_date: metadata.first_air_date || metadata.release_date || item.first_air_date,
       origin_country: item.origin_country?.length ? item.origin_country : metadata.origin_country || [],
       production_countries: item.production_countries?.length ? item.production_countries : metadata.production_countries || [],
       media_type: metadataMediaType,
@@ -1156,6 +1158,8 @@ function getCatalogMetadataFromTmdb(meta) {
     tmdb_rating: meta.vote_average,
     tmdb_genres: meta.genres,
     tmdb_original_language: meta.original_language,
+    release_date: meta.release_date,
+    first_air_date: meta.first_air_date,
     origin_country: meta.origin_country,
     production_countries: meta.production_countries,
   }

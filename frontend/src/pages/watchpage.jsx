@@ -83,10 +83,12 @@ function WatchPage({
   videos,
   watchHistory = [],
 }) {
+  const mountedResumePositionSeconds = getResumePositionSeconds(resumeEntry)
   const playerRef = useRef(null)
   const shellRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const streamStallTimeoutRef = useRef(null)
+  const activeVideoPathRef = useRef('')
   const fallbackStreamUrlRef = useRef('')
   const fallbackPositionRef = useRef(null)
   const sourceDurationRef = useRef(0)
@@ -117,7 +119,9 @@ function WatchPage({
   const lastSavedPositionRef = useRef(-1)
   const lastForcedSaveRef = useRef({ positionMs: -1, savedAt: 0 })
   const restoredPositionRef = useRef(false)
-  const initialResumePositionRef = useRef(Number(resumeEntry?.position_ms || 0) / 1000)
+  const latestResumePositionRef = useRef(mountedResumePositionSeconds)
+  const initialResumePositionRef = useRef(mountedResumePositionSeconds)
+  const appliedResumePositionRef = useRef(mountedResumePositionSeconds)
   const progressContextRef = useRef(null)
   const [streamUrl, setStreamUrl] = useState('')
   const [subtitleUrl, setSubtitleUrl] = useState('')
@@ -525,7 +529,7 @@ function WatchPage({
     audioTranscodeBaseUrlRef.current = ''
     audioTranscodeStartUrlRef.current = ''
     cancelAudioTranscodeStartRequest()
-    initialResumePositionRef.current = Number(resumeEntry?.position_ms || 0) / 1000
+    initialResumePositionRef.current = latestResumePositionRef.current
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     clearStreamStallTimeout()
@@ -594,6 +598,31 @@ function WatchPage({
     progressContextRef.current = { item, profileId, video }
   }, [item, profileId, video])
 
+  useEffect(() => {
+    latestResumePositionRef.current = mountedResumePositionSeconds
+  }, [mountedResumePositionSeconds])
+
+  useEffect(() => {
+    if (mountedResumePositionSeconds <= 0 || !streamUrl) return
+
+    const player = playerRef.current
+    if (!player) return
+    if (activeVideoPathRef.current !== videoPath) return
+
+    const playbackDuration = duration || getPlaybackDuration(player.duration, sourceDurationRef.current, audioTranscodeOffsetRef.current)
+    if (playbackDuration > 0 && mountedResumePositionSeconds >= playbackDuration - 2) return
+    if (Math.abs(appliedResumePositionRef.current - mountedResumePositionSeconds) < 1) return
+
+    const currentPlaybackPosition = getPlaybackPosition(player, audioTranscodeOffsetRef.current)
+    if (currentPlaybackPosition > 30 || isSeekBarActiveRef.current || isSeekingRef.current) return
+
+    appliedResumePositionRef.current = mountedResumePositionSeconds
+    initialResumePositionRef.current = mountedResumePositionSeconds
+    fallbackPositionRef.current = mountedResumePositionSeconds
+    restoredPositionRef.current = false
+    seekToPlaybackTime(mountedResumePositionSeconds)
+  }, [duration, mountedResumePositionSeconds, seekToPlaybackTime, streamUrl, videoPath])
+
   useEffect(() => clearStreamStallTimeout, [clearStreamStallTimeout])
 
   useEffect(() => () => window.clearTimeout(seekPreviewTimeoutRef.current), [])
@@ -606,6 +635,7 @@ function WatchPage({
     let ignore = false
     let nextSubtitleUrl = ''
 
+    activeVideoPathRef.current = videoPath
     clearStreamStallTimeout()
     fallbackStreamUrlRef.current = ''
     fallbackPositionRef.current = null
@@ -648,9 +678,13 @@ function WatchPage({
     externalSubtitleCuesRef.current = []
     selectedSubtitleIdRef.current = ''
 
+    const initialResumeSeconds = latestResumePositionRef.current
+    initialResumePositionRef.current = initialResumeSeconds
+    appliedResumePositionRef.current = initialResumeSeconds
+
     const playbackSourcePromise = loadPlaybackSource(null, {
       autoplay: true,
-      startSeconds: initialResumePositionRef.current,
+      startSeconds: initialResumeSeconds,
     })
 
     fetchPlaybackMarkers(authToken, markerFolderName).then((nextMarkers) => {
@@ -700,7 +734,7 @@ function WatchPage({
       cancelAudioTranscodeStartRequest()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath, videoPath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -863,8 +897,9 @@ function WatchPage({
       const fallbackSeconds = fallbackPositionRef.current
       const targetSeconds = Number.isFinite(fallbackSeconds)
         ? fallbackSeconds
-        : Number(resumeEntry?.position_ms || 0) / 1000
+        : latestResumePositionRef.current
       if (targetSeconds > 0 && targetSeconds < playbackDuration - 2) {
+        appliedResumePositionRef.current = targetSeconds
         if (restartAudioTranscodeAt(targetSeconds, { autoplay: true, immediate: true })) return
         isSeekingRef.current = true
         pendingInitialSeekRef.current = true
@@ -1665,6 +1700,11 @@ function clampPlaybackSeekTime(seconds, duration = 0) {
     ? Math.max(0, maxDuration - 0.1)
     : Number.MAX_SAFE_INTEGER
   return Math.min(upperBound, Math.max(0, numericSeconds))
+}
+
+function getResumePositionSeconds(resumeEntry) {
+  const positionMs = Number(resumeEntry?.position_ms || 0)
+  return Number.isFinite(positionMs) && positionMs > 0 ? positionMs / 1000 : 0
 }
 
 function getPlaybackDuration(playerDuration, sourceDuration, sourceOffset = 0) {

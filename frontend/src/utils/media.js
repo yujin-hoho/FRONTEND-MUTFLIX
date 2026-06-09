@@ -134,6 +134,39 @@ export function getRating(item) {
   return Number(item.tmdb_rating || item.vote_average || 0)
 }
 
+export function getReleaseSortValue(item) {
+  const releaseDate = getReleaseDate(item)
+  const parsedDate = Date.parse(releaseDate)
+  if (Number.isFinite(parsedDate)) return parsedDate
+
+  const year = getReleaseYear(item)
+  return year > 0 ? Date.UTC(year, 0, 1) : 0
+}
+
+export function getReleaseDate(item = {}) {
+  return getMediaType(item) === 'movie'
+    ? item.release_date || item.tmdb_release_date || item.first_air_date || ''
+    : item.first_air_date || item.tmdb_first_air_date || item.release_date || ''
+}
+
+export function getReleaseYear(item = {}) {
+  const explicitYear = Number(item.release_year || item.tmdb_year || item.year || 0)
+  if (explicitYear > 0) return explicitYear
+
+  const dateYear = Number(String(getReleaseDate(item)).slice(0, 4))
+  if (dateYear > 0) return dateYear
+
+  const titleYear = String(item.folder_name || item.name || item.title || '').match(/\b(19|20)\d{2}\b/)
+  return titleYear ? Number(titleYear[0]) : 0
+}
+
+export function sortByNewestRelease(items = []) {
+  return [...items].sort((firstItem, secondItem) => (
+    getReleaseSortValue(secondItem) - getReleaseSortValue(firstItem)
+    || getTitle(firstItem).localeCompare(getTitle(secondItem))
+  ))
+}
+
 export function getWatchProgress(item) {
   const position = Number(item.position_ms || 0)
   const duration = Number(item.duration_ms || 0)

@@ -1,4 +1,4 @@
-import { getCatalogIdentityKey, getGenres, getMediaType, getRating } from './media'
+import { getCatalogIdentityKey, getGenres, getMediaType, getRating, sortByNewestRelease } from './media'
 
 export function normalizeSearchQuery(value) {
   return String(value || '')
@@ -53,16 +53,16 @@ export function filterCatalogItems(items, filter) {
   const normalizedValue = normalizeSearchQuery(filter.value)
 
   if (filter.type === 'type') {
-    return items.filter((item) => (
+    return sortByNewestRelease(items.filter((item) => (
       getMediaType(item) === normalizedValue
       && (normalizedValue !== 'series' || !isVarietyShow(item))
-    ))
+    )))
   }
   if (filter.type === 'genre') {
-    return items.filter((item) => getGenres(item).some((genre) => normalizeSearchQuery(genre) === normalizedValue))
+    return sortByNewestRelease(items.filter((item) => getGenres(item).some((genre) => normalizeSearchQuery(genre) === normalizedValue)))
   }
   if (filter.type === 'category' && normalizedValue === 'variety show') {
-    return items.filter(isVarietyShow)
+    return sortByNewestRelease(items.filter(isVarietyShow))
   }
   return items
 }

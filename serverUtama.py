@@ -4,7 +4,6 @@ import re
 import json
 import pickle
 import base64
-import queue
 import time
 import hashlib
 import hmac
@@ -225,20 +224,13 @@ TMDB_HTTP_RETRIES = max(0, int(os.environ.get('TMDB_HTTP_RETRIES', '1')))
 TMDB_HTTP_BACKOFF_SECONDS = max(0.0, float(os.environ.get('TMDB_HTTP_BACKOFF_SECONDS', '0.35')))
 SEARCH_RESPONSE_CACHE_TTL_SECONDS = 30
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
-AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '160k')
-AUDIO_TRANSCODE_AAC_CODER = os.environ.get('AUDIO_TRANSCODE_AAC_CODER', 'fast').strip()
-AUDIO_TRANSCODE_CHUNK_BYTES = max(64 * 1024, int(os.environ.get('AUDIO_TRANSCODE_CHUNK_BYTES', str(512 * 1024))))
-AUDIO_TRANSCODE_BUFFER_BYTES = max(AUDIO_TRANSCODE_CHUNK_BYTES, int(os.environ.get('AUDIO_TRANSCODE_BUFFER_BYTES', str(64 * 1024 * 1024))))
-AUDIO_TRANSCODE_BUFFER_CHUNKS = max(1, (AUDIO_TRANSCODE_BUFFER_BYTES + AUDIO_TRANSCODE_CHUNK_BYTES - 1) // AUDIO_TRANSCODE_CHUNK_BYTES)
-AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS = max(1_000_000, int(os.environ.get('AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS', '30000000')))
+AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
 AUDIO_TRANSCODE_SLOT_WAIT_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_SLOT_WAIT_SECONDS', '3')))
 AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS = max(5, int(os.environ.get('AUDIO_TRANSCODE_PROBE_TIMEOUT_SECONDS', '25')))
-AUDIO_TRANSCODE_INPUT_PROBESIZE = max(32 * 1024, int(os.environ.get('AUDIO_TRANSCODE_INPUT_PROBESIZE', str(512 * 1024))))
-AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION = max(0, int(os.environ.get('AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION', '1000000')))
 AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS = max(60, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS', '86400')))
-AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '10')))
-AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '180')))
+AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS', '6')))
+AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS = max(1.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS', '60')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS = max(1, int(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS', '1')))
 AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS', '0.35')))
 EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS = max(300, int(os.environ.get('EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS', str(7 * 24 * 60 * 60))))
@@ -379,6 +371,7 @@ _markers_lock = threading.Lock()
 _response_cache = {}       # {cache_key: orjson_bytes}
 _response_cache_ts = {}    # {cache_key: timestamp}
 _response_lock = threading.Lock()
+FOLDERS_MERGED_RESPONSE_CACHE_KEY = 'resp_folders_merged_v2'
 
 # === TMDB OVERRIDE RAM CACHE ===
 # Avoids DB reads + deepcopy/merge work on every /api/folders request.
@@ -415,9 +408,6 @@ _gdrive_file_metadata_cache_lock = threading.Lock()
 _gdrive_file_metadata_key_locks = {}
 _gdrive_file_metadata_key_locks_lock = threading.Lock()
 _browser_supported_audio_codecs = frozenset({'aac', 'mp3', 'mp2', 'opus', 'vorbis'})
-_audio_transcode_expensive_codecs = frozenset({'truehd', 'mlp', 'dts', 'dca', 'flac'})
-_audio_transcode_lighter_codecs = frozenset({'aac', 'ac3', 'eac3', 'mp3', 'mp2', 'opus', 'vorbis'})
-_audio_transcode_non_primary_terms = ('commentary', 'director', 'descriptive', 'description')
 
 # === USER DATA RAM CACHE (profiles, mylist) ===
 # Per-user caching — eliminates DB roundtrip (~100-200ms saved per request)
@@ -444,9 +434,9 @@ def _invalidate_response_cache_prefix(prefix):
 def _response_keys_for_data_cache(key):
     """Map shared data-cache keys to per-worker serialized response keys."""
     if key == 'folders_list':
-        return ('resp_folders', 'resp_folders_merged')
+        return ('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
     if key == 'content_releases':
-        return ('resp_releases', 'resp_folders_merged')
+        return ('resp_releases', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
     if isinstance(key, str) and key.startswith('videos_'):
         return (f'resp_{key}',)
     return ()
@@ -486,26 +476,29 @@ def _subtitle_map_cache_valid(cache_ts, folder_name, cache_value):
 def _invalidate_user_cache(cache_type, cache_key):
     """Cross-worker invalidation: Redis + diskcache + RAM."""
     now = time.time()
-    inv_key = f"_inv_{cache_type}_{cache_key}"
-    try:
-        disk_cache.set(inv_key, now, expire=3600)  # TTL 1 jam
-    except: pass
+    cache_keys = [cache_key]
+    if cache_type == 'mylist' and not cache_key.endswith(('_all', '_plan_to_watch', '_completed')):
+        cache_keys = [f"{cache_key}_{status}" for status in ('all', 'plan_to_watch', 'completed')]
+
+    for next_cache_key in cache_keys:
+        inv_key = f"_inv_{cache_type}_{next_cache_key}"
+        try:
+            disk_cache.set(inv_key, now, expire=3600)  # TTL 1 jam
+        except: pass
     # === REDIS INVALIDATION ===
     if cache_type == 'profiles':
         redis_delete(f"profiles:{cache_key}")
     elif cache_type == 'mylist':
-        redis_delete(f"mylist:{cache_key}")
+        for next_cache_key in cache_keys:
+            redis_delete(f"mylist:{next_cache_key}")
     with _user_data_lock:
         if cache_type == 'profiles':
             _user_profiles_cache.pop(cache_key, None)
             _user_profiles_cache_ts.pop(cache_key, None)
         elif cache_type == 'mylist':
-            _user_mylist_cache.pop(cache_key, None)
-            _user_mylist_cache_ts.pop(cache_key, None)
-
-def _invalidate_mylist_cache(cache_key):
-    for key in (cache_key, f"{cache_key}_plan_to_watch", f"{cache_key}_completed", f"{cache_key}_counts"):
-        _invalidate_user_cache('mylist', key)
+            for next_cache_key in cache_keys:
+                _user_mylist_cache.pop(next_cache_key, None)
+                _user_mylist_cache_ts.pop(next_cache_key, None)
 
 def _is_user_cache_valid(cache_type, cache_key):
     """Cek apakah RAM cache masih valid vs cross-worker invalidation.
@@ -732,8 +725,8 @@ def init_db():
                 id {pk_type},
                 folder_name VARCHAR(255) UNIQUE NOT NULL,
                 tmdb_query VARCHAR(255) NOT NULL,
-                tmdb_id INTEGER,
                 media_type VARCHAR(20) DEFAULT 'tv',
+                tmdb_id INTEGER,
                 override_year INTEGER,
                 override_language VARCHAR(10),
                 include_adult BOOLEAN DEFAULT FALSE,
@@ -1241,15 +1234,15 @@ def _tmdb_meta_cache_key(media_type, folder_name, override):
     override_snapshot = None
     if override:
         override_snapshot = {
-            'tmdb_query': override.get('tmdb_query'),
             'tmdb_id': override.get('tmdb_id'),
+            'tmdb_query': override.get('tmdb_query'),
             'override_year': override.get('override_year'),
             'override_language': override.get('override_language'),
             'include_adult': override.get('include_adult'),
             'override_region': override.get('override_region'),
         }
     normalized = {
-        'v': 1,
+        'v': 2,
         'media_type': media_type,
         'folder_name': folder_name,
         'override': override_snapshot,
@@ -1373,6 +1366,15 @@ def _tmdb_bool(value):
         return value.strip().lower() in ('1', 'true', 'yes', 'on')
     return False
 
+def _positive_int_or_none(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+        return parsed if parsed > 0 else None
+    except (TypeError, ValueError):
+        return None
+
 def _get_tmdb_http_session():
     """Return a per-thread TMDB session with small, bounded transient retries."""
     session = getattr(_tmdb_http_local, 'session', None)
@@ -1452,24 +1454,6 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
         detail_prefix = 'movie'
         detail_params = {'append_to_response': 'videos'}
 
-    override_tmdb_id = override.get('tmdb_id') if override else None
-    try:
-        override_tmdb_id = int(override_tmdb_id) if override_tmdb_id else None
-    except Exception:
-        override_tmdb_id = None
-
-    if override_tmdb_id:
-        detail_status, detail_data = _fetch_tmdb_json_server(f'{detail_prefix}/{override_tmdb_id}', detail_params)
-        if detail_status != 200:
-            return detail_status, {
-                'error': 'TMDB detail failed',
-                'status': detail_status,
-                'folder_name': folder_name,
-                'query': query,
-                'tmdb_id': override_tmdb_id,
-            }
-        return 200, detail_data
-
     if override:
         language = (override.get('override_language') or '').strip()
         if language:
@@ -1479,6 +1463,22 @@ def _resolve_tmdb_meta(media_type, folder_name, override):
         region = (override.get('override_region') or '').strip()
         if media_type == 'movie' and region:
             search_params['region'] = region
+
+    override_tmdb_id = _positive_int_or_none(override.get('tmdb_id')) if override else None
+    if override_tmdb_id:
+        detail_status, detail_data = _fetch_tmdb_json_server(
+            f'{detail_prefix}/{override_tmdb_id}',
+            detail_params,
+        )
+        if detail_status != 200:
+            return detail_status, {
+                'error': 'TMDB detail failed',
+                'status': detail_status,
+                'folder_name': folder_name,
+                'query': query,
+                'tmdb_id': override_tmdb_id,
+            }
+        return 200, detail_data
 
     search_status, search_data = _fetch_tmdb_json_server(search_path, search_params)
     if search_status != 200:
@@ -1802,7 +1802,7 @@ def get_tmdb_overrides(current_user):
     """Get all TMDB query overrides. Any authenticated user can read."""
     conn, db_type = get_db_connection()
     try:
-        select_cols = 'folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region'
+        select_cols = 'folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region'
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(f'SELECT {select_cols} FROM tmdb_overrides ORDER BY folder_name')
@@ -1831,11 +1831,7 @@ def set_tmdb_override(current_user):
     folder_name = (data.get('folder_name') or '').strip()
     tmdb_query = (data.get('tmdb_query') or '').strip()
     media_type = str(data.get('media_type') or 'tv').strip() or 'tv'
-    tmdb_id = data.get('tmdb_id')
-    try:
-        tmdb_id = int(tmdb_id) if tmdb_id else None
-    except Exception:
-        tmdb_id = None
+    tmdb_id = _positive_int_or_none(data.get('tmdb_id'))
     override_year = data.get('override_year')  # int or None
     override_language = (data.get('override_language') or '').strip() or None
     include_adult = bool(data.get('include_adult', False))
@@ -1851,24 +1847,26 @@ def set_tmdb_override(current_user):
         
         if db_type == 'postgres':
             cur.execute(f"""
-                INSERT INTO tmdb_overrides (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, updated_by, updated_at)
+                INSERT INTO tmdb_overrides (folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region, updated_by, updated_at)
                 VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, NOW())
                 ON CONFLICT (folder_name) DO UPDATE SET 
-                    tmdb_query = EXCLUDED.tmdb_query, tmdb_id = EXCLUDED.tmdb_id, media_type = EXCLUDED.media_type,
+                    tmdb_query = EXCLUDED.tmdb_query, media_type = EXCLUDED.media_type,
+                    tmdb_id = EXCLUDED.tmdb_id,
                     override_year = EXCLUDED.override_year, override_language = EXCLUDED.override_language,
                     include_adult = EXCLUDED.include_adult, override_region = EXCLUDED.override_region,
                     updated_by = EXCLUDED.updated_by, updated_at = NOW()
-            """, (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
+            """, (folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region, current_user['id']))
         else:
             cur.execute(f"""
-                INSERT INTO tmdb_overrides (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, updated_by)
+                INSERT INTO tmdb_overrides (folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region, updated_by)
                 VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
                 ON CONFLICT (folder_name) DO UPDATE SET 
-                    tmdb_query = excluded.tmdb_query, tmdb_id = excluded.tmdb_id, media_type = excluded.media_type,
+                    tmdb_query = excluded.tmdb_query, media_type = excluded.media_type,
+                    tmdb_id = excluded.tmdb_id,
                     override_year = excluded.override_year, override_language = excluded.override_language,
                     include_adult = excluded.include_adult, override_region = excluded.override_region,
                     updated_by = excluded.updated_by
-            """, (folder_name, tmdb_query, tmdb_id, media_type, override_year, override_language, include_adult, override_region, current_user['id']))
+            """, (folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region, current_user['id']))
         
         conn.commit()
         _invalidate_tmdb_override_cache()
@@ -1908,7 +1906,7 @@ def _invalidate_tmdb_override_cache():
         _tmdb_overrides_ts = 0
         _tmdb_overrides_retry_after = 0
     redis_delete("tmdb_overrides:all")
-    _invalidate_response_cache('resp_folders', 'resp_folders_merged')
+    _invalidate_response_cache('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
 
 def _get_tmdb_overrides_map():
     global _tmdb_overrides_cache, _tmdb_overrides_ts, _tmdb_overrides_retry_after
@@ -1938,7 +1936,7 @@ def _get_tmdb_overrides_map():
             if now < _tmdb_overrides_retry_after:
                 return _tmdb_overrides_cache or {}
 
-        select_cols = 'folder_name, tmdb_query, media_type, override_year, override_language, include_adult, override_region'
+        select_cols = 'folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region'
         last_error = None
         for attempt in range(3):
             conn, db_type = None, None
@@ -1991,8 +1989,8 @@ def _merge_tmdb_overrides_into_folders(all_c):
                     continue
                 o = by_name[name]
                 item['tmdb_query'] = o['tmdb_query']
-                item['tmdb_override_id'] = o.get('tmdb_id')
                 item['tmdb_override_media_type'] = (o.get('media_type') or 'tv').strip()
+                item['tmdb_id'] = o.get('tmdb_id')
                 item['override_year'] = o.get('override_year')
                 item['override_region'] = o.get('override_region')
                 item['override_language'] = o.get('override_language')
@@ -2062,6 +2060,10 @@ def _merge_content_release_tmdb_into_folders(all_c):
                     item['tmdb_overview'] = rel['tmdb_overview']
                 if rel.get('tmdb_rating') is not None:
                     item['tmdb_rating'] = rel['tmdb_rating']
+                if rel.get('release_date'):
+                    item['release_date'] = rel['release_date']
+                    if item.get('media_type') in ('tv', 'series') or item.get('type') == 'series':
+                        item['first_air_date'] = rel['release_date']
     except Exception as e:
         print(f"[CONTENT-RELEASES] merge TMDB metadata into folders failed: {e}", flush=True)
     return all_c
@@ -2767,11 +2769,11 @@ def delete_history(current_user):
 @token_required(check_expiry=True)
 def get_mylist(current_user):
     profile_id = request.args.get('profile_id')
-    status_filter = request.args.get('status')
-    if status_filter and status_filter not in ('plan_to_watch', 'completed'):
+    status = request.args.get('status')
+    if status and status not in ('plan_to_watch', 'completed'):
         return orjson_jsonify({"message": "Invalid status"}, 400)
-    base_cache_key = f"{current_user['id']}_{profile_id}"
-    cache_key = f"{base_cache_key}_{status_filter}" if status_filter else base_cache_key
+
+    cache_key = f"{current_user['id']}_{profile_id}_{status or 'all'}"
     redis_key = f"mylist:{cache_key}"
     
     # Tier 0: RAM
@@ -2792,12 +2794,13 @@ def get_mylist(current_user):
     conn, db_type = get_db_connection()
     try:
         ph = '%s' if db_type == 'postgres' else '?'
-        sql = f"SELECT folder_name, media_type, meta_json, COALESCE(status, 'plan_to_watch') as status FROM my_list WHERE user_id = {ph} AND profile_id = {ph}"
+        where_clauses = [f"user_id = {ph}", f"profile_id = {ph}"]
         params = [current_user['id'], profile_id]
-        if status_filter:
-            sql += f" AND COALESCE(status, 'plan_to_watch') = {ph}"
-            params.append(status_filter)
-        sql += " ORDER BY added_at DESC"
+        if status:
+            where_clauses.append(f"COALESCE(status, 'plan_to_watch') = {ph}")
+            params.append(status)
+
+        sql = f"SELECT folder_name, media_type, meta_json, COALESCE(status, 'plan_to_watch') as status FROM my_list WHERE {' AND '.join(where_clauses)} ORDER BY added_at DESC"
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(sql, tuple(params))
@@ -2824,44 +2827,28 @@ def get_mylist_counts(current_user):
     if not profile_id:
         return orjson_jsonify({"message": "Missing profile_id"}, 400)
 
-    cache_key = f"{current_user['id']}_{profile_id}_counts"
-    redis_key = f"mylist:{cache_key}"
-
-    cached = _user_mylist_cache.get(cache_key)
-    if cached is not None and _is_user_cache_valid('mylist', cache_key):
-        return orjson_jsonify(cached)
-
-    redis_data = redis_get(redis_key)
-    if redis_data is not None:
-        now = time.time()
-        with _user_data_lock:
-            _user_mylist_cache[cache_key] = redis_data
-            _user_mylist_cache_ts[cache_key] = now
-        return orjson_jsonify(redis_data)
-
+    counts = {'completed': 0, 'plan_to_watch': 0}
     conn, db_type = get_db_connection()
     try:
         ph = '%s' if db_type == 'postgres' else '?'
-        sql = f"SELECT COALESCE(status, 'plan_to_watch') as status, COUNT(*) as count FROM my_list WHERE user_id = {ph} AND profile_id = {ph} GROUP BY COALESCE(status, 'plan_to_watch')"
+        sql = f"""
+            SELECT COALESCE(status, 'plan_to_watch') as status, COUNT(*) as count
+            FROM my_list
+            WHERE user_id = {ph} AND profile_id = {ph}
+            GROUP BY COALESCE(status, 'plan_to_watch')
+        """
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute(sql, (current_user['id'], profile_id))
-            rows = [dict(r) for r in cur.fetchall()]
+            rows = cur.fetchall()
         else:
-            rows = [dict(r) for r in conn.execute(sql, (current_user['id'], profile_id)).fetchall()]
+            rows = conn.execute(sql, (current_user['id'], profile_id)).fetchall()
 
-        counts = {'completed': 0, 'plan_to_watch': 0}
         for row in rows:
-            status = row.get('status')
+            status = row['status'] if isinstance(row, dict) else row[0]
+            count = row['count'] if isinstance(row, dict) else row[1]
             if status in counts:
-                counts[status] = int(row.get('count') or 0)
-
-        now = time.time()
-        with _user_data_lock:
-            _user_mylist_cache[cache_key] = counts
-            _user_mylist_cache_ts[cache_key] = now
-
-        redis_set(redis_key, counts, ttl_seconds=1800)
+                counts[status] = int(count or 0)
         return orjson_jsonify(counts)
     finally:
         release_db_connection(conn, db_type)
@@ -2883,7 +2870,7 @@ def add_to_mylist(current_user):
         conn.commit()
         # Cross-worker invalidate mylist cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
-        _invalidate_mylist_cache(cache_key)
+        _invalidate_user_cache('mylist', cache_key)
         return orjson_jsonify({"message": "Added"}, 201)
     except: return orjson_jsonify({"message": "Error"}, 500)
     finally: release_db_connection(conn, db_type)
@@ -2900,7 +2887,7 @@ def remove_from_mylist(current_user):
         conn.commit()
         # Cross-worker invalidate mylist cache
         cache_key = f"{current_user['id']}_{data['profile_id']}"
-        _invalidate_mylist_cache(cache_key)
+        _invalidate_user_cache('mylist', cache_key)
         return orjson_jsonify({"message": "Removed"})
     finally: release_db_connection(conn, db_type)
 
@@ -2926,7 +2913,7 @@ def update_mylist_status(current_user):
             return orjson_jsonify({"message": "Item not found"}, 404)
         conn.commit()
         cache_key = f"{current_user['id']}_{profile_id}"
-        _invalidate_mylist_cache(cache_key)
+        _invalidate_user_cache('mylist', cache_key)
         return orjson_jsonify({"message": "Updated"})
     except Exception as e:
         return orjson_jsonify({"message": f"Error: {e}"}, 500)
@@ -3788,7 +3775,7 @@ def background_cache_worker():
                                     if k not in old_keys: priority_new_items.add(k)
                             mem_set(folders_key, folders_data); updated_count += 1
                             # Invalidate pre-serialized response cache for folders
-                            _invalidate_response_cache('resp_folders', 'resp_folders_merged')
+                            _invalidate_response_cache('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
                             # Also refresh category folder IDs cache
                             _get_category_folder_ids(service)
                 finally: release_lock(folders_key)
@@ -3878,7 +3865,7 @@ def add_no_cache_headers(response): response.headers['Cache-Control'] = 'no-cach
 def get_folders(current_user):
     force = request.args.get('refresh', 'false').lower() == 'true'; key = "folders_list"
     if not force:
-        cached_bytes = _response_cache.get('resp_folders_merged')
+        cached_bytes = _response_cache.get(FOLDERS_MERGED_RESPONSE_CACHE_KEY)
         if cached_bytes:
             return add_no_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200))
 
@@ -3889,7 +3876,7 @@ def get_folders(current_user):
             payload = copy.deepcopy(cached)
             _merge_content_release_tmdb_into_folders(payload)
             _merge_tmdb_overrides_into_folders(payload)
-            return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
+            return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
@@ -3936,18 +3923,18 @@ def get_folders(current_user):
         all_c["movies"] = movies_dedup
 
         mem_set(key, all_c)
-        _invalidate_response_cache('resp_folders', 'resp_folders_merged')
+        _invalidate_response_cache('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         payload = copy.deepcopy(all_c)
         _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
-        return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
+        return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
     stale = mem_get(key)
     if stale:
         payload = copy.deepcopy(stale)
         _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
-        return add_no_cache_headers(orjson_jsonify(payload, cache_key='resp_folders_merged'))
+        return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
 
 @app.route("/api/videos/<path:folder_name>")
@@ -4208,59 +4195,24 @@ def get_gdrive_stream_details(current_user,file_path):
                     _gdrive_token = token
                     _gdrive_token_ts = time.time()
         
-        force_probe = request.args.get('refresh_probe', '').lower() in ('1', 'true', 'yes')
-        file_metadata = _get_gdrive_file_metadata(fid, force_probe=force_probe)
-        requested_audio_stream_index = _parse_audio_stream_index(request.args.get('audio_stream_index'))
-        audio_streams = file_metadata.get('audio_streams') if isinstance(file_metadata.get('audio_streams'), list) else []
-        selected_audio = _get_audio_stream_by_index(audio_streams, requested_audio_stream_index)
-        explicit_audio_selection = selected_audio is not None
-        primary_audio = _get_primary_audio_stream(file_metadata)
-        selected_audio = selected_audio or primary_audio
-        selected_audio_stream_index = selected_audio.get('index') if selected_audio else file_metadata.get('audio_stream_index')
-        primary_audio_stream_index = primary_audio.get('index') if primary_audio else file_metadata.get('audio_stream_index')
-        selected_audio_browser_supported = selected_audio.get('browser_supported') if selected_audio else file_metadata.get('browser_audio_supported')
-        audio_transcode_required = bool(
-            selected_audio
-            and (
-                not selected_audio_browser_supported
-                or (
-                    explicit_audio_selection
-                    and selected_audio_stream_index != primary_audio_stream_index
-                )
-            )
-        )
-        audio_transcode_stream_index = (
-            selected_audio_stream_index
-            if explicit_audio_selection
-            else file_metadata.get('audio_transcode_stream_index')
-        )
-        audio_transcode_query = f"stream_token={quote(_make_stream_token(fid), safe='')}"
-        if explicit_audio_selection:
-            audio_transcode_query += f"&audio_stream_index={quote(str(selected_audio_stream_index), safe='')}"
+        file_metadata = _get_gdrive_file_metadata(fid)
         file_name = request.args.get('file_name') or file_metadata.get('file_name', '')
         res = {
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
             "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
-            "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?{audio_transcode_query}",
-            "audio_transcode_start_url": f"/api/gdrive-audio-transcode-start/{fid}?{audio_transcode_query}",
+            "audio_transcode_url": f"/api/gdrive-audio-transcode/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
+            "audio_transcode_start_url": f"/api/gdrive-audio-transcode-start/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "embedded_subtitles_url": f"/api/gdrive-embedded-subtitles/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "hls_manifest_url": f"/api/hls-manifest/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
             "file_name": file_name,
             "duration_ms": file_metadata.get('duration_ms', 0),
-            "audio_codec": selected_audio.get('codec', '') if selected_audio else file_metadata.get('audio_codec', ''),
-            "audio_codec_label": _format_audio_codec_label(selected_audio) if selected_audio else file_metadata.get('audio_codec_label', ''),
-            "audio_channels": selected_audio.get('channels', 0) if selected_audio else file_metadata.get('audio_channels', 0),
-            "audio_profile": selected_audio.get('profile', '') if selected_audio else file_metadata.get('audio_profile', ''),
-            "audio_stream_index": primary_audio_stream_index,
-            "selected_audio_stream_index": selected_audio_stream_index,
-            "default_audio_stream_index": primary_audio_stream_index,
-            "audio_transcode_required": audio_transcode_required,
-            "audio_transcode_stream_index": audio_transcode_stream_index,
-            "audio_transcode_codec": selected_audio.get('codec', '') if explicit_audio_selection and selected_audio else file_metadata.get('audio_transcode_codec', ''),
-            "audio_transcode_codec_label": _format_audio_codec_label(selected_audio) if explicit_audio_selection and selected_audio else file_metadata.get('audio_transcode_codec_label', ''),
+            "audio_codec": file_metadata.get('audio_codec', ''),
+            "audio_codec_label": file_metadata.get('audio_codec_label', ''),
+            "audio_channels": file_metadata.get('audio_channels', 0),
+            "audio_profile": file_metadata.get('audio_profile', ''),
             "audio_probe_status": file_metadata.get('audio_probe_status', ''),
-            "audio_streams": audio_streams,
-            "browser_audio_supported": selected_audio_browser_supported,
+            "audio_streams": file_metadata.get('audio_streams', []),
+            "browser_audio_supported": file_metadata.get('browser_audio_supported'),
             "headers": {
                 "Authorization": f"Bearer {token}",
                 "User-Agent": "Mutflix/1.0" 
@@ -4309,25 +4261,23 @@ def _get_fresh_gdrive_token():
         _gdrive_token_ts = time.time()
         return token
 
-def _get_gdrive_file_metadata(fid, force_probe=False):
+def _get_gdrive_file_metadata(fid):
     now = time.time()
-    if not force_probe:
-        with _gdrive_file_metadata_cache_lock:
-            cached_metadata = _gdrive_file_metadata_cache.get(fid)
-            cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
-            if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
-                return cached_metadata
+    with _gdrive_file_metadata_cache_lock:
+        cached_metadata = _gdrive_file_metadata_cache.get(fid)
+        cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
+        if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
+            return cached_metadata
 
     with _gdrive_file_metadata_key_locks_lock:
         key_lock = _gdrive_file_metadata_key_locks.setdefault(fid, threading.Lock())
     with key_lock:
         now = time.time()
-        if not force_probe:
-            with _gdrive_file_metadata_cache_lock:
-                cached_metadata = _gdrive_file_metadata_cache.get(fid)
-                cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
-                if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
-                    return cached_metadata
+        with _gdrive_file_metadata_cache_lock:
+            cached_metadata = _gdrive_file_metadata_cache.get(fid)
+            cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
+            if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
+                return cached_metadata
 
         svc = get_gdrive_service()
         if not svc:
@@ -4362,34 +4312,17 @@ def _probe_gdrive_duration_ms(fid):
 def _probe_gdrive_media_metadata(fid):
     if not shutil.which("ffprobe"):
         return {"audio_probe_status": "ffprobe-unavailable", "duration_ms": 0}
-    last_result = {"audio_probe_status": "failed", "duration_ms": 0}
-    for attempt in range(2):
-        if attempt > 0:
-            with _gdrive_token_lock:
-                global _gdrive_token, _gdrive_token_ts
-                _gdrive_token = None
-                _gdrive_token_ts = 0
-            time.sleep(0.35)
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return {"audio_probe_status": "token-unavailable", "duration_ms": 0}
 
-        token = _get_fresh_gdrive_token()
-        if not token:
-            last_result = {"audio_probe_status": "token-unavailable", "duration_ms": 0}
-            continue
-
-        probed = _run_gdrive_media_ffprobe(fid, token)
-        last_result = probed
-        if probed.get("audio_probe_status") in ("ok", "no-audio"):
-            return probed
-    return last_result
-
-def _run_gdrive_media_ffprobe(fid, token):
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
     command = [
         "ffprobe",
         "-v", "error",
         "-headers", ffprobe_headers,
-        "-show_entries", "format=duration:stream=index,codec_type,codec_name,profile,channels,channel_layout,bit_rate,duration:stream_tags=language,title:stream_disposition=default",
+        "-show_entries", "format=duration:stream=index,codec_type,codec_name,profile,channels,channel_layout,duration:stream_tags=language,title:stream_disposition=default",
         "-of", "json",
         media_url,
     ]
@@ -4432,16 +4365,11 @@ def _run_gdrive_media_ffprobe(fid, token):
             }
 
         audio_codec = primary_audio.get('codec', '')
-        transcode_audio = _select_audio_stream_for_transcode(audio_streams, primary_audio)
         return {
             "audio_codec": audio_codec,
             "audio_codec_label": _format_audio_codec_label(primary_audio),
             "audio_channels": primary_audio.get('channels', 0),
             "audio_profile": primary_audio.get('profile', ''),
-            "audio_stream_index": primary_audio.get('index'),
-            "audio_transcode_stream_index": transcode_audio.get('index') if transcode_audio else primary_audio.get('index'),
-            "audio_transcode_codec": transcode_audio.get('codec', '') if transcode_audio else audio_codec,
-            "audio_transcode_codec_label": _format_audio_codec_label(transcode_audio) if transcode_audio else _format_audio_codec_label(primary_audio),
             "audio_probe_status": "ok",
             "audio_streams": audio_streams,
             "browser_audio_supported": _is_browser_supported_audio_codec(audio_codec),
@@ -4456,112 +4384,19 @@ def _normalize_audio_stream_metadata(stream):
         channels = int(stream.get('channels') or 0)
     except (TypeError, ValueError):
         channels = 0
-    try:
-        bit_rate = int(stream.get('bit_rate') or 0)
-    except (TypeError, ValueError):
-        bit_rate = 0
     tags = stream.get('tags') or {}
     disposition = stream.get('disposition') or {}
-    metadata = {
+    return {
         "index": stream.get('index'),
         "codec": codec,
         "profile": str(stream.get('profile') or ''),
         "channels": channels,
         "channel_layout": str(stream.get('channel_layout') or ''),
-        "bit_rate": bit_rate,
         "language": str(tags.get('language') or ''),
         "title": str(tags.get('title') or ''),
         "default": bool(disposition.get('default')),
         "browser_supported": _is_browser_supported_audio_codec(codec),
     }
-    metadata["codec_label"] = _format_audio_codec_label(metadata)
-    metadata["non_primary"] = _is_non_primary_audio_track(metadata)
-    return metadata
-
-def _parse_audio_stream_index(value):
-    if value in (None, ''):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-def _get_audio_stream_by_index(audio_streams, stream_index):
-    if stream_index is None:
-        return None
-    for stream in audio_streams or []:
-        try:
-            if int(stream.get('index')) == stream_index:
-                return stream
-        except (TypeError, ValueError):
-            continue
-    return None
-
-def _get_primary_audio_stream(metadata):
-    audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
-    primary_index = metadata.get('audio_stream_index')
-    primary_audio = _get_audio_stream_by_index(audio_streams, _parse_audio_stream_index(primary_index))
-    return primary_audio or next((stream for stream in audio_streams if stream.get('default')), None) or (audio_streams[0] if audio_streams else None)
-
-def _select_audio_stream_for_transcode(audio_streams, primary_audio=None):
-    if not audio_streams:
-        return None
-
-    primary_audio = primary_audio or next((stream for stream in audio_streams if stream.get('default')), None) or audio_streams[0]
-    primary_codec = str(primary_audio.get('codec') or '').lower()
-    if primary_codec not in _audio_transcode_expensive_codecs:
-        return primary_audio
-
-    candidates = [
-        stream for stream in audio_streams
-        if stream is not primary_audio and _is_lighter_transcode_audio_candidate(stream, primary_audio)
-    ]
-    if not candidates:
-        return primary_audio
-    return min(candidates, key=_audio_transcode_stream_score)
-
-def _is_lighter_transcode_audio_candidate(stream, primary_audio):
-    codec = str(stream.get('codec') or '').lower()
-    if codec not in _audio_transcode_lighter_codecs:
-        return False
-    if _is_non_primary_audio_track(stream):
-        return False
-    if not _audio_languages_match(stream.get('language'), primary_audio.get('language')):
-        return False
-    return True
-
-def _audio_languages_match(candidate_language, primary_language):
-    candidate = _normalize_audio_language(candidate_language)
-    primary = _normalize_audio_language(primary_language)
-    if not primary:
-        return False
-    return candidate == primary
-
-def _normalize_audio_language(language):
-    normalized = str(language or '').strip().lower()
-    return '' if normalized in {'', 'und', 'unknown'} else normalized
-
-def _is_non_primary_audio_track(stream):
-    text = f"{stream.get('title') or ''} {stream.get('language') or ''}".lower()
-    return any(term in text for term in _audio_transcode_non_primary_terms)
-
-def _audio_transcode_stream_score(stream):
-    codec = str(stream.get('codec') or '').lower()
-    codec_scores = {
-        "aac": 0,
-        "mp3": 1,
-        "mp2": 1,
-        "opus": 1,
-        "vorbis": 1,
-        "ac3": 2,
-        "eac3": 3,
-    }
-    return (
-        codec_scores.get(codec, 10),
-        int(stream.get('channels') or 0) or 99,
-        int(stream.get('bit_rate') or 0) or 999999999,
-        int(stream.get('index') or 0),
-    )
 
 def _is_browser_supported_audio_codec(codec):
     return str(codec or '').lower() in _browser_supported_audio_codecs
@@ -4632,100 +4467,6 @@ def _get_gdrive_stream_http_session():
         session.headers.update({"User-Agent": "Mutflix/1.0"})
         _gdrive_stream_http_local.session = session
     return session
-
-def _get_gdrive_audio_transcode_stream_map(fid, requested_stream_index=None):
-    if requested_stream_index is not None:
-        try:
-            return f"0:{int(requested_stream_index)}?"
-        except (TypeError, ValueError):
-            pass
-
-    metadata = _get_gdrive_file_metadata(fid)
-    audio_streams = metadata.get('audio_streams') if isinstance(metadata.get('audio_streams'), list) else []
-    requested_audio = _get_audio_stream_by_index(audio_streams, requested_stream_index)
-    stream_index = requested_audio.get('index') if requested_audio else metadata.get('audio_transcode_stream_index')
-    if stream_index is None:
-        primary_index = metadata.get('audio_stream_index')
-        primary_audio = next((stream for stream in audio_streams if stream.get('index') == primary_index), None)
-        primary_audio = primary_audio or next((stream for stream in audio_streams if stream.get('default')), None)
-        selected_audio = _select_audio_stream_for_transcode(audio_streams, primary_audio)
-        stream_index = selected_audio.get('index') if selected_audio else None
-
-    try:
-        return f"0:{int(stream_index)}?"
-    except (TypeError, ValueError):
-        return "0:a:0?"
-
-def _terminate_audio_transcode_process(process):
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        try:
-            process.wait(timeout=1)
-        except Exception:
-            pass
-
-def _stream_audio_transcode_process(process):
-    output_queue = queue.Queue(maxsize=AUDIO_TRANSCODE_BUFFER_CHUNKS)
-    stop_event = threading.Event()
-    sentinel = object()
-    release_lock = threading.Lock()
-    released = False
-
-    def release_slot_once():
-        nonlocal released
-        with release_lock:
-            if released:
-                return
-            released = True
-        _audio_transcode_slots.release()
-
-    def put_until_delivered(item):
-        while not stop_event.is_set():
-            try:
-                output_queue.put(item, timeout=0.25)
-                return True
-            except queue.Full:
-                pass
-        return False
-
-    def read_stdout_ahead():
-        try:
-            while not stop_event.is_set():
-                chunk = process.stdout.read(AUDIO_TRANSCODE_CHUNK_BYTES)
-                if not chunk:
-                    break
-                if not put_until_delivered(chunk):
-                    break
-        finally:
-            try:
-                process.stdout.close()
-            except Exception:
-                pass
-            _terminate_audio_transcode_process(process)
-            release_slot_once()
-            put_until_delivered(sentinel)
-
-    threading.Thread(
-        target=read_stdout_ahead,
-        name=f"audio-transcode-buffer-{process.pid}",
-        daemon=True,
-    ).start()
-
-    try:
-        while True:
-            chunk = output_queue.get()
-            if chunk is sentinel:
-                break
-            yield chunk
-    finally:
-        stop_event.set()
-        _terminate_audio_transcode_process(process)
-        release_slot_once()
 
 
 def _proxy_gdrive_media(fid):
@@ -4819,21 +4560,12 @@ def gdrive_audio_transcode(fid):
     media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
     ffmpeg_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
     start_seconds = _clamp_audio_transcode_start(request.args.get('start_seconds'))
-    audio_stream_map = _get_gdrive_audio_transcode_stream_map(fid, _parse_audio_stream_index(request.args.get('audio_stream_index')))
     command = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
         "-nostdin",
-        "-reconnect", "1",
-        "-reconnect_streamed", "1",
-        "-reconnect_on_network_error", "1",
-        "-reconnect_on_http_error", "429,500,502,503,504",
-        "-reconnect_delay_max", "2",
-        "-rw_timeout", str(AUDIO_TRANSCODE_RW_TIMEOUT_MICROSECONDS),
         "-headers", ffmpeg_headers,
-        "-probesize", str(AUDIO_TRANSCODE_INPUT_PROBESIZE),
-        "-analyzeduration", str(AUDIO_TRANSCODE_INPUT_ANALYZE_DURATION),
     ]
     if start_seconds > 0:
         # Video stays stream-copied, so preserve the same keyframe preroll for
@@ -4842,19 +4574,14 @@ def gdrive_audio_transcode(fid):
     command.extend([
         "-i", media_url,
         "-map", "0:v:0?",
-        "-map", audio_stream_map,
+        "-map", "0:a:0?",
         "-sn",
         "-dn",
         "-c:v", "copy",
         "-c:a", "aac",
-    ])
-    if AUDIO_TRANSCODE_AAC_CODER:
-        command.extend(["-aac_coder", AUDIO_TRANSCODE_AAC_CODER])
-    command.extend([
         "-ac", "2",
         "-b:a", AUDIO_TRANSCODE_AUDIO_BITRATE,
         "-avoid_negative_ts", "make_zero",
-        "-flush_packets", "1",
         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4",
         "pipe:1",
@@ -4870,16 +4597,35 @@ def gdrive_audio_transcode(fid):
         _audio_transcode_slots.release()
         return jsonify({"error": "Failed to start audio transcoder"}), 500
 
+    def generate():
+        try:
+            while True:
+                chunk = process.stdout.read(1024 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try:
+                process.stdout.close()
+            except Exception:
+                pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            _audio_transcode_slots.release()
+
     return Response(
-        stream_with_context(_stream_audio_transcode_process(process)),
+        stream_with_context(generate()),
         headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, OPTIONS",
-            "Access-Control-Expose-Headers": "Content-Type, X-Mutflix-Audio-Buffer",
+            "Access-Control-Expose-Headers": "Content-Type",
             "Cache-Control": "no-cache, no-store, must-revalidate",
             "Content-Type": "video/mp4",
             "X-Accel-Buffering": "no",
-            "X-Mutflix-Audio-Buffer": str(AUDIO_TRANSCODE_BUFFER_BYTES),
         },
         direct_passthrough=True,
     )
@@ -4891,11 +4637,10 @@ def get_gdrive_audio_transcode_start(fid):
 
     requested_start = _clamp_audio_transcode_start(request.args.get('start_seconds'))
     timeline_offset_seconds, timeline_offset_source = _resolve_gdrive_audio_transcode_start_info(fid, requested_start)
-    timeline_offset_ready = timeline_offset_source in {"origin", "cache"} or timeline_offset_source.startswith("probe")
     response = orjson_jsonify({
         "stream_start_seconds": requested_start,
         "timeline_offset_seconds": timeline_offset_seconds,
-        "timeline_offset_ready": timeline_offset_ready,
+        "timeline_offset_ready": timeline_offset_source in {"origin", "cache", "probe"},
         "timeline_offset_source": timeline_offset_source,
     })
     response.headers['Access-Control-Allow-Origin'] = '*'
@@ -4919,113 +4664,19 @@ def _resolve_gdrive_audio_transcode_start_info(fid, requested_start):
     if not shutil.which("ffprobe"):
         return requested_start, "ffprobe-unavailable"
 
-    cache_key = f"audio_transcode_keyframe_v3_{fid}_{requested_start:g}"
+    cache_key = f"audio_transcode_keyframe_v2_{fid}_{requested_start:g}"
     cached_start = disk_cache.get(cache_key)
     if cached_start is not None:
         return float(cached_start), "cache"
 
-    lock_acquired = acquire_lock(cache_key, timeout_seconds=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS + 5)
-    if not lock_acquired:
-        deadline = time.time() + min(5, AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS)
-        while time.time() < deadline:
-            cached_start = disk_cache.get(cache_key)
-            if cached_start is not None:
-                return float(cached_start), "cache"
-            time.sleep(0.1)
+    token = _get_fresh_gdrive_token()
+    if not token:
+        return requested_start, "token-unavailable"
 
-    try:
-        token = _get_fresh_gdrive_token()
-        if not token:
-            return requested_start, "token-unavailable"
-
-        media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
-        ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
-        last_error = None
-
-        for lookbehind_seconds in _audio_transcode_keyframe_probe_lookbehinds(requested_start):
-            for attempt in range(AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS):
-                resolved_start, probe_error = _probe_gdrive_keyframe_packet_start(
-                    media_url,
-                    ffprobe_headers,
-                    requested_start,
-                    lookbehind_seconds,
-                )
-                if resolved_start is not None:
-                    disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
-                    return resolved_start, "probe-packet"
-                last_error = probe_error or last_error
-
-                resolved_start, probe_error = _probe_gdrive_keyframe_frame_start(
-                    media_url,
-                    ffprobe_headers,
-                    requested_start,
-                    lookbehind_seconds,
-                )
-                if resolved_start is not None:
-                    disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
-                    return resolved_start, "probe-frame"
-                last_error = probe_error or last_error
-
-                if attempt < AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS - 1 and AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS > 0:
-                    time.sleep(AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS)
-
-        return requested_start, f"fallback-{last_error or 'unknown'}"
-    finally:
-        if lock_acquired:
-            release_lock(cache_key)
-
-def _audio_transcode_keyframe_probe_lookbehinds(requested_start):
-    base_lookbehind = AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS
-    candidates = [
-        base_lookbehind,
-        base_lookbehind * 2,
-        max(600.0, base_lookbehind * 3),
-    ]
-    lookbehinds = []
-    for candidate in candidates:
-        bounded = round(min(requested_start, max(0.1, candidate)), 3)
-        if bounded > 0 and bounded not in lookbehinds:
-            lookbehinds.append(bounded)
-    return lookbehinds or [0.1]
-
-def _probe_gdrive_keyframe_packet_start(media_url, ffprobe_headers, requested_start, lookbehind_seconds):
-    probe_start = max(0, requested_start - lookbehind_seconds)
-    probe_duration = max(0.25, requested_start - probe_start + 0.25)
-    command = [
-        "ffprobe",
-        "-v", "error",
-        "-headers", ffprobe_headers,
-        "-read_intervals", f"{probe_start:g}%+{probe_duration:g}",
-        "-select_streams", "v:0",
-        "-show_packets",
-        "-show_entries", "packet=pts_time,dts_time,flags",
-        "-of", "json",
-        media_url,
-    ]
-    result, error = _run_audio_transcode_ffprobe(command)
-    if error:
-        return None, f"packet-{error}"
-
-    try:
-        packets = json.loads(result.stdout or '{}').get('packets', [])
-    except Exception as exc:
-        return None, f"packet-json-{exc.__class__.__name__}"
-
-    timestamps = []
-    for packet in packets:
-        if 'K' not in str(packet.get('flags') or ''):
-            continue
-        timestamp = _parse_ffprobe_seconds(packet.get('pts_time'))
-        if timestamp is None:
-            timestamp = _parse_ffprobe_seconds(packet.get('dts_time'))
-        if timestamp is not None:
-            timestamps.append(timestamp)
-    resolved_start = _select_audio_transcode_keyframe_timestamp(timestamps, requested_start)
-    return resolved_start, None if resolved_start is not None else "empty"
-
-def _probe_gdrive_keyframe_frame_start(media_url, ffprobe_headers, requested_start, lookbehind_seconds):
-    probe_start = max(0, requested_start - lookbehind_seconds)
-    probe_duration = max(0.25, requested_start - probe_start + 0.25)
+    media_url = f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media"
+    ffprobe_headers = f"Authorization: Bearer {token}\r\nUser-Agent: Mutflix/1.0\r\n"
+    probe_start = max(0, requested_start - AUDIO_TRANSCODE_KEYFRAME_LOOKBEHIND_SECONDS)
+    probe_duration = max(0.1, requested_start - probe_start + 0.1)
     command = [
         "ffprobe",
         "-v", "error",
@@ -5033,65 +4684,42 @@ def _probe_gdrive_keyframe_frame_start(media_url, ffprobe_headers, requested_sta
         "-read_intervals", f"{probe_start:g}%+{probe_duration:g}",
         "-select_streams", "v:0",
         "-skip_frame", "nokey",
-        "-show_frames",
-        "-show_entries", "frame=pts_time,pkt_pts_time,best_effort_timestamp_time,pkt_dts_time",
-        "-of", "json",
+        "-show_entries", "frame=best_effort_timestamp_time",
+        "-of", "csv=p=0",
         media_url,
     ]
-    result, error = _run_audio_transcode_ffprobe(command)
-    if error:
-        return None, f"frame-{error}"
+    last_error = None
+    for attempt in range(AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
+            )
+            timestamps = [
+                float(match.group(0))
+                for line in (result.stdout or '').splitlines()
+                if (match := re.search(r'-?\d+(?:\.\d+)?', line))
+            ]
+            valid_timestamps = [
+                timestamp
+                for timestamp in timestamps
+                if 0 <= timestamp <= requested_start
+            ]
+            if valid_timestamps:
+                resolved_start = max(valid_timestamps)
+                disk_cache.set(cache_key, resolved_start, expire=AUDIO_TRANSCODE_KEYFRAME_CACHE_TTL_SECONDS)
+                return resolved_start, "probe"
+            last_error = "empty"
+        except Exception as exc:
+            last_error = exc.__class__.__name__
 
-    try:
-        frames = json.loads(result.stdout or '{}').get('frames', [])
-    except Exception as exc:
-        return None, f"frame-json-{exc.__class__.__name__}"
+        if attempt < AUDIO_TRANSCODE_KEYFRAME_PROBE_ATTEMPTS - 1 and AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS > 0:
+            time.sleep(AUDIO_TRANSCODE_KEYFRAME_PROBE_RETRY_DELAY_SECONDS)
 
-    timestamps = []
-    for frame in frames:
-        for key in ("best_effort_timestamp_time", "pts_time", "pkt_pts_time", "pkt_dts_time"):
-            timestamp = _parse_ffprobe_seconds(frame.get(key))
-            if timestamp is not None:
-                timestamps.append(timestamp)
-                break
-    resolved_start = _select_audio_transcode_keyframe_timestamp(timestamps, requested_start)
-    return resolved_start, None if resolved_start is not None else "empty"
-
-def _run_audio_transcode_ffprobe(command):
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-            text=True,
-            timeout=AUDIO_TRANSCODE_KEYFRAME_PROBE_TIMEOUT_SECONDS,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "timeout"
-    except Exception as exc:
-        return None, exc.__class__.__name__
-    if result.returncode != 0:
-        return result, f"exit-{result.returncode}"
-    return result, None
-
-def _select_audio_transcode_keyframe_timestamp(timestamps, requested_start):
-    valid_timestamps = [
-        timestamp
-        for timestamp in timestamps
-        if 0 <= timestamp <= requested_start
-    ]
-    if not valid_timestamps:
-        return None
-    return max(valid_timestamps)
-
-def _parse_ffprobe_seconds(value):
-    try:
-        seconds = float(value)
-    except (TypeError, ValueError):
-        return None
-    if seconds != seconds or seconds in (float('inf'), float('-inf')):
-        return None
-    return seconds
+    return requested_start, f"fallback-{last_error or 'unknown'}"
 
 @app.route("/api/gdrive-embedded-subtitles/<fid>")
 @rate_limited(limit=_SUBTITLE_RATE_LIMIT_RPM, scope='embedded-subtitle-list', cors=True)
@@ -5571,6 +5199,10 @@ def search_content(current_user):
                         if rel.get('tmdb_poster_path'): result['tmdb_poster_path'] = rel['tmdb_poster_path']
                         if rel.get('tmdb_rating'): result['tmdb_rating'] = rel['tmdb_rating']
                         if rel.get('tmdb_overview'): result['tmdb_overview'] = rel['tmdb_overview']
+                        if rel.get('release_date'):
+                            result['release_date'] = rel['release_date']
+                            if result.get('type') in ('tv', 'series'):
+                                result['first_air_date'] = rel['release_date']
                         results.append(result)
     
     # Sort by relevance: exact prefix match first, then alphabetical
@@ -5592,6 +5224,10 @@ def search_content(current_user):
             if rel.get('tmdb_poster_path'): res['tmdb_poster_path'] = rel['tmdb_poster_path']
             if rel.get('tmdb_rating'): res['tmdb_rating'] = rel['tmdb_rating']
             if rel.get('tmdb_overview'): res['tmdb_overview'] = rel['tmdb_overview']
+            if rel.get('release_date'):
+                res['release_date'] = rel['release_date']
+                if res.get('type') in ('tv', 'series'):
+                    res['first_air_date'] = rel['release_date']
             
     return add_cache_headers(orjson_jsonify(results[:50], cache_key=resp_key), max_age=30)  # Max 50 results
 
@@ -5689,7 +5325,7 @@ def _refresh_content_releases_cache():
     releases = _load_releases()
     mem_set('content_releases', releases)
     redis_set("releases:all", releases, ttl_seconds=300)
-    _invalidate_response_cache('resp_releases', 'resp_folders_merged')
+    _invalidate_response_cache('resp_releases', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
     build_search_index()
 
 @app.route("/api/content-releases", methods=["POST"])
