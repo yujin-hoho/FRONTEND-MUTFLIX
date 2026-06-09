@@ -166,10 +166,19 @@ function App() {
   profileDataRef.current = profileData
 
   useEffect(() => {
-    if (location.pathname === '/') {
+    const isAuthenticated = Boolean(currentUser && authToken)
+
+    if (!isAuthenticated) {
+      if (location.pathname !== '/login') {
+        navigate('/login', { replace: true })
+      }
+      return
+    }
+
+    if (location.pathname === '/' || location.pathname === '/login') {
       navigate('/dashboard', { replace: true })
     }
-  }, [location.pathname, navigate])
+  }, [authToken, currentUser, location.pathname, navigate])
 
   useEffect(() => {
     dashboardRowsCacheKey.current = ''
@@ -583,6 +592,7 @@ function App() {
     const storage = localStorage.getItem('mutflix_token') ? localStorage : sessionStorage
     storage.setItem('mutflix_profile', JSON.stringify(profile))
     setSelectedProfile(profile)
+    navigate('/dashboard', { replace: true })
   }
 
   function openAddProfile() {
@@ -629,6 +639,7 @@ function App() {
     setSelectedProfile(null)
     setProfiles([])
     featuredItemKeys.current.clear()
+    navigate('/login', { replace: true })
   }
 
   function handleOpenDetail(item) {
@@ -873,6 +884,7 @@ function App() {
         setSelectedProfile(null)
         setProfiles([])
         setCurrentUser(user)
+        navigate('/dashboard', { replace: true })
       }
     } catch (error) {
       setMessage({ type: 'error', text: error.message })
