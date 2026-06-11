@@ -5,6 +5,7 @@ import { getGenres, getItemKey, getMediaType, getPosterUrl, getRating, getTitle,
 import { getCatalogFilters, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../../utils/search'
 
 const PREVIEW_RESULT_LIMIT = 5
+const PREVIEW_SERVER_RESULT_LIMIT = 20
 
 function SearchBox({
   catalogItems,
@@ -62,7 +63,7 @@ function SearchBox({
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => {
       setServerSearch({ query: normalizedQuery, results: [], status: 'loading' })
-      onSearchCatalog(deferredQuery, { signal: controller.signal })
+      onSearchCatalog(deferredQuery, { limit: PREVIEW_SERVER_RESULT_LIMIT, signal: controller.signal })
         .then((results) => setServerSearch({ query: normalizedQuery, results, status: 'ready' }))
         .catch((error) => {
           if (error.name !== 'AbortError') setServerSearch({ query: normalizedQuery, results: [], status: 'error' })

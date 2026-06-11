@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Pencil, Search } from 'lucide-react'
 import SearchBox from '../components/search/SearchBox'
 import LoadableImage from '../components/LoadableImage'
@@ -10,13 +10,17 @@ import {
   getPersonFallbackUrl,
   getPosterUrl,
   getRating,
+  getReleaseYear,
   getStillUrl,
   getTitle,
   isCatalogItemCompleted,
 } from '../utils/media'
 import { filterCatalogItems, mergeSearchResults, normalizeSearchQuery, prepareSearchCatalog, searchCatalog } from '../utils/search'
 
-export const RESULT_BATCH_SIZE = 16
+export const RESULT_BATCH_SIZE = 32
+const SEARCH_SERVER_RESULT_LIMIT = 500
+const PEOPLE_SEARCH_PAGE_LIMIT = 3
+const PERSON_CANDIDATE_LIMIT = 24
 
 function SearchResultsPage({
   authToken,
@@ -45,6 +49,7 @@ function SearchResultsPage({
   const [manualPersonSelection, setManualPersonSelection] = useState({ id: null, query: '' })
   const [lazyRenderState, setLazyRenderState] = useState({ count: RESULT_BATCH_SIZE, key: '' })
   const searchPageRef = useRef(null)
+  const requestedActorLookupHydrationKey = useRef('')
   const requestedHydrationKey = useRef('')
   const lazyLoadRef = useRef(null)
   const deferredQuery = useDeferredValue(query)
@@ -106,6 +111,15 @@ function SearchResultsPage({
     [visibleResults],
   )
   const hasMoreResults = visibleResults.length < displayResults.length
+  const loadMoreResults = useCallback(() => {
+    setLazyRenderState((currentState) => {
+      const currentCount = currentState.key === resultKey ? currentState.count : RESULT_BATCH_SIZE
+      return {
+        count: Math.min(currentCount + RESULT_BATCH_SIZE, displayResults.length),
+        key: resultKey,
+      }
+    })
+  }, [displayResults.length, resultKey])
   const hydrationItems = useMemo(
     () => {
       const itemsToHydrate = selectedPerson ? displayResults : currentBatchResults
@@ -114,6 +128,14 @@ function SearchResultsPage({
     [currentBatchResults, displayResults, selectedPerson],
   )
   const hydrationKey = hydrationItems.map(getItemKey).join('|')
+  const actorLookupHydrationItems = useMemo(
+    () => {
+      if (normalizedQuery.length < 2 || !looksLikePersonName(deferredQuery)) return []
+      return filteredCatalogItems.filter(needsActorLookupMetadata)
+    },
+    [deferredQuery, filteredCatalogItems, normalizedQuery],
+  )
+  const actorLookupHydrationKey = actorLookupHydrationItems.map(getItemKey).join('|')
   const showLoadingShimmer = catalogData.isLoading && !catalogItems.length
 
   useEffect(() => {
@@ -122,7 +144,7 @@ function SearchResultsPage({
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => {
       setServerSearch({ query: normalizedQuery, results: [], status: 'loading' })
-      onSearchCatalog(deferredQuery, { signal: controller.signal })
+      onSearchCatalog(deferredQuery, { limit: SEARCH_SERVER_RESULT_LIMIT, signal: controller.signal })
         .then((results) => setServerSearch({ query: normalizedQuery, results, status: 'ready' }))
         .catch((error) => {
           if (error.name !== 'AbortError') setServerSearch({ query: normalizedQuery, results: [], status: 'error' })
@@ -144,6 +166,7 @@ function SearchResultsPage({
       searchCatalogPeople({
         authToken,
         catalogItems: filteredCatalogItems,
+        selectedPersonId: initialPersonId,
         query: deferredQuery,
         signal: controller.signal,
       })
@@ -157,7 +180,14 @@ function SearchResultsPage({
       controller.abort()
       window.clearTimeout(timeoutId)
     }
-  }, [authToken, deferredQuery, filteredCatalogItems, normalizedQuery])
+  }, [authToken, deferredQuery, filteredCatalogItems, initialPersonId, normalizedQuery])
+
+  useEffect(() => {
+    if (!actorLookupHydrationKey || actorLookupHydrationKey === requestedActorLookupHydrationKey.current) return
+
+    requestedActorLookupHydrationKey.current = actorLookupHydrationKey
+    onHydrateItems?.(actorLookupHydrationItems)
+  }, [actorLookupHydrationItems, actorLookupHydrationKey, onHydrateItems])
 
   useEffect(() => {
     if (!hydrationKey || hydrationKey === requestedHydrationKey.current) return
@@ -178,20 +208,27 @@ function SearchResultsPage({
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting) return
-        setLazyRenderState((currentState) => {
-          const currentCount = currentState.key === resultKey ? currentState.count : RESULT_BATCH_SIZE
-          return {
-            count: Math.min(currentCount + RESULT_BATCH_SIZE, displayResults.length),
-            key: resultKey,
-          }
-        })
+        loadMoreResults()
       },
       { root: scrollRoot, rootMargin: '280px 0px' },
     )
 
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [displayResults.length, hasMoreResults, resultKey])
+  }, [hasMoreResults, loadMoreResults])
+
+  useEffect(() => {
+    const scrollRoot = searchPageRef.current
+    if (!scrollRoot || !hasMoreResults) return undefined
+
+    const timeoutId = window.setTimeout(() => {
+      const remainingScroll = scrollRoot.scrollHeight - scrollRoot.scrollTop - scrollRoot.clientHeight
+      const hasScrollableRoom = scrollRoot.scrollHeight > scrollRoot.clientHeight + 80
+      if (!hasScrollableRoom || remainingScroll < 520) loadMoreResults()
+    }, 120)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [hasMoreResults, loadMoreResults, visibleCount])
 
   function handleQueryChange(nextQuery) {
     setQuery(nextQuery)
@@ -490,14 +527,19 @@ function looksLikePersonName(query) {
   return words.length === 1 && words[0].length >= 4
 }
 
-async function searchCatalogPeople({ authToken, catalogItems, query, signal }) {
+async function searchCatalogPeople({ authToken, catalogItems, query, selectedPersonId, signal }) {
   const tmdbCatalog = createTmdbCatalogMap(catalogItems)
-  if (!tmdbCatalog.size) return []
+  if (!tmdbCatalog.hasEntries) return []
 
-  const people = await fetchTmdbPeopleSearch(authToken, query, { signal })
-  const candidatePeople = people
+  const people = await fetchTmdbPeopleSearch(authToken, query, { pages: PEOPLE_SEARCH_PAGE_LIMIT, signal })
+  const selectedPerson = Number(selectedPersonId || 0)
+  const candidatePeople = [
+    selectedPerson ? { id: selectedPerson, name: query.trim() } : null,
+    ...people,
+  ]
     .filter((person) => person?.id && person.name)
-    .slice(0, 10)
+    .filter((person, index, candidates) => candidates.findIndex((candidate) => candidate?.id === person.id) === index)
+    .slice(0, PERSON_CANDIDATE_LIMIT)
 
   const peopleWithProjects = await Promise.all(candidatePeople.map(async (person) => {
     const credits = await fetchTmdbPersonCombinedCredits(authToken, person.id, { signal })
@@ -515,14 +557,27 @@ async function searchCatalogPeople({ authToken, catalogItems, query, signal }) {
 }
 
 function createTmdbCatalogMap(items) {
-  const catalog = new Map()
+  const byTmdbId = new Map()
+  const byTitle = new Map()
+
   items.forEach((item) => {
     const tmdbId = Number(item.tmdb_id || item.tmdb_override_id || 0)
-    if (!tmdbId) return
     const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
-    catalog.set(`${mediaType}:${tmdbId}`, item)
+    if (tmdbId) byTmdbId.set(`${mediaType}:${tmdbId}`, item)
+
+    getCatalogTitleAliases(item).forEach((alias) => {
+      const key = `${mediaType}:${alias}`
+      const titleMatches = byTitle.get(key) || []
+      titleMatches.push(item)
+      byTitle.set(key, titleMatches)
+    })
   })
-  return catalog
+
+  return {
+    byTitle,
+    byTmdbId,
+    hasEntries: byTmdbId.size > 0 || byTitle.size > 0,
+  }
 }
 
 function getLocalProjectsForPersonCredits(credits, tmdbCatalog) {
@@ -531,7 +586,9 @@ function getLocalProjectsForPersonCredits(credits, tmdbCatalog) {
     .flatMap((credit) => {
       const mediaType = credit.media_type === 'movie' ? 'movie' : credit.media_type === 'tv' ? 'tv' : ''
       const tmdbId = Number(credit.id || 0)
-      const item = mediaType && tmdbId ? tmdbCatalog.get(`${mediaType}:${tmdbId}`) : null
+      const item = mediaType && tmdbId
+        ? tmdbCatalog.byTmdbId.get(`${mediaType}:${tmdbId}`) || findCatalogItemByCreditTitle(credit, mediaType, tmdbCatalog)
+        : findCatalogItemByCreditTitle(credit, mediaType, tmdbCatalog)
       if (!item) return []
       const key = getItemKey(item)
       if (seen.has(key)) return []
@@ -539,6 +596,59 @@ function getLocalProjectsForPersonCredits(credits, tmdbCatalog) {
       return [item]
     })
     .sort((first, second) => getRating(second) - getRating(first) || getTitle(first).localeCompare(getTitle(second)))
+}
+
+function findCatalogItemByCreditTitle(credit, mediaType, tmdbCatalog) {
+  if (!mediaType) return null
+
+  const creditYear = getCreditReleaseYear(credit)
+  const matches = getCreditTitleAliases(credit)
+    .flatMap((alias) => tmdbCatalog.byTitle.get(`${mediaType}:${alias}`) || [])
+  if (!matches.length) return null
+
+  const uniqueMatches = [...new Map(matches.map((item) => [getItemKey(item), item])).values()]
+  if (creditYear > 0) {
+    const sameYearMatch = uniqueMatches.find((item) => getReleaseYear(item) === creditYear)
+    if (sameYearMatch) return sameYearMatch
+  }
+  return uniqueMatches.length === 1 ? uniqueMatches[0] : null
+}
+
+function getCatalogTitleAliases(item) {
+  return [...new Set([
+    getTitle(item),
+    item.tmdb_title,
+    item.title,
+    item.name,
+    item.folder_name,
+  ].flatMap((title) => getNormalizedTitleAliases(title)).filter(Boolean))]
+}
+
+function getCreditTitleAliases(credit) {
+  return [...new Set([
+    credit.title,
+    credit.name,
+    credit.original_title,
+    credit.original_name,
+  ].flatMap((title) => getNormalizedTitleAliases(title)).filter(Boolean))]
+}
+
+function getNormalizedTitleAliases(title) {
+  const normalizedTitle = normalizeSearchQuery(title)
+  if (!normalizedTitle) return []
+  return [
+    normalizedTitle,
+    normalizedTitle.replace(/\b(?:19|20)\d{2}\b/g, ' ').replace(/\s+/g, ' ').trim(),
+  ].filter(Boolean)
+}
+
+function getCreditReleaseYear(credit) {
+  const year = Number(String(credit.release_date || credit.first_air_date || '').slice(0, 4))
+  return year > 0 ? year : 0
+}
+
+function needsActorLookupMetadata(item) {
+  return !Number(item.tmdb_id || item.tmdb_override_id || 0) && !item.tmdb_metadata_resolved
 }
 
 export default SearchResultsPage

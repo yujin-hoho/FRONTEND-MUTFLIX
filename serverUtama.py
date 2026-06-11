@@ -3256,6 +3256,7 @@ def build_search_index():
         _search_index.update(new_index)
         _search_index_built = True
     _invalidate_response_cache_prefix('resp_search_v2_')
+    _invalidate_response_cache_prefix('resp_search_v3_')
     
 
 
@@ -5121,13 +5122,19 @@ def _subtitle_response(content, file_path):
 @rate_limited()
 def search_content(current_user):
     """[IMPROVED] Server-side instant search with fallback substring matching.
-    Query params: q=search_term"""
+    Query params: q=search_term, limit=max_results"""
     query = request.args.get('q', '').strip()
     if not query or len(query) < 1:
         return orjson_jsonify([])
 
+    try:
+        result_limit = int(request.args.get('limit', '300') or 300)
+    except (TypeError, ValueError):
+        result_limit = 300
+    result_limit = max(1, min(result_limit, 1000))
+
     normalized_query = _normalize_search_string(query)
-    resp_key = "resp_search_v2_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
+    resp_key = f"resp_search_v3_{result_limit}_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
     cached_bytes = _response_cache.get(resp_key)
     cached_at = _response_cache_ts.get(resp_key, 0)
     if cached_bytes and (time.time() - cached_at) < SEARCH_RESPONSE_CACHE_TTL_SECONDS:
@@ -5217,7 +5224,7 @@ def search_content(current_user):
     releases = mem_get('content_releases') or []
     tmdb_by_folder = {r.get('folder_name', '').lower(): r for r in releases if r.get('folder_name')}
     
-    for res in results[:50]:
+    for res in results[:result_limit]:
         rel = tmdb_by_folder.get(res['name'].lower())
         if rel:
             if rel.get('tmdb_title'): res['tmdb_title'] = rel['tmdb_title']
@@ -5228,8 +5235,8 @@ def search_content(current_user):
                 res['release_date'] = rel['release_date']
                 if res.get('type') in ('tv', 'series'):
                     res['first_air_date'] = rel['release_date']
-            
-    return add_cache_headers(orjson_jsonify(results[:50], cache_key=resp_key), max_age=30)  # Max 50 results
+
+    return add_cache_headers(orjson_jsonify(results[:result_limit], cache_key=resp_key), max_age=30)
 
 # ==========================================
 # CONTENT RELEASES API (Publish / Schedule)

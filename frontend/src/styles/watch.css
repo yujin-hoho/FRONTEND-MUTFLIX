@@ -480,7 +480,8 @@
 }
 
 .watch-subtitle-setting select,
-.watch-subtitle-range-setting input {
+.watch-subtitle-range-setting input,
+.watch-subtitle-delay-number {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -493,7 +494,7 @@
 
 .watch-subtitle-setting select,
 .watch-subtitle-delay {
-  height: var(--watch-subtitle-field-height);
+  min-height: var(--watch-subtitle-field-height);
 }
 
 .watch-audio-select {
@@ -546,6 +547,10 @@
   grid-column: 1 / -1;
 }
 
+.watch-subtitle-delay-setting {
+  grid-column: 1 / -1;
+}
+
 .watch-subtitle-range-setting input {
   height: 18px;
   padding: 0;
@@ -554,6 +559,7 @@
 
 .watch-subtitle-delay {
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .watch-subtitle-delay button {
@@ -564,16 +570,32 @@
   font-weight: 850;
 }
 
-.watch-subtitle-delay label {
-  position: relative;
-  flex: 1 1 auto;
+.watch-subtitle-delay-reset {
+  display: grid;
+  place-items: center;
 }
 
-.watch-subtitle-delay input {
+.watch-subtitle-delay-range {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 130px;
+}
+
+.watch-subtitle-delay-range input {
   width: 100%;
   height: 18px;
   padding: 0;
   accent-color: #00dc64;
+}
+
+.watch-subtitle-delay-number {
+  width: 92px;
+  height: var(--watch-subtitle-field-height);
+  flex: 0 0 92px;
+  padding: 7px 8px;
+  text-align: center;
+  font: inherit;
+  font-weight: 760;
 }
 
 .watch-seek,

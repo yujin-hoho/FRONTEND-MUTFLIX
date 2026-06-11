@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ProfileMenu from '../components/ProfileMenu'
 import SearchBox from '../components/search/SearchBox'
 import { getItemKey, getPosterUrl } from '../utils/media'
@@ -44,6 +44,15 @@ function CatalogAllPage({
     [visibleItems],
   )
   const hasMoreItems = visibleItems.length < catalogItems.length
+  const loadMoreItems = useCallback(() => {
+    setLazyRenderState((currentState) => {
+      const currentCount = currentState.key === catalogKey ? currentState.count : CATALOG_BATCH_SIZE
+      return {
+        count: Math.min(currentCount + CATALOG_BATCH_SIZE, catalogItems.length),
+        key: catalogKey,
+      }
+    })
+  }, [catalogItems.length, catalogKey])
   const hydrationItems = useMemo(
     () => currentBatchItems.filter((item) => !getPosterUrl(item) && !item.tmdb_metadata_resolved),
     [currentBatchItems],
@@ -74,20 +83,27 @@ function CatalogAllPage({
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting) return
-        setLazyRenderState((currentState) => {
-          const currentCount = currentState.key === catalogKey ? currentState.count : CATALOG_BATCH_SIZE
-          return {
-            count: Math.min(currentCount + CATALOG_BATCH_SIZE, catalogItems.length),
-            key: catalogKey,
-          }
-        })
+        loadMoreItems()
       },
       { root: scrollRoot, rootMargin: '420px 0px' },
     )
 
     observer.observe(sentinel)
     return () => observer.disconnect()
-  }, [catalogItems.length, catalogKey, hasMoreItems])
+  }, [hasMoreItems, loadMoreItems])
+
+  useEffect(() => {
+    const scrollRoot = pageRef.current
+    if (!scrollRoot || !hasMoreItems) return undefined
+
+    const timeoutId = window.setTimeout(() => {
+      const remainingScroll = scrollRoot.scrollHeight - scrollRoot.scrollTop - scrollRoot.clientHeight
+      const hasScrollableRoom = scrollRoot.scrollHeight > scrollRoot.clientHeight + 80
+      if (!hasScrollableRoom || remainingScroll < 640) loadMoreItems()
+    }, 120)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [hasMoreItems, loadMoreItems, visibleCount])
 
   return (
     <main className="search-page catalog-all-page" ref={pageRef}>

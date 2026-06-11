@@ -110,6 +110,7 @@ function WatchPage({
   const embeddedSubtitleTrackUrlRef = useRef('')
   const embeddedSubtitleWindowRequestsRef = useRef(new Set())
   const externalSubtitleCuesRef = useRef([])
+  const isSubtitleDelayInputFocusedRef = useRef(false)
   const selectedSubtitleIdRef = useRef('')
   const hasUsedStreamFallbackRef = useRef(false)
   const isSeekingRef = useRef(false)
@@ -140,6 +141,7 @@ function WatchPage({
   const [selectedAudioId, setSelectedAudioId] = useState('')
   const [isAudioPanelOpen, setIsAudioPanelOpen] = useState(false)
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
+  const [subtitleDelayInputValue, setSubtitleDelayInputValue] = useState(() => formatSubtitleDelay(DEFAULT_SUBTITLE_SETTINGS.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
   const [embeddedSubtitleTracks, setEmbeddedSubtitleTracks] = useState([])
   const [embeddedSubtitleTrackUrl, setEmbeddedSubtitleTrackUrl] = useState('')
@@ -632,6 +634,12 @@ function WatchPage({
   }, [subtitleSettings])
 
   useEffect(() => {
+    if (!isSubtitleDelayInputFocusedRef.current) {
+      setSubtitleDelayInputValue(formatSubtitleDelay(subtitleSettings.delaySeconds))
+    }
+  }, [subtitleSettings.delaySeconds])
+
+  useEffect(() => {
     let ignore = false
     let nextSubtitleUrl = ''
 
@@ -1087,6 +1095,27 @@ function WatchPage({
     setSubtitleDelay(event.target.value)
   }
 
+  function handleSubtitleDelayInputChange(event) {
+    const nextValue = event.target.value
+    setSubtitleDelayInputValue(nextValue)
+    if (isCompleteSubtitleDelayInput(nextValue)) setSubtitleDelay(nextValue)
+  }
+
+  function handleSubtitleDelayInputBlur() {
+    isSubtitleDelayInputFocusedRef.current = false
+    if (isCompleteSubtitleDelayInput(subtitleDelayInputValue) || Number.isFinite(Number(subtitleDelayInputValue))) {
+      setSubtitleDelay(subtitleDelayInputValue)
+      setSubtitleDelayInputValue(formatSubtitleDelay(subtitleDelayInputValue))
+      return
+    }
+    setSubtitleDelayInputValue(formatSubtitleDelay(subtitleSettings.delaySeconds))
+  }
+
+  function resetSubtitleDelay() {
+    setSubtitleDelay(0)
+    setSubtitleDelayInputValue(formatSubtitleDelay(0))
+  }
+
   function setSubtitleDelay(value) {
     const nextDelay = clampSubtitleDelay(value)
     setSubtitleSettings((currentSettings) => ({ ...currentSettings, delaySeconds: nextDelay }))
@@ -1378,7 +1407,7 @@ function WatchPage({
                 <span>Sync delay: {formatSubtitleDelay(subtitleSettings.delaySeconds)}s</span>
                 <div className="watch-subtitle-delay">
                   <button aria-label="Slow down subtitles by 0.5 seconds" onClick={() => setSubtitleDelay(subtitleSettings.delaySeconds - SUBTITLE_DELAY_STEP_SECONDS)} type="button">-</button>
-                  <label aria-label="Subtitle sync delay">
+                  <label aria-label="Subtitle sync delay" className="watch-subtitle-delay-range">
                     <input
                       aria-label="Subtitle sync delay in seconds"
                       max={SUBTITLE_DELAY_LIMIT_SECONDS}
@@ -1389,7 +1418,28 @@ function WatchPage({
                       value={subtitleSettings.delaySeconds}
                     />
                   </label>
+                  <input
+                    aria-label="Subtitle delay seconds"
+                    className="watch-subtitle-delay-number"
+                    inputMode="decimal"
+                    max={SUBTITLE_DELAY_LIMIT_SECONDS}
+                    min={-SUBTITLE_DELAY_LIMIT_SECONDS}
+                    onBlur={handleSubtitleDelayInputBlur}
+                    onChange={handleSubtitleDelayInputChange}
+                    onFocus={() => {
+                      isSubtitleDelayInputFocusedRef.current = true
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') event.currentTarget.blur()
+                    }}
+                    step="0.1"
+                    type="number"
+                    value={subtitleDelayInputValue}
+                  />
                   <button aria-label="Speed up subtitles by 0.5 seconds" onClick={() => setSubtitleDelay(subtitleSettings.delaySeconds + SUBTITLE_DELAY_STEP_SECONDS)} type="button">+</button>
+                  <button aria-label="Reset subtitle delay" className="watch-subtitle-delay-reset" onClick={resetSubtitleDelay} title="Reset delay" type="button">
+                    <RotateCcw size={17} />
+                  </button>
                 </div>
                 <small>- slower, + faster. Maximum 50 seconds.</small>
               </div>
@@ -1750,6 +1800,13 @@ function clampSubtitleDelay(seconds) {
 
 function formatSubtitleDelay(seconds) {
   return String(Number(clampSubtitleDelay(seconds).toFixed(1)))
+}
+
+function isCompleteSubtitleDelayInput(value) {
+  const normalizedValue = String(value ?? '').trim()
+  if (!normalizedValue || ['-', '+', '.', '-.', '+.'].includes(normalizedValue)) return false
+  if (normalizedValue.endsWith('.')) return false
+  return Number.isFinite(Number(normalizedValue))
 }
 
 function clampSubtitlePosition(positionPercent) {

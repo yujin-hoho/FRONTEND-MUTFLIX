@@ -180,11 +180,14 @@ export async function saveMyListItemStatus(authToken, { item, profileId, status 
   })
 }
 
-export async function fetchCatalogSearch(authToken, query, { signal } = {}) {
+export async function fetchCatalogSearch(authToken, query, { limit = 500, signal } = {}) {
   const normalizedQuery = String(query || '').trim()
   if (!normalizedQuery) return []
 
-  const response = await fetch(`${API_BASE_URL}/api/search?q=${encodeURIComponent(normalizedQuery)}`, {
+  const params = new URLSearchParams({ q: normalizedQuery })
+  if (limit) params.set('limit', String(limit))
+
+  const response = await fetch(`${API_BASE_URL}/api/search?${params.toString()}`, {
     headers: { 'x-access-token': authToken },
     signal,
   })
@@ -263,20 +266,46 @@ async function fetchTmdbSearchPage(headers, mediaType, query, page, signal) {
   return data
 }
 
-export async function fetchTmdbPeopleSearch(authToken, query, { signal } = {}) {
+export async function fetchTmdbPeopleSearch(authToken, query, { pages = 3, signal } = {}) {
+  const normalizedQuery = String(query || '').trim()
+  if (!normalizedQuery) return []
+
+  const headers = { 'x-access-token': authToken }
+  const firstPage = await fetchTmdbPeopleSearchPage(headers, normalizedQuery, 1, signal)
+  const pageLimit = Math.min(
+    Number(firstPage.total_pages || 1),
+    Math.max(1, Number(pages || 1)),
+  )
+  const remainingPages = pageLimit > 1
+    ? await Promise.all(
+      Array.from({ length: pageLimit - 1 }, (_, index) => fetchTmdbPeopleSearchPage(headers, normalizedQuery, index + 2, signal)),
+    )
+    : []
+
+  const seen = new Set()
+  return [firstPage, ...remainingPages]
+    .flatMap((page) => Array.isArray(page.results) ? page.results : [])
+    .filter((person) => {
+      if (!person?.id || seen.has(person.id)) return false
+      seen.add(person.id)
+      return true
+    })
+}
+
+async function fetchTmdbPeopleSearchPage(headers, query, page, signal) {
   const params = new URLSearchParams({
     include_adult: 'false',
     language: 'en-US',
-    page: '1',
+    page: String(page),
     query,
   })
   const response = await fetch(`${API_BASE_URL}/api/tmdb/search/person?${params.toString()}`, {
-    headers: { 'x-access-token': authToken },
+    headers,
     signal,
   })
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to search people.')
-  return Array.isArray(data.results) ? data.results : []
+  return data
 }
 
 export async function fetchTmdbPersonCombinedCredits(authToken, personId, { signal } = {}) {
@@ -1063,10 +1092,13 @@ export async function removeMyListItem(authToken, { item, profileId }) {
 
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
-    .filter((item) => (
-      hasUnresolvedOverride(item)
-      || (!item.tmdb_metadata_resolved && (!getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
-    ))
+    .filter((item) => {
+      const hasTmdbId = Number(item.tmdb_id || item.tmdb_override_id || 0) > 0
+      return (
+        hasUnresolvedOverride(item)
+        || (!item.tmdb_metadata_resolved && (!hasTmdbId || !getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
+      )
+    })
     .slice(0, maxItems)
     .map((item) => ({ media_type: getMetadataRequestType(item, mediaType), folder_name: item.folder_name || item.name }))
     .filter((item) => item.folder_name)

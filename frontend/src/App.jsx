@@ -331,7 +331,13 @@ function App() {
   const hydrateCatalogItems = useCallback(async (items) => {
     const pendingItems = items.filter((item) => {
       const itemKey = getCatalogIdentityKey(item)
-      return !getPosterUrl(item) && !item.tmdb_metadata_resolved && !pendingMetadataKeys.current.has(itemKey)
+      const hasTmdbId = Number(item.tmdb_id || item.tmdb_override_id || 0) > 0
+      const overrideId = Number(item.tmdb_override_id || 0)
+      const needsMetadata = (
+        (!item.tmdb_metadata_resolved && (!getPosterUrl(item) || !hasTmdbId))
+        || (overrideId > 0 && Number(item.tmdb_id || 0) !== overrideId)
+      )
+      return needsMetadata && !pendingMetadataKeys.current.has(itemKey)
     })
     if (!pendingItems.length) return
 
