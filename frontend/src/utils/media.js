@@ -11,10 +11,12 @@ export function hashString(value) {
 }
 
 export function getTitle(item) {
+  if (!item) return 'Untitled'
   return item.tmdb_title || item.title || item.name || item.folder_name || item.series_title || item.media_title || 'Untitled'
 }
 
 export function getPosterUrl(item, size = 'w342') {
+  if (!item) return ''
   return getTmdbImageUrl(
     item.tmdb_poster_path || item.poster_path || item.thumbnail_path || item.image_url,
     size,
@@ -22,6 +24,7 @@ export function getPosterUrl(item, size = 'w342') {
 }
 
 export function getBackdropUrl(item, size = 'w1280') {
+  if (!item) return ''
   return getTmdbImageUrl(item.tmdb_backdrop_path || item.backdrop_path, size)
 }
 
@@ -30,6 +33,7 @@ export function getDetailArtworkUrl(item) {
 }
 
 export function getStillUrl(item) {
+  if (!item) return ''
   const stillPath = item.still_path || item.poster_path || item.thumbnail_path || item.profile_path
   if (!stillPath) return ''
   if (stillPath.startsWith('http')) return stillPath
@@ -37,10 +41,12 @@ export function getStillUrl(item) {
 }
 
 export function getItemKey(item) {
+  if (!item) return 'item-null'
   return `${item.type || item.media_type || 'item'}-${item.source || ''}-${item.folder_name || item.name || getTitle(item)}`
 }
 
 export function getCatalogIdentityKey(item) {
+  if (!item) return ''
   const source = String(item.source || '').trim().toLowerCase()
   const title = String(item.folder_name || item.name || '')
     .trim()
@@ -50,6 +56,7 @@ export function getCatalogIdentityKey(item) {
 }
 
 export function getItemPath(item) {
+  if (!item) return ''
   const source = item.source || ''
   if (/^(?:gdrive|gdrive_folder|telegram)\//.test(source)) return source
   return item.folder_name || item.name || source
@@ -75,6 +82,7 @@ export function normalizeMediaPath(mediaPath) {
 export function normalizeWatchHistory(history) {
   const seenPaths = new Set()
   return (Array.isArray(history) ? history : []).flatMap((item) => {
+    if (!item) return []
     const mediaPath = normalizeMediaPath(item.media_path)
     if (!mediaPath || seenPaths.has(mediaPath)) return []
     seenPaths.add(mediaPath)
@@ -83,6 +91,7 @@ export function normalizeWatchHistory(history) {
 }
 
 export function getProfileAvatarUrl(profile) {
+  if (!profile) return ''
   const avatarUrl = profile.avatar_url || profile.avatar || profile.image_url
   if (avatarUrl) return avatarUrl
 
@@ -96,7 +105,7 @@ export function getProfileAvatarUrl(profile) {
 }
 
 export function getPersonFallbackUrl(person = {}) {
-  const seed = hashString(person.id || person.name || 'Cast')
+  const seed = hashString(person?.id || person?.name || 'Cast')
   const hue = Math.abs(seed) % 360
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><rect width="120" height="120" fill="hsl(${hue} 24% 18%)"/><circle cx="60" cy="44" r="25" fill="hsl(${hue} 18% 68%)"/><path d="M12 120c4-32 20-48 48-48s44 16 48 48" fill="hsl(${hue} 22% 42%)"/></svg>`
   return `data:image/svg+xml,${encodeURIComponent(svg)}`
@@ -107,17 +116,20 @@ export function getPosterFallbackUrl() {
 }
 
 export function getMediaType(item = {}) {
+  if (!item) return 'series'
   const mediaType = String(item.media_type || item.type || '').toLowerCase()
   return mediaType === 'movie' ? 'movie' : 'series'
 }
 
 export function getGenres(item = {}) {
+  if (!item) return []
   return (item.tmdb_genres || item.genres || [])
-    .map((genre) => typeof genre === 'string' ? genre : genre.name)
+    .map((genre) => typeof genre === 'string' ? genre : genre?.name)
     .filter(Boolean)
 }
 
 export function getRating(item) {
+  if (!item) return 0
   return Number(item.tmdb_rating || item.vote_average || 0)
 }
 
