@@ -102,29 +102,16 @@ export function getPersonFallbackUrl(person = {}) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
-export function getPosterFallbackUrl(item = {}, { onlyWhenResolved = false } = {}) {
-  if (onlyWhenResolved && !item.tmdb_metadata_resolved && !getPosterUrl(item) && !getBackdropUrl(item)) return ''
-
-  const title = getTitle(item)
-  const seed = hashString(title)
-  const hue = Math.abs(seed) % 360
-  const accentHue = (hue + 46) % 360
-  const initials = title
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((word) => word.slice(0, 1).toUpperCase())
-    .join('') || 'M'
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="hsl(${hue} 58% 30%)"/><stop offset="1" stop-color="hsl(${accentHue} 62% 12%)"/></linearGradient></defs><rect width="240" height="360" fill="url(#g)"/><circle cx="188" cy="74" r="92" fill="hsl(${accentHue} 72% 52% / .2)"/><path d="M0 292L240 168v192H0z" fill="hsl(${hue} 72% 8% / .46)"/><text x="120" y="188" fill="hsl(${hue} 55% 92%)" font-family="Arial,sans-serif" font-size="72" font-weight="700" text-anchor="middle">${escapeSvgText(initials)}</text><text x="120" y="326" fill="hsl(${hue} 42% 88%)" font-family="Arial,sans-serif" font-size="16" font-weight="700" text-anchor="middle">MUTFLIX</text></svg>`
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`
+export function getPosterFallbackUrl() {
+  return ''
 }
 
-export function getMediaType(item) {
+export function getMediaType(item = {}) {
   const mediaType = String(item.media_type || item.type || '').toLowerCase()
   return mediaType === 'movie' ? 'movie' : 'series'
 }
 
-export function getGenres(item) {
+export function getGenres(item = {}) {
   return (item.tmdb_genres || item.genres || [])
     .map((genre) => typeof genre === 'string' ? genre : genre.name)
     .filter(Boolean)
@@ -223,13 +210,13 @@ function normalizeLookupTitle(value) {
     .trim()
 }
 
-function getCleanEpisodeTitle(value, mediaPath = '') {
+export function getCleanEpisodeTitle(value, mediaPath = '') {
   const title = String(value || '').trim()
   if (!title || isTechnicalEpisodeTitle(title, mediaPath)) return ''
   return title
 }
 
-function isTechnicalEpisodeTitle(value, mediaPath = '') {
+export function isTechnicalEpisodeTitle(value, mediaPath = '') {
   const title = String(value || '').trim()
   const lower = title.toLowerCase()
   const path = String(mediaPath || '').trim().replace(/\\/g, '/').toLowerCase()

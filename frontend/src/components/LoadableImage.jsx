@@ -13,12 +13,9 @@ const LoadableImage = memo(function LoadableImage({
   const [useFallback, setUseFallback] = useState(false)
   const resolvedSrc = useFallback || !src ? fallbackSrc : src
   const [imageState, setImageState] = useState(() => getInitialImageState(src || fallbackSrc))
-  const renderImageState = imageState
-  const showShimmer = renderImageState === 'loading' || (renderImageState === 'error' && shimmerOnError)
-  const shimmerClassName = renderImageState === 'error'
-    ? 'image-shimmer image-shimmer-static'
-    : 'image-shimmer'
-  const shouldRenderImage = renderImageState !== 'error'
+  const showShimmer = imageState === 'loading' || (imageState === 'error' && shimmerOnError)
+  const shimmerClassName = 'image-shimmer'
+  const shouldRenderImage = imageState !== 'error' && Boolean(resolvedSrc)
 
   useEffect(() => {
     setUseFallback(false)
@@ -27,7 +24,7 @@ const LoadableImage = memo(function LoadableImage({
 
   if (!resolvedSrc) {
     return shimmerOnError
-      ? <span className={renderImageState === 'error' ? 'image-shimmer image-shimmer-static' : 'image-shimmer'} aria-hidden="true" />
+      ? <span className="image-shimmer" aria-hidden="true" />
       : null
   }
 
@@ -37,7 +34,7 @@ const LoadableImage = memo(function LoadableImage({
       {shouldRenderImage && (
         <img
           alt={alt}
-          className={`${className} ${renderImageState === 'loaded' ? 'image-loaded' : 'image-loading'}`.trim()}
+          className={`${className} ${imageState === 'loaded' ? 'image-loaded' : 'image-loading'}`.trim()}
           decoding="async"
           fetchPriority={fetchPriority}
           loading={loading}

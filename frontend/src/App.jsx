@@ -988,7 +988,8 @@ function App() {
         />
       )
     }
-    if (isDetailRoute && detailData.item) {
+    if (isDetailRoute) {
+      if (!detailData.item) return null
       return renderWithContextMenu(
         <DetailPage
           detailData={detailData}

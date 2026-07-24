@@ -5,6 +5,7 @@ import LoadableImage from '../components/LoadableImage'
 import CreditsPanel from '../components/detail/CreditsPanel'
 import {
   formatDuration,
+  getCleanEpisodeTitle,
   getDetailArtworkUrl,
   getGenres,
   getItemPath,
@@ -30,8 +31,12 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
   const selectedSeason = seasons.includes(activeSeason) ? activeSeason : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
   const backdrop = getDetailArtworkUrl(item)
+    || (credits?.meta ? getDetailArtworkUrl(credits.meta) : '')
+    || (videos[0] ? getStillUrl(videos[0]) : '')
   const backdropFallback = isLoading ? '' : getPosterFallbackUrl(item)
-  const genres = getGenres(item)
+  const genres = getGenres(item).length ? getGenres(item) : getGenres(credits?.meta)
+  const rating = getRating(item) || getRating(credits?.meta)
+  const overview = item?.tmdb_overview || item?.overview || credits?.meta?.overview || 'No description is available for this title yet.'
   const firstVideo = videos[0]
   const findWatchEntry = (video) => watchHistory.find((entry) => (
     normalizeMediaPath(entry.media_path) === normalizeMediaPath(video?.path)
@@ -69,10 +74,10 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
           <h1>{getTitle(item)}</h1>
           <div className="detail-meta">
-            {getRating(item) > 0 && <span className="detail-rating">TMDB {getRating(item).toFixed(1)}</span>}
+            {rating > 0 && <span className="detail-rating">TMDB {rating.toFixed(1)}</span>}
             {genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
           </div>
-          <p className="detail-overview">{item.tmdb_overview || item.overview || 'No description is available for this title yet.'}</p>
+          <p className="detail-overview">{overview}</p>
           <button className="play-button" disabled={!firstVideo || isLoading} onClick={() => onPlayVideo(firstVideo)} type="button">
             <Play fill="currentColor" size={20} />
             <span>{isLoading ? 'Loading...' : firstVideo ? 'Play' : 'Unavailable offline'}</span>
@@ -141,7 +146,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
               <div className="episode-list">
                 {renderedVideos.map((video, index) => {
                   const episodeNumber = video.episode || index + 1
-                  const thumbnail = getStillUrl(video)
+                  const thumbnail = getStillUrl(video) || backdrop
                   const thumbnailFallback = getPosterFallbackUrl({
                     name: video.name || `${getTitle(item)} episode ${episodeNumber}`,
                   })
@@ -184,7 +189,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
                       </div>
                       <div className="episode-copy">
                         <div className="episode-title-row">
-                          <h3>{video.name}</h3>
+                          <h3>{getCleanEpisodeTitle(video.name, video.path) || `Episode ${episodeNumber}`}</h3>
                           {duration && <span>{duration}</span>}
                         </div>
                         <p className="episode-meta">Season {video.season || 1} &middot; Episode {episodeNumber}</p>

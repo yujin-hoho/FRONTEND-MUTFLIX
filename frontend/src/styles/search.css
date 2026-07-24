@@ -718,10 +718,6 @@
   contain: paint;
 }
 
-.search-result-poster .image-shimmer::after,
-.search-preview-poster .image-shimmer::after {
-  display: none;
-}
 
 .search-result-copy {
   display: grid;

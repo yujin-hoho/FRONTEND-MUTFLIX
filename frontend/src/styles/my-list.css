@@ -176,9 +176,6 @@
   contain: paint;
 }
 
-.my-list-poster .image-shimmer::after {
-  display: none;
-}
 
 .my-list-poster img {
   width: 100%;

@@ -294,6 +294,7 @@
 }
 
 .tmdb-result-poster {
+  position: relative;
   aspect-ratio: 2 / 3;
   overflow: hidden;
   border-radius: 7px;
