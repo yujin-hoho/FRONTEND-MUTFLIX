@@ -15,17 +15,94 @@ export function getTitle(item) {
   return item.tmdb_title || item.title || item.name || item.folder_name || item.series_title || item.media_title || 'Untitled'
 }
 
+export function resolveServerMediaUrl(path, size = 'w342') {
+  if (!path) return ''
+  const trimmed = String(path).trim()
+  if (!trimmed) return ''
+  if (/^(?:https?:|data:|blob:)/i.test(trimmed)) return trimmed
+
+  if (
+    trimmed.startsWith('/api/')
+    || trimmed.startsWith('/posters/')
+    || trimmed.startsWith('/backdrops/')
+    || trimmed.startsWith('/storage/')
+    || trimmed.startsWith('/gdrive-poster/')
+  ) {
+    return `${API_BASE_URL}${trimmed}`
+  }
+
+  if (
+    trimmed.startsWith('api/')
+    || trimmed.startsWith('posters/')
+    || trimmed.startsWith('backdrops/')
+    || trimmed.startsWith('storage/')
+    || trimmed.startsWith('gdrive-poster/')
+  ) {
+    return `${API_BASE_URL}/${trimmed}`
+  }
+
+  return `${API_BASE_URL}/api/tmdb-image/${size}/${trimmed.replace(/^\//, '')}`
+}
+
+export function getTmdbId(item) {
+  if (!item) return null
+  const id = item.tmdb_id || item.idtmdb || item.tmdb_override_id
+  const parsed = Number(id)
+  return parsed > 0 ? parsed : null
+}
+
 export function getPosterUrl(item, size = 'w342') {
   if (!item) return ''
-  return getTmdbImageUrl(
-    item.tmdb_poster_path || item.poster_path || item.thumbnail_path || item.image_url,
-    size,
-  )
+  const posters = Array.isArray(item.all_poster_urls) && item.all_poster_urls.length > 0
+    ? item.all_poster_urls.filter(Boolean)
+    : []
+
+  if (posters.length > 1) {
+    const sixHours = 6 * 60 * 60 * 1000
+    const timeSlot = Math.floor(Date.now() / sixHours)
+    const seed = hashString(item.folder_name || item.name || item.id || item.tmdb_id || 'poster')
+    const index = Math.abs(timeSlot + seed) % posters.length
+    return resolveServerMediaUrl(posters[index], size)
+  }
+
+  const poster = posters[0]
+    || item.poster_url
+    || item.display_poster
+    || item.primary_poster_url
+    || item.poster
+    || item.thumbnail_url
+    || item.image_url
+    || item.tmdb_poster_path
+    || item.poster_path
+    || item.thumbnail_path
+
+  return resolveServerMediaUrl(poster, size)
 }
 
 export function getBackdropUrl(item, size = 'w1280') {
   if (!item) return ''
-  return getTmdbImageUrl(item.tmdb_backdrop_path || item.backdrop_path, size)
+  const backdrops = Array.isArray(item.all_backdrop_urls) && item.all_backdrop_urls.length > 0
+    ? item.all_backdrop_urls.filter(Boolean)
+    : []
+
+  if (backdrops.length > 1) {
+    const sixHours = 6 * 60 * 60 * 1000
+    const timeSlot = Math.floor(Date.now() / sixHours)
+    const seed = hashString(item.folder_name || item.name || item.id || item.tmdb_id || 'backdrop')
+    const index = Math.abs(timeSlot + seed) % backdrops.length
+    return resolveServerMediaUrl(backdrops[index], size)
+  }
+
+  const backdrop = backdrops[0]
+    || item.backdrop_url
+    || item.primary_backdrop_url
+    || item.backdrop
+    || item.background_url
+    || item.fanart_url
+    || item.tmdb_backdrop_path
+    || item.backdrop_path
+
+  return resolveServerMediaUrl(backdrop, size)
 }
 
 export function getDetailArtworkUrl(item) {
@@ -34,10 +111,17 @@ export function getDetailArtworkUrl(item) {
 
 export function getStillUrl(item) {
   if (!item) return ''
-  const stillPath = item.still_path || item.poster_path || item.thumbnail_path || item.profile_path
-  if (!stillPath) return ''
-  if (stillPath.startsWith('http')) return stillPath
-  return `${API_BASE_URL}/api/tmdb-image/w500/${stillPath.replace(/^\//, '')}`
+  const stillPath = item.still_url
+    || item.still_path
+    || item.thumbnail_url
+    || item.thumbnail_path
+    || item.backdrop_url
+    || item.primary_backdrop_url
+    || (Array.isArray(item.all_backdrop_urls) && item.all_backdrop_urls[0])
+    || item.tmdb_backdrop_path
+    || item.backdrop_path
+
+  return resolveServerMediaUrl(stillPath, 'w500')
 }
 
 export function getItemKey(item) {
@@ -305,10 +389,8 @@ export async function preloadImages(urls, { concurrency = 12 } = {}) {
   )
 }
 
-export function getTmdbImageUrl(path, size) {
-  if (!path) return ''
-  if (/^(?:https?:|data:|blob:)/.test(path)) return path
-  return `${API_BASE_URL}/api/tmdb-image/${size}/${path.replace(/^\//, '')}`
+export function getTmdbImageUrl(path, size = 'w342') {
+  return resolveServerMediaUrl(path, size)
 }
 
 function getRotationItemKey(item, index) {

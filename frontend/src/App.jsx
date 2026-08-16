@@ -331,11 +331,11 @@ function App() {
   const hydrateCatalogItems = useCallback(async (items) => {
     const pendingItems = items.filter((item) => {
       const itemKey = getCatalogIdentityKey(item)
-      const hasTmdbId = Number(item.tmdb_id || item.tmdb_override_id || 0) > 0
+      const hasTmdbId = Number(item.tmdb_id || item.idtmdb || item.tmdb_override_id || 0) > 0
       const overrideId = Number(item.tmdb_override_id || 0)
       const needsMetadata = (
         (!item.tmdb_metadata_resolved && (!getPosterUrl(item) || !hasTmdbId))
-        || (overrideId > 0 && Number(item.tmdb_id || 0) !== overrideId)
+        || (overrideId > 0 && Number(item.tmdb_id || item.idtmdb || 0) !== overrideId)
       )
       return needsMetadata && !pendingMetadataKeys.current.has(itemKey)
     })
@@ -1243,7 +1243,8 @@ function createCatalogOverrideItem(item, tmdbResult, mediaType) {
     media_type: nextMediaType,
     type: nextMediaType === 'movie' ? 'movie' : 'series',
     tmdb_backdrop_path: tmdbResult.backdrop_path || '',
-    tmdb_id: tmdbResult.id || item.tmdb_id,
+    tmdb_id: tmdbResult.id || item.tmdb_id || item.idtmdb,
+    idtmdb: tmdbResult.id || item.idtmdb || item.tmdb_id,
     tmdb_metadata_resolved: true,
     tmdb_override_id: tmdbResult.id || item.tmdb_override_id,
     tmdb_original_language: tmdbResult.original_language || '',
@@ -1272,8 +1273,7 @@ function getFeaturedItemKey(featuredKeys, profileId, movies, series) {
   }
 
   const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
-  const posterItems = catalogItems.filter((item) => getPosterUrl(item))
-  const heroItems = backdropItems.length ? backdropItems : posterItems.length ? posterItems : catalogItems
+  const heroItems = backdropItems.length ? backdropItems : catalogItems
   const heroItem = rotateItems(heroItems, `${rotationKey}-hero`)[0]
   const itemKey = heroItem ? getItemKey(heroItem) : ''
   if (itemKey) featuredKeys.set(profileId, { itemKey, rotationKey })
@@ -1314,7 +1314,7 @@ function createCompletedHistoryPayload({ item, profileId, video }, durationMs) {
     series_title: isMovie ? null : getTitle(item),
     series_path: isMovie ? null : getItemPath(item),
     source: video.source || item.source || '',
-    still_path: video.still_path || item.tmdb_backdrop_path || item.backdrop_path || item.tmdb_poster_path || item.poster_path || '',
+    still_path: video.still_path || item.backdrop_url || item.poster_url || item.primary_backdrop_url || item.primary_poster_url || item.tmdb_backdrop_path || item.backdrop_path || item.tmdb_poster_path || item.poster_path || '',
     subtitle_path: video.subtitle_path || '',
     season: video.season || 1,
     episode: video.episode || 1,

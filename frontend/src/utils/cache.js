@@ -17,9 +17,26 @@ import {
 } from './media'
 
 const CATALOG_METADATA_FIELDS = [
+  'poster_url',
+  'backdrop_url',
+  'display_poster',
+  'primary_poster_url',
+  'primary_backdrop_url',
+  'all_poster_urls',
+  'all_backdrop_urls',
+  'total_posters',
+  'total_backdrops',
+  'poster_file_id',
+  'backdrop_file_id',
   'tmdb_metadata_resolved',
+  'idtmdb',
   'tmdb_id',
   'tmdb_override_id',
+  'tmdb_query',
+  'override_year',
+  'override_region',
+  'override_language',
+  'include_adult',
   'tmdb_title',
   'tmdb_poster_path',
   'tmdb_backdrop_path',
@@ -390,8 +407,8 @@ function getCatalogCacheScore(item, previousKeys) {
 
 function getMetadataCacheScore(metadata) {
   let score = metadata.tmdb_metadata_resolved ? 15 : 0
-  if (metadata.tmdb_poster_path || metadata.poster_path || metadata.thumbnail_path || metadata.image_url) score += 50
-  if (metadata.tmdb_backdrop_path || metadata.backdrop_path) score += 20
+  if (metadata.poster_url || metadata.primary_poster_url || metadata.tmdb_poster_path || metadata.poster_path || metadata.thumbnail_path || metadata.image_url) score += 50
+  if (metadata.backdrop_url || metadata.primary_backdrop_url || metadata.tmdb_backdrop_path || metadata.backdrop_path) score += 20
   if ((metadata.tmdb_genres || metadata.genres || []).length) score += 10
   if (Number(metadata.tmdb_rating || metadata.vote_average || 0) > 0) score += 5
   return score
@@ -496,7 +513,7 @@ function mergeMeaningfulValues(...sources) {
 function isMeaningfulValue(key, value) {
   if (value === null || value === undefined || value === '') return false
   if (key === 'tmdb_metadata_resolved') return value === true
-  if (key === 'tmdb_id' || key === 'tmdb_override_id') return Number(value) > 0
+  if (key === 'tmdb_id' || key === 'idtmdb' || key === 'tmdb_override_id') return Number(value) > 0
   if (key === 'tmdb_rating' || key === 'vote_average') return Number(value) > 0
   if (Array.isArray(value)) return value.length > 0
   return true

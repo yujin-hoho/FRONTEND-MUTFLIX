@@ -561,7 +561,7 @@ function createTmdbCatalogMap(items) {
   const byTitle = new Map()
 
   items.forEach((item) => {
-    const tmdbId = Number(item.tmdb_id || item.tmdb_override_id || 0)
+    const tmdbId = Number(item.tmdb_id || item.idtmdb || item.tmdb_override_id || 0)
     const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
     if (tmdbId) byTmdbId.set(`${mediaType}:${tmdbId}`, item)
 
@@ -648,7 +648,7 @@ function getCreditReleaseYear(credit) {
 }
 
 function needsActorLookupMetadata(item) {
-  return !Number(item.tmdb_id || item.tmdb_override_id || 0) && !item.tmdb_metadata_resolved
+  return !Number(item.tmdb_id || item.idtmdb || item.tmdb_override_id || 0) && !item.tmdb_metadata_resolved
 }
 
 export default SearchResultsPage

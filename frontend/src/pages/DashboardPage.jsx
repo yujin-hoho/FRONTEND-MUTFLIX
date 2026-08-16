@@ -6,6 +6,7 @@ import { CatalogRow, HistoryRow } from '../components/catalog/CatalogRows'
 import SearchBox from '../components/search/SearchBox'
 import { createDashboardRowsSnapshot } from '../utils/cache'
 import {
+  getBackdropUrl,
   getDetailArtworkUrl,
   getGenres,
   getItemKey,
@@ -143,8 +144,10 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey, watch
   const completedContext = { myList, watchHistory }
   const catalogItems = [...catalogData.movies, ...catalogData.series]
     .filter((item) => !isCatalogItemCompleted(item, completedContext))
+  const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
+  const heroCandidates = backdropItems.length ? backdropItems : catalogItems
   const featuredItem = catalogItems.find((item) => getItemKey(item) === featuredItemKey)
-    || rotateItems(catalogItems, `${rotationKey}-hero`)[0]
+    || rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
     || catalogItems[0]
   const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Animation', 'Documentary']
     .map((genre) => ({
@@ -194,7 +197,7 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey, watch
       freshPicks.length ? { genre: 'Fresh Picks', items: freshPicks } : null,
       hiddenGems.length ? { genre: 'Hidden Gems', items: hiddenGems } : null,
     ].filter(Boolean),
-    featuredBackdrop: featuredItem ? getDetailArtworkUrl(featuredItem) : '',
+    featuredBackdrop: featuredItem ? getBackdropUrl(featuredItem) : '',
     featuredFallback: featuredItem ? getPosterFallbackUrl(featuredItem) : '',
     featuredItem,
   }

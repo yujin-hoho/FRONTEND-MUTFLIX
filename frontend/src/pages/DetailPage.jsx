@@ -5,6 +5,7 @@ import LoadableImage from '../components/LoadableImage'
 import CreditsPanel from '../components/detail/CreditsPanel'
 import {
   formatDuration,
+  getBackdropUrl,
   getCleanEpisodeTitle,
   getDetailArtworkUrl,
   getGenres,
@@ -30,8 +31,8 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
   const [visibleEpisodeCount, setVisibleEpisodeCount] = useState(EPISODES_PER_PAGE)
   const selectedSeason = seasons.includes(activeSeason) ? activeSeason : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
-  const backdrop = getDetailArtworkUrl(item)
-    || (credits?.meta ? getDetailArtworkUrl(credits.meta) : '')
+  const backdrop = getBackdropUrl(item)
+    || (credits?.meta ? getBackdropUrl(credits.meta) : '')
     || (videos[0] ? getStillUrl(videos[0]) : '')
   const backdropFallback = isLoading ? '' : getPosterFallbackUrl(item)
   const genres = getGenres(item).length ? getGenres(item) : getGenres(credits?.meta)

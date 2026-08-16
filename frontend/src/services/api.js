@@ -5,6 +5,7 @@ import {
   getGenres,
   getItemPath,
   getMediaType,
+  getTmdbId,
   normalizeMediaPath,
   normalizeWatchHistory,
   getPosterUrl,
@@ -914,9 +915,15 @@ export async function fetchDetailData(authToken, item) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to load title details.')
 
+  const mergedItem = mergeMeaningfulValues(
+    detailItem,
+    data.catalog_item || {},
+    { media_type: detailItem.media_type },
+  )
+
   const [videos, credits] = await Promise.all([
-    enrichEpisodesFromServer(detailItem, Array.isArray(data.videos) ? data.videos : [], headers),
-    getCreditsFromServer(detailItem, headers),
+    enrichEpisodesFromServer(mergedItem, Array.isArray(data.videos) ? data.videos : [], headers),
+    getCreditsFromServer(mergedItem, headers),
   ])
 
   return {
@@ -924,7 +931,14 @@ export async function fetchDetailData(authToken, item) {
       detailItem,
       data.catalog_item || {},
       getCatalogMetadataFromTmdb(credits.meta),
-      { media_type: detailItem.media_type },
+      {
+        poster_url: detailItem.poster_url || data.catalog_item?.poster_url,
+        backdrop_url: detailItem.backdrop_url || data.catalog_item?.backdrop_url,
+        display_poster: detailItem.display_poster || data.catalog_item?.display_poster,
+        all_poster_urls: detailItem.all_poster_urls || data.catalog_item?.all_poster_urls,
+        all_backdrop_urls: detailItem.all_backdrop_urls || data.catalog_item?.all_backdrop_urls,
+        media_type: detailItem.media_type,
+      },
     ),
     videos,
     credits,
@@ -958,18 +972,26 @@ export async function fetchVideoQueue(authToken, item) {
 async function enrichEpisodesFromServer(item, videos, headers) {
   if (getMediaType(item) === 'movie' || !videos.length) return videos
 
-  const folderName = item.folder_name || item.name || getItemPath(item)
-  if (!folderName) return videos
+  let tmdbId = getTmdbId(item)
+  if (!tmdbId) {
+    const folderName = item.folder_name || item.name || getItemPath(item)
+    if (!folderName) return videos
+
+    try {
+      const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/tv?folder_name=${encodeURIComponent(folderName)}`, { headers })
+      const meta = await metaResponse.json().catch(() => ({}))
+      tmdbId = metaResponse.ok ? meta.id : null
+    } catch {
+      return videos
+    }
+  }
+
+  if (!tmdbId) return videos
 
   try {
-    const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/tv?folder_name=${encodeURIComponent(folderName)}`, { headers })
-    const meta = await metaResponse.json().catch(() => ({}))
-    const tmdbId = metaResponse.ok ? meta.id : null
-    if (!tmdbId) return videos
-
     const seasons = [...new Set(videos.map((video) => Number(video.season || 1)))]
     const seasonResponses = await Promise.all(seasons.map(async (season) => {
-      const response = await fetch(`${API_BASE_URL}/api/tmdb/tv/${tmdbId}/season/${season}`, { headers })
+      const response = await fetch(`${API_BASE_URL}/api/tmdb/tv/${tmdbId}/season/${season}?language=en-US`, { headers })
       const data = await response.json().catch(() => ({}))
       return response.ok && Array.isArray(data.episodes) ? data.episodes : []
     }))
@@ -996,17 +1018,29 @@ async function enrichEpisodesFromServer(item, videos, headers) {
 async function getCreditsFromServer(item, headers) {
   const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
   const folderName = item.folder_name || item.name || getItemPath(item)
-  if (!folderName) return createEmptyCredits()
+  let tmdbId = getTmdbId(item)
+  let meta = null
 
   try {
-    const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/${mediaType}?folder_name=${encodeURIComponent(folderName)}`, { headers })
-    const meta = await metaResponse.json().catch(() => ({}))
-    if (!metaResponse.ok || !meta.id) return createEmptyCredits()
+    if (tmdbId) {
+      const detailResponse = await fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}?language=en-US`, { headers })
+      if (detailResponse.ok) {
+        meta = await detailResponse.json().catch(() => ({}))
+      }
+    }
+
+    if (!meta || !meta.id) {
+      if (!folderName) return createEmptyCredits()
+      const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/${mediaType}?folder_name=${encodeURIComponent(folderName)}`, { headers })
+      meta = await metaResponse.json().catch(() => ({}))
+      if (!metaResponse.ok || !meta.id) return createEmptyCredits()
+      tmdbId = meta.id
+    }
 
     const [creditsResponse, recommendationsResponse, videosResponse] = await Promise.all([
-      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${meta.id}/credits`, { headers }),
-      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${meta.id}/recommendations`, { headers }),
-      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${meta.id}/videos`, { headers }),
+      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}/credits?language=en-US`, { headers }),
+      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}/recommendations?language=en-US`, { headers }),
+      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}/videos?language=en-US`, { headers }),
     ])
     const [credits, recommendations, videos] = await Promise.all([
       creditsResponse.json().catch(() => ({})),
@@ -1051,7 +1085,8 @@ function mergeCatalogWithMetadata(items, metadataMap, mediaType) {
 
     return {
       ...item,
-      tmdb_id: metadata.id || item.tmdb_id,
+      tmdb_id: metadata.id || item.tmdb_id || item.idtmdb,
+      idtmdb: metadata.id || item.idtmdb || item.tmdb_id,
       tmdb_metadata_resolved: true,
       tmdb_title: metadata.title || metadata.name || item.tmdb_title,
       tmdb_poster_path: metadata.poster_path || item.tmdb_poster_path,
@@ -1093,7 +1128,7 @@ export async function removeMyListItem(authToken, { item, profileId }) {
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
     .filter((item) => {
-      const hasTmdbId = Number(item.tmdb_id || item.tmdb_override_id || 0) > 0
+      const hasTmdbId = Number(item.tmdb_id || item.idtmdb || item.tmdb_override_id || 0) > 0
       return (
         hasUnresolvedOverride(item)
         || (!item.tmdb_metadata_resolved && (!hasTmdbId || !getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
@@ -1113,7 +1148,7 @@ function getMetadataRequestType(item, fallbackMediaType) {
 function hasUnresolvedOverride(item) {
   const overrideId = Number(item.tmdb_override_id || 0)
   if (!overrideId) return false
-  return Number(item.tmdb_id || 0) !== overrideId
+  return Number(item.tmdb_id || item.idtmdb || 0) !== overrideId
 }
 
 async function fetchMetadataBatch(headers, items) {
@@ -1161,7 +1196,7 @@ function isStaleOverrideUpdate(item, update) {
   const overrideId = Number(item.tmdb_override_id || 0)
   if (!overrideId) return false
 
-  const updateTmdbId = Number(update.tmdb_id || 0)
+  const updateTmdbId = Number(update.tmdb_id || update.idtmdb || 0)
   if (updateTmdbId === overrideId) return false
   return hasTmdbMetadata(update)
 }
@@ -1183,6 +1218,7 @@ function getCatalogMetadataFromTmdb(meta) {
 
   return {
     tmdb_id: meta.id,
+    idtmdb: meta.id,
     tmdb_title: meta.title || meta.name,
     tmdb_poster_path: meta.poster_path,
     tmdb_backdrop_path: meta.backdrop_path,
