@@ -17,6 +17,7 @@ import copy
 import shutil
 import subprocess
 from functools import wraps, lru_cache
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from urllib.parse import quote, unquote, urlparse
@@ -50,6 +51,7 @@ except ImportError:
     HAS_PROXY_FIX = False
 import jwt
 from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -121,6 +123,8 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 GDRIVE_TOKEN_B64 = os.environ.get('GDRIVE_TOKEN_B64')
 GDRIVE_SUBTITLE_TOKEN_B64 = os.environ.get('GDRIVE_SUBTITLE_TOKEN_B64')
 GDRIVE_SUBTITLE_FOLDER_ID = os.environ.get('GDRIVE_SUBTITLE_FOLDER_ID')
+GDRIVE_POSTER_TOKEN_B64 = os.environ.get('GDRIVE_POSTER_TOKEN_B64')
+GDRIVE_POSTER_FOLDER_ID = os.environ.get('GDRIVE_POSTER_FOLDER_ID')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 TMDB_API_KEY = os.environ.get('TMDB_API_KEY')
@@ -224,6 +228,7 @@ TMDB_HTTP_RETRIES = max(0, int(os.environ.get('TMDB_HTTP_RETRIES', '1')))
 TMDB_HTTP_BACKOFF_SECONDS = max(0.0, float(os.environ.get('TMDB_HTTP_BACKOFF_SECONDS', '0.35')))
 SEARCH_RESPONSE_CACHE_TTL_SECONDS = 30
 WATCH_HISTORY_ACTIVE_CUTOFF = 0.90  # >=90% watched is treated as completed server-side
+WATCH_HISTORY_STALE_SKEW = datetime.timedelta(seconds=5)
 AUDIO_TRANSCODE_AUDIO_BITRATE = os.environ.get('AUDIO_TRANSCODE_AUDIO_BITRATE', '192k')
 AUDIO_TRANSCODE_MAX_CONCURRENT = max(1, int(os.environ.get('AUDIO_TRANSCODE_MAX_CONCURRENT', '2')))
 AUDIO_TRANSCODE_SLOT_WAIT_SECONDS = max(0.0, float(os.environ.get('AUDIO_TRANSCODE_SLOT_WAIT_SECONDS', '3')))
@@ -371,7 +376,7 @@ _markers_lock = threading.Lock()
 _response_cache = {}       # {cache_key: orjson_bytes}
 _response_cache_ts = {}    # {cache_key: timestamp}
 _response_lock = threading.Lock()
-FOLDERS_MERGED_RESPONSE_CACHE_KEY = 'resp_folders_merged_v2'
+FOLDERS_MERGED_RESPONSE_CACHE_KEY = 'resp_folders_merged_v3'
 
 # === TMDB OVERRIDE RAM CACHE ===
 # Avoids DB reads + deepcopy/merge work on every /api/folders request.
@@ -1928,13 +1933,38 @@ def _get_tmdb_overrides_map():
         if now < _tmdb_overrides_retry_after:
             return _tmdb_overrides_cache or {}
 
+    # 1. Load baseline overrides from static list.json (Zero DB overhead)
+    base_overrides = {}
+    list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+    if os.path.exists(list_path):
+        try:
+            with open(list_path, 'r', encoding='utf-8') as f:
+                ld = json.load(f)
+                for cat in ('series', 'movies'):
+                    for entry in ld.get(cat, []):
+                        if isinstance(entry, dict) and entry.get('name'):
+                            t_id = entry.get('tmdb_id') or entry.get('idtmdb')
+                            if t_id:
+                                base_overrides[entry['name']] = {
+                                    'folder_name': entry['name'],
+                                    'tmdb_query': entry.get('tmdb_query') or entry['name'],
+                                    'media_type': entry.get('media_type') or ('tv' if cat == 'series' else 'movie'),
+                                    'tmdb_id': int(t_id),
+                                    'override_year': entry.get('override_year'),
+                                    'override_language': entry.get('override_language'),
+                                    'override_region': entry.get('override_region'),
+                                    'include_adult': entry.get('include_adult', False),
+                                }
+        except Exception as e:
+            print(f"[TMDB-OVERRIDE] failed reading list.json overrides: {e}", flush=True)
+
     with _tmdb_overrides_refresh_lock:
         now = time.time()
         with _tmdb_overrides_lock:
             if _tmdb_overrides_cache is not None and (now - _tmdb_overrides_ts) < 300:
                 return _tmdb_overrides_cache
             if now < _tmdb_overrides_retry_after:
-                return _tmdb_overrides_cache or {}
+                return _tmdb_overrides_cache or base_overrides
 
         select_cols = 'folder_name, tmdb_query, media_type, tmdb_id, override_year, override_language, include_adult, override_region'
         last_error = None
@@ -1950,7 +1980,11 @@ def _get_tmdb_overrides_map():
                     import sqlite3
                     conn.row_factory = sqlite3.Row
                     rows = [dict(r) for r in conn.execute(f'SELECT {select_cols} FROM tmdb_overrides').fetchall()]
-                by_name = {r['folder_name']: r for r in rows}
+                
+                by_name = dict(base_overrides)
+                for r in rows:
+                    by_name[r['folder_name']] = r
+
                 with _tmdb_overrides_lock:
                     _tmdb_overrides_cache = by_name
                     _tmdb_overrides_ts = time.time()
@@ -1969,7 +2003,8 @@ def _get_tmdb_overrides_map():
         print(f"[TMDB-OVERRIDE] load override cache failed after retries: {last_error}", flush=True)
         with _tmdb_overrides_lock:
             _tmdb_overrides_retry_after = time.time() + 30
-            return _tmdb_overrides_cache or {}
+            _tmdb_overrides_cache = base_overrides
+            return base_overrides
 
 def _merge_tmdb_overrides_into_folders(all_c):
     """
@@ -1998,6 +2033,40 @@ def _merge_tmdb_overrides_into_folders(all_c):
                 item['include_adult'] = bool(ia) if ia is not None else False
     except Exception as e:
         print(f"[TMDB-OVERRIDE] merge into folders failed: {e}", flush=True)
+    return all_c
+
+def _assign_ids_to_folders(all_c):
+    """
+    Pastikan setiap item series dan movies memiliki 'id' sebelum 'name'.
+    Menggunakan mapping id dari list.json jika tersedia, atau ID berurutan 1..N.
+    """
+    if not all_c:
+        return all_c
+    list_map = {'series': {}, 'movies': {}}
+    list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+    if os.path.exists(list_path):
+        try:
+            with open(list_path, 'r', encoding='utf-8') as f:
+                ld = json.load(f)
+                for cat in ('series', 'movies'):
+                    for entry in ld.get(cat, []):
+                        if isinstance(entry, dict) and 'name' in entry and 'id' in entry:
+                            list_map[cat][entry['name']] = entry['id']
+        except Exception:
+            pass
+
+    for cat in ('series', 'movies'):
+        items = all_c.get(cat) or []
+        new_items = []
+        for idx, item in enumerate(items, start=1):
+            item_id = item.get('id') or list_map[cat].get(item.get('name')) or idx
+            # Reconstruct dictionary dengan 'id' ditaruh paling depan sebelum 'name'
+            reordered = {'id': item_id}
+            for k, v in item.items():
+                if k != 'id':
+                    reordered[k] = v
+            new_items.append(reordered)
+        all_c[cat] = new_items
     return all_c
 
 def _normalize_key(name):
@@ -2068,6 +2137,286 @@ def _merge_content_release_tmdb_into_folders(all_c):
         print(f"[CONTENT-RELEASES] merge TMDB metadata into folders failed: {e}", flush=True)
     return all_c
 
+def _merge_gdrive_posters_into_folders(all_c, force=False):
+    """Attach poster_url and backdrop_url from dedicated GDrive poster account to each item in /api/folders."""
+    if not all_c:
+        return all_c
+    try:
+        poster_map, backdrop_map = fetch_gdrive_poster_map(force=force, sync=force)
+        if not poster_map and not backdrop_map:
+            return all_c
+
+        for cat in ('series', 'movies', 'tv'):
+            p_cat = 'series' if cat in ('series', 'tv') else 'movies'
+            for item in all_c.get(cat) or []:
+                name = item.get('name') or ''
+                tmdb_title = item.get('tmdb_title') or ''
+                item_id = str(item.get('id') or '')
+
+                # 1. Poster Match (by cat_id, exact name, normalized name)
+                p_id = poster_map.get(f"{p_cat}_{item_id}") or poster_map.get(f"{cat}_{item_id}")
+                if not p_id and not item_id.isdigit():
+                    p_id = poster_map.get(item_id)
+                if not p_id and name:
+                    p_id = poster_map.get(name.lower().strip()) or poster_map.get(_normalize_key(name))
+                if not p_id and tmdb_title:
+                    p_id = poster_map.get(tmdb_title.lower().strip()) or poster_map.get(_normalize_key(tmdb_title))
+
+                if p_id:
+                    item['poster_url'] = f"/api/gdrive-poster/{p_id[0]}"
+                    item['poster_file_id'] = p_id[0]
+                    item['all_poster_urls'] = [f"/api/gdrive-poster/{fid}" for fid in p_id]
+                    item['total_posters'] = len(p_id)
+
+                # 2. Backdrop Match from GDrive (by cat_id, exact name, normalized name)
+                b_id = backdrop_map.get(f"{p_cat}_{item_id}") or backdrop_map.get(f"{cat}_{item_id}")
+                if not b_id and not item_id.isdigit():
+                    b_id = backdrop_map.get(item_id)
+                if not b_id and name:
+                    b_id = backdrop_map.get(name.lower().strip()) or backdrop_map.get(_normalize_key(name))
+                if not b_id and tmdb_title:
+                    b_id = backdrop_map.get(tmdb_title.lower().strip()) or backdrop_map.get(_normalize_key(tmdb_title))
+
+                if b_id:
+                    item['backdrop_url'] = f"/api/gdrive-poster/{b_id[0]}"
+                    item['backdrop_file_id'] = b_id[0]
+                    item['all_backdrop_urls'] = [f"/api/gdrive-poster/{fid}" for fid in b_id]
+                    item['total_backdrops'] = len(b_id)
+    except Exception as e:
+        print(f"[POSTER-GDRIVE] merge into folders failed: {e}", flush=True)
+    return all_c
+
+# Poster mapping & RAM cache (from media.db & local filesystem posters/)
+_poster_local_map_cache = None
+_poster_local_map_ts = 0
+_poster_local_map_lock = threading.Lock()
+
+def _get_local_poster_map():
+    """Load poster map from media.db or local posters filesystem."""
+    global _poster_local_map_cache, _poster_local_map_ts
+    now = time.time()
+    if _poster_local_map_cache is not None and (now - _poster_local_map_ts) < 3600:
+        return _poster_local_map_cache
+
+    with _poster_local_map_lock:
+        if _poster_local_map_cache is not None and (now - _poster_local_map_ts) < 3600:
+            return _poster_local_map_cache
+
+        p_map = {'movies': {'by_id': {}, 'by_name': {}}, 'series': {'by_id': {}, 'by_name': {}}}
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_paths = [
+            os.path.join(base_dir, 'media.db'),
+            os.path.join(base_dir, 'storage', 'media.db'),
+        ]
+
+        # 1. SQLite media.db
+        for db_path in db_paths:
+            if os.path.exists(db_path):
+                try:
+                    conn = sqlite3.connect(db_path, timeout=5.0)
+                    c = conn.cursor()
+                    c.execute('SELECT list_id, media_type, primary_poster_url, original_list_name, title, poster_folder, total_posters FROM media_items WHERE primary_poster_url IS NOT NULL')
+                    for list_id, media_type, p_url, orig_name, title, poster_folder, total_posters in c.fetchall():
+                        cat = 'series' if str(media_type).lower() in ('tv', 'series') else 'movies'
+                        if p_url:
+                            if poster_folder and total_posters:
+                                all_urls = [f"{poster_folder}/{i}.jpg" for i in range(1, int(total_posters) + 1)]
+                            else:
+                                all_urls = [p_url]
+                            
+                            if list_id is not None:
+                                p_map[cat]['by_id'][str(list_id)] = all_urls
+                            if orig_name:
+                                p_map[cat]['by_name'][orig_name.lower().strip()] = all_urls
+                                norm_k = _normalize_key(orig_name)
+                                if norm_k and not norm_k.isdigit():
+                                    p_map[cat]['by_name'][norm_k] = all_urls
+                            if title:
+                                p_map[cat]['by_name'][title.lower().strip()] = all_urls
+                                norm_k = _normalize_key(title)
+                                if norm_k and not norm_k.isdigit():
+                                    p_map[cat]['by_name'][norm_k] = all_urls
+                    conn.close()
+                    break
+                except Exception as e:
+                    print(f"[POSTER-LOCAL] SQLite media.db read failed: {e}", flush=True)
+
+        # 2. Filesystem scan fallback for posters/{movies,series}/{id}/1.jpg
+        for cat in ('movies', 'series'):
+            cat_dirs = [
+                os.path.join(base_dir, 'posters', cat),
+                os.path.join(base_dir, 'storage', 'posters', cat),
+            ]
+            for cat_dir in cat_dirs:
+                if os.path.exists(cat_dir):
+                    try:
+                        for entry in os.scandir(cat_dir):
+                            if entry.is_dir():
+                                item_id = entry.name
+                                if str(item_id) not in p_map[cat]['by_id']:
+                                    imgs = sorted(
+                                        [f.name for f in os.scandir(entry.path) if f.is_file() and f.name.lower().endswith('.jpg')],
+                                        key=lambda x: int(os.path.splitext(x)[0]) if os.path.splitext(x)[0].isdigit() else x
+                                    )
+                                    if imgs:
+                                        all_urls = [f"/posters/{cat}/{item_id}/{img}" for img in imgs]
+                                        p_map[cat]['by_id'][str(item_id)] = all_urls
+                    except Exception as e:
+                        print(f"[POSTER-LOCAL] filesystem scan failed: {e}", flush=True)
+
+        _poster_local_map_cache = p_map
+        _poster_local_map_ts = now
+        return _poster_local_map_cache
+
+def _merge_local_posters_into_folders(all_c):
+    """Attach local poster_url from media.db / local filesystem if not already present."""
+    if not all_c:
+        return all_c
+    try:
+        p_map = _get_local_poster_map()
+        if not p_map:
+            return all_c
+
+        for cat in ('series', 'movies', 'tv'):
+            p_cat = 'series' if cat in ('series', 'tv') else 'movies'
+            by_id = p_map.get(p_cat, {}).get('by_id', {})
+            by_name = p_map.get(p_cat, {}).get('by_name', {})
+            for item in all_c.get(cat) or []:
+                if item.get('poster_url'):
+                    continue
+                name = item.get('name') or ''
+                tmdb_title = item.get('tmdb_title') or ''
+                item_id = str(item.get('id') or '')
+
+                # 1. Match by exact ID (highest priority)
+                p_url = by_id.get(item_id) if item_id else None
+                # 2. Match by exact or normalized name
+                if not p_url and name:
+                    p_url = by_name.get(name.lower().strip()) or by_name.get(_normalize_key(name))
+                # 3. Match by tmdb_title
+                if not p_url and tmdb_title:
+                    p_url = by_name.get(tmdb_title.lower().strip()) or by_name.get(_normalize_key(tmdb_title))
+
+                if p_url:
+                    item['poster_url'] = p_url[0] if isinstance(p_url, list) else p_url
+                    if isinstance(p_url, list) and len(p_url) > 1:
+                        if not item.get('all_poster_urls'):
+                            item['all_poster_urls'] = p_url
+                            item['total_posters'] = len(p_url)
+                    elif not item.get('all_poster_urls'):
+                        item['all_poster_urls'] = p_url if isinstance(p_url, list) else [p_url]
+                        item['total_posters'] = len(item['all_poster_urls'])
+    except Exception as e:
+        print(f"[POSTER-LOCAL] merge into folders failed: {e}", flush=True)
+    return all_c
+
+# Backdrop mapping & RAM cache
+_backdrop_map_cache = None
+_backdrop_map_ts = 0
+_backdrop_map_lock = threading.Lock()
+
+def _get_backdrop_map():
+    """Load backdrop map from storage/media.db or local storage/backdrops filesystem."""
+    global _backdrop_map_cache, _backdrop_map_ts
+    now = time.time()
+    if _backdrop_map_cache is not None and (now - _backdrop_map_ts) < 3600:
+        return _backdrop_map_cache
+
+    with _backdrop_map_lock:
+        if _backdrop_map_cache is not None and (now - _backdrop_map_ts) < 3600:
+            return _backdrop_map_cache
+
+        b_map = {'movies': {'by_id': {}, 'by_name': {}}, 'series': {'by_id': {}, 'by_name': {}}}
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        db_paths = [
+            os.path.join(base_dir, 'media.db'),
+            os.path.join(base_dir, 'storage', 'media.db'),
+        ]
+
+        # 1. SQLite media.db
+        for db_path in db_paths:
+            if os.path.exists(db_path):
+                try:
+                    conn = sqlite3.connect(db_path, timeout=5.0)
+                    c = conn.cursor()
+                    c.execute('SELECT list_id, media_type, primary_backdrop_url, original_list_name, title FROM media_items WHERE primary_backdrop_url IS NOT NULL')
+                    for list_id, media_type, p_url, orig_name, title in c.fetchall():
+                        cat = 'series' if str(media_type).lower() in ('tv', 'series') else 'movies'
+                        if p_url:
+                            if list_id is not None:
+                                b_map[cat]['by_id'][str(list_id)] = p_url
+                            if orig_name:
+                                b_map[cat]['by_name'][orig_name.lower().strip()] = p_url
+                                norm_k = _normalize_key(orig_name)
+                                if norm_k and not norm_k.isdigit():
+                                    b_map[cat]['by_name'][norm_k] = p_url
+                            if title:
+                                b_map[cat]['by_name'][title.lower().strip()] = p_url
+                                norm_k = _normalize_key(title)
+                                if norm_k and not norm_k.isdigit():
+                                    b_map[cat]['by_name'][norm_k] = p_url
+                    conn.close()
+                    break
+                except Exception as e:
+                    print(f"[BACKDROP] SQLite media.db read failed: {e}", flush=True)
+
+        # 2. Filesystem scan fallback for backdrops/{movies,series}/{id}/1.jpg
+        for cat in ('movies', 'series'):
+            cat_dirs = [
+                os.path.join(base_dir, 'backdrops', cat),
+                os.path.join(base_dir, 'storage', 'backdrops', cat),
+            ]
+            for cat_dir in cat_dirs:
+                if os.path.exists(cat_dir):
+                    try:
+                        for entry in os.scandir(cat_dir):
+                            if entry.is_dir():
+                                item_id = entry.name
+                                if str(item_id) not in b_map[cat]['by_id']:
+                                    img_path = os.path.join(entry.path, '1.jpg')
+                                    if os.path.exists(img_path):
+                                        b_map[cat]['by_id'][str(item_id)] = f"/backdrops/{cat}/{item_id}/1.jpg"
+                    except Exception as e:
+                        print(f"[BACKDROP] filesystem scan failed: {e}", flush=True)
+
+        _backdrop_map_cache = b_map
+        _backdrop_map_ts = now
+        return _backdrop_map_cache
+
+def _merge_backdrops_into_folders(all_c):
+    """Attach backdrop_url to each item in /api/folders and detail responses."""
+    if not all_c:
+        return all_c
+    try:
+        b_map = _get_backdrop_map()
+        if not b_map:
+            return all_c
+
+        for cat in ('series', 'movies', 'tv'):
+            p_cat = 'series' if cat in ('series', 'tv') else 'movies'
+            by_id = b_map.get(p_cat, {}).get('by_id', {})
+            by_name = b_map.get(p_cat, {}).get('by_name', {})
+            for item in all_c.get(cat) or []:
+                if item.get('backdrop_url'):
+                    continue
+                name = item.get('name') or ''
+                tmdb_title = item.get('tmdb_title') or ''
+                item_id = str(item.get('id') or '')
+
+                # 1. Match by exact ID (highest priority)
+                bd_url = by_id.get(item_id) if item_id else None
+                # 2. Match by exact or normalized name
+                if not bd_url and name:
+                    bd_url = by_name.get(name.lower().strip()) or by_name.get(_normalize_key(name))
+                # 3. Match by tmdb_title
+                if not bd_url and tmdb_title:
+                    bd_url = by_name.get(tmdb_title.lower().strip()) or by_name.get(_normalize_key(tmdb_title))
+
+                if bd_url:
+                    item['backdrop_url'] = bd_url
+    except Exception as e:
+        print(f"[BACKDROP] merge into folders failed: {e}", flush=True)
+    return all_c
 
 def _catalog_item_for_folder(folder_name, resolved_name=None):
     """Build the same lightweight catalog metadata used by /api/folders for one detail page."""
@@ -2087,6 +2436,9 @@ def _catalog_item_for_folder(folder_name, resolved_name=None):
                 payload = {'series': [], 'movies': [catalog_item]}
             _merge_content_release_tmdb_into_folders(payload)
             _merge_tmdb_overrides_into_folders(payload)
+            _merge_gdrive_posters_into_folders(payload)
+            _merge_local_posters_into_folders(payload)
+            _merge_backdrops_into_folders(payload)
             merged = (payload.get('series') or payload.get('movies') or [catalog_item])[0]
             merged['folder_name'] = merged.get('folder_name') or merged.get('name') or resolved_name or folder_name
             return merged
@@ -2099,6 +2451,9 @@ def _catalog_item_for_folder(folder_name, resolved_name=None):
     payload = {'series': [], 'movies': [catalog_item]} if is_movie else {'series': [catalog_item], 'movies': []}
     _merge_content_release_tmdb_into_folders(payload)
     _merge_tmdb_overrides_into_folders(payload)
+    _merge_gdrive_posters_into_folders(payload)
+    _merge_local_posters_into_folders(payload)
+    _merge_backdrops_into_folders(payload)
     merged = (payload.get('movies') or payload.get('series'))[0]
     if is_movie:
         merged['type'] = 'movie'
@@ -2615,6 +2970,130 @@ def _history_display_media_title(data):
     return title
 
 
+def _parse_history_timestamp(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime.datetime):
+        dt = value
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.astimezone(datetime.timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    if 'T' not in text and ' ' in text:
+        text = text.replace(' ', 'T', 1)
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        dt = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def _history_db_timestamp(dt, db_type):
+    if dt is None:
+        return None
+    utc = dt.astimezone(datetime.timezone.utc)
+    if db_type == 'postgres':
+        return utc
+    return utc.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _history_series_key(item):
+    series_path = str(item.get('series_path') or '').strip().lower()
+    if series_path:
+        return f'path:{series_path}'
+    series_title = str(item.get('series_title') or '').strip().lower()
+    if series_title:
+        return f'title:{series_title}'
+    media_path = str(item.get('media_path') or '').strip().lower()
+    return f'media:{media_path}'
+
+
+def _collapse_history_by_series(items):
+    """Keep the newest entry per series (input must be last_watched DESC)."""
+    seen = set()
+    collapsed = []
+    for item in items:
+        key = _history_series_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        collapsed.append(item)
+    return collapsed
+
+
+def _history_row_value(row, index, key):
+    if isinstance(row, dict):
+        return row.get(key)
+    return row[index]
+
+
+def _supersede_other_series_episodes(cur, ph, user_id, profile_id, media_path, series_path, series_title):
+    series_path = str(series_path or '').strip()
+    series_title = str(series_title or '').strip()
+    if not series_path and not series_title:
+        return 0
+    match_parts = []
+    params = [user_id, profile_id, media_path]
+    if series_path:
+        match_parts.append(f'series_path = {ph}')
+        params.append(series_path)
+    if series_title:
+        match_parts.append(f'series_title = {ph}')
+        params.append(series_title)
+    params.append(WATCH_HISTORY_ACTIVE_CUTOFF)
+    sql = f'''
+        UPDATE watch_history
+        SET is_hidden = 1
+        WHERE user_id = {ph}
+          AND profile_id = {ph}
+          AND media_path <> {ph}
+          AND (is_hidden = 0 OR is_hidden IS NULL)
+          AND ({' OR '.join(match_parts)})
+          AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))
+    '''
+    cur.execute(sql, tuple(params))
+    return cur.rowcount or 0
+
+
+def _newest_series_sibling(cur, ph, user_id, profile_id, media_path, series_path, series_title):
+    series_path = str(series_path or '').strip()
+    series_title = str(series_title or '').strip()
+    if not series_path and not series_title:
+        return None
+    match_parts = []
+    params = [user_id, profile_id, media_path]
+    if series_path:
+        match_parts.append(f'series_path = {ph}')
+        params.append(series_path)
+    if series_title:
+        match_parts.append(f'series_title = {ph}')
+        params.append(series_title)
+    sql = f'''
+        SELECT media_path, last_watched
+        FROM watch_history
+        WHERE user_id = {ph}
+          AND profile_id = {ph}
+          AND media_path <> {ph}
+          AND ({' OR '.join(match_parts)})
+        ORDER BY last_watched DESC
+        LIMIT 1
+    '''
+    cur.execute(sql, tuple(params))
+    row = cur.fetchone()
+    if not row:
+        return None
+    return {
+        'media_path': _history_row_value(row, 0, 'media_path'),
+        'last_watched': _parse_history_timestamp(_history_row_value(row, 1, 'last_watched')),
+    }
+
+
 @app.route('/api/history/get/<profile_id>', methods=['GET'])
 @token_required(check_expiry=True)
 def get_history(current_user, profile_id):
@@ -2634,11 +3113,13 @@ def get_history(current_user, profile_id):
     if active_only:
         where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
         params.append(WATCH_HISTORY_ACTIVE_CUTOFF)
+    # Fetch extra rows when collapsing by series so limit still yields enough cards.
+    fetch_limit = (limit * 4) if (limit and active_only) else limit
     sql = f'''SELECT media_path, media_title, series_title, series_path, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched
               FROM watch_history WHERE {where} ORDER BY last_watched DESC'''
-    if limit:
+    if fetch_limit:
         sql += f' LIMIT {ph}'
-        params.append(limit)
+        params.append(fetch_limit)
     try:
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -2649,7 +3130,12 @@ def get_history(current_user, profile_id):
         for item in res:
             item['media_path'] = _normalize_history_media_path(item.get('media_path'))
             item['media_title'] = _history_display_media_title(item)
-        
+
+        if active_only:
+            res = _collapse_history_by_series(res)
+            if limit:
+                res = res[:limit]
+
         return add_no_cache_headers(orjson_jsonify(res))
     finally: release_db_connection(conn, db_type)
 
@@ -2663,6 +3149,20 @@ def save_history(current_user):
         return orjson_jsonify({"message": "media_path required"}, 400)
     data['media_path'] = normalized_media_path
     data['media_title'] = _history_display_media_title(data)
+    try:
+        position_ms = int(data.get('position_ms') or 0)
+        duration_ms = int(data.get('duration_ms') or 0)
+    except (TypeError, ValueError):
+        return orjson_jsonify({"message": "Invalid position_ms/duration_ms"}, 400)
+    data['position_ms'] = max(0, position_ms)
+    data['duration_ms'] = max(0, duration_ms)
+
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    client_ts = _parse_history_timestamp(data.get('client_updated_at'))
+    if client_ts and client_ts > now_utc + WATCH_HISTORY_STALE_SKEW:
+        client_ts = now_utc
+    effective_ts = client_ts or now_utc
+
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
     try:
@@ -2670,41 +3170,129 @@ def save_history(current_user):
         lookup_paths = _history_lookup_paths(raw_media_path)
         path_placeholders = ', '.join([ph] * len(lookup_paths))
         cur.execute(
-            f"SELECT media_path FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path IN ({path_placeholders})",
+            f"SELECT media_path, last_watched, position_ms, duration_ms FROM watch_history WHERE user_id={ph} AND profile_id={ph} AND media_path IN ({path_placeholders})",
             (current_user['id'], data['profile_id'], *lookup_paths),
         )
         existing_rows = cur.fetchall()
         existing_path = None
+        existing_last_watched = None
+        existing_position_ms = 0
+        existing_duration_ms = 0
         for row in existing_rows:
-            row_path = row[0]
+            row_path = _history_row_value(row, 0, 'media_path')
             if row_path == data['media_path']:
                 existing_path = row_path
+                existing_last_watched = _parse_history_timestamp(_history_row_value(row, 1, 'last_watched'))
+                existing_position_ms = int(_history_row_value(row, 2, 'position_ms') or 0)
+                existing_duration_ms = int(_history_row_value(row, 3, 'duration_ms') or 0)
                 break
-            existing_path = existing_path or row_path
+            if existing_path is None:
+                existing_path = row_path
+                existing_last_watched = _parse_history_timestamp(_history_row_value(row, 1, 'last_watched'))
+                existing_position_ms = int(_history_row_value(row, 2, 'position_ms') or 0)
+                existing_duration_ms = int(_history_row_value(row, 3, 'duration_ms') or 0)
+
+        if existing_path is not None and existing_last_watched is not None and client_ts is not None:
+            if client_ts + WATCH_HISTORY_STALE_SKEW < existing_last_watched:
+                return orjson_jsonify({
+                    "message": "Ignored stale",
+                    "ignored": True,
+                    "reason": "older_timestamp",
+                })
+            near_equal = abs((client_ts - existing_last_watched).total_seconds()) <= WATCH_HISTORY_STALE_SKEW.total_seconds()
+            if near_equal:
+                existing_completed = (
+                    existing_duration_ms > 0
+                    and existing_position_ms >= existing_duration_ms * WATCH_HISTORY_ACTIVE_CUTOFF
+                )
+                restarting = (
+                    existing_completed
+                    and data['duration_ms'] > 0
+                    and data['position_ms'] <= data['duration_ms'] * 0.20
+                )
+                if (
+                    not restarting
+                    and data['position_ms'] + 5000 < existing_position_ms
+                ):
+                    return orjson_jsonify({
+                        "message": "Ignored stale",
+                        "ignored": True,
+                        "reason": "older_position",
+                    })
+
+        sibling = _newest_series_sibling(
+            cur, ph, current_user['id'], data['profile_id'], data['media_path'],
+            data.get('series_path'), data.get('series_title'),
+        )
+        series_is_stale = bool(
+            sibling
+            and sibling.get('last_watched')
+            and effective_ts + WATCH_HISTORY_STALE_SKEW < sibling['last_watched']
+        )
+        is_hidden = 1 if series_is_stale else 0
+        last_watched_value = _history_db_timestamp(effective_ts, db_type)
+
         if existing_path is not None:
             sql_update = f'''
                 UPDATE watch_history
                 SET media_path={ph}, media_title={ph}, series_title={ph}, series_path={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
-                    season={ph}, episode={ph}, position_ms={ph}, duration_ms={ph}, is_hidden=0, last_watched=CURRENT_TIMESTAMP
+                    season={ph}, episode={ph}, position_ms={ph}, duration_ms={ph}, is_hidden={ph}, last_watched={ph}
                 WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
             '''
             params = (
                 data['media_path'], data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'),
                 data.get('still_path'), data.get('subtitle_path'), data.get('season'),
-                data.get('episode'), data['position_ms'], data['duration_ms'],
+                data.get('episode'), data['position_ms'], data['duration_ms'], is_hidden, last_watched_value,
                 current_user['id'], data['profile_id'], existing_path,
             )
             cur.execute(sql_update, params)
         else:
             sql_insert = f'''
                 INSERT INTO watch_history (user_id, profile_id, media_path, media_title, series_title, series_path, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, 0, CURRENT_TIMESTAMP)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
             '''
-            params = (current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'), data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'])
-            cur.execute(sql_insert, params)
+            params = (
+                current_user['id'], data['profile_id'], data['media_path'], data.get('media_title'), data.get('series_title'),
+                data.get('series_path'), data.get('source'), data.get('still_path'), data.get('subtitle_path'),
+                data.get('season'), data.get('episode'), data['position_ms'], data['duration_ms'], is_hidden, last_watched_value,
+            )
+            try:
+                cur.execute(sql_insert, params)
+            except Exception:
+                conn.rollback()
+                # Concurrent insert race: fall back to conditional update.
+                sql_update = f'''
+                    UPDATE watch_history
+                    SET media_title={ph}, series_title={ph}, series_path={ph}, source={ph}, still_path={ph}, subtitle_path={ph},
+                        season={ph}, episode={ph}, position_ms={ph}, duration_ms={ph}, is_hidden={ph}, last_watched={ph}
+                    WHERE user_id={ph} AND profile_id={ph} AND media_path={ph}
+                      AND (last_watched IS NULL OR last_watched <= {ph})
+                '''
+                cur.execute(sql_update, (
+                    data.get('media_title'), data.get('series_title'), data.get('series_path'), data.get('source'),
+                    data.get('still_path'), data.get('subtitle_path'), data.get('season'), data.get('episode'),
+                    data['position_ms'], data['duration_ms'], is_hidden, last_watched_value,
+                    current_user['id'], data['profile_id'], data['media_path'], last_watched_value,
+                ))
+
+        superseded = 0
+        if not series_is_stale:
+            superseded = _supersede_other_series_episodes(
+                cur, ph, current_user['id'], data['profile_id'], data['media_path'],
+                data.get('series_path'), data.get('series_title'),
+            )
         conn.commit()
-        return orjson_jsonify({"message": "Saved"})
-    except: return orjson_jsonify({"message": "Error saving"}, 500)
+        return orjson_jsonify({
+            "message": "Saved",
+            "superseded": superseded,
+            "hidden": bool(series_is_stale),
+        })
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return orjson_jsonify({"message": "Error saving", "error": str(e)}, 500)
     finally: release_db_connection(conn, db_type)
 
 @app.route('/api/history/hide', methods=['POST'])
@@ -2924,12 +3512,117 @@ def update_mylist_status(current_user):
 # GDRIVE LOGIC & CACHING (DARI FILE ASLI)
 # ==========================================
 
+def _creds_from_dict(info):
+    if not isinstance(info, dict):
+        return None
+    # Deteksi jika yang dimasukkan adalah file credentials.json (OAuth Client) bukan Token
+    if 'installed' in info or 'web' in info:
+        print("[GDRIVE-AUTH] ERROR: File credentials.json (OAuth Client Secret) terdeteksi, bukan Token Pengguna! Jalankan get_poster_token.py untuk membuat token.", flush=True)
+        return None
+    try:
+        return Credentials.from_authorized_user_info(info)
+    except Exception:
+        pass
+    scopes = info.get('scopes')
+    if isinstance(scopes, str):
+        scopes = [scopes]
+    return Credentials(
+        token=info.get('token'),
+        refresh_token=info.get('refresh_token'),
+        token_uri=info.get('token_uri', 'https://oauth2.googleapis.com/token'),
+        client_id=info.get('client_id'),
+        client_secret=info.get('client_secret'),
+        scopes=scopes or ['https://www.googleapis.com/auth/drive.readonly']
+    )
+
+def _load_gdrive_credentials(b64_str):
+    """Universal robust loader for Google OAuth credentials supporting JSON Base64, Raw JSON, and Pickle."""
+    if not b64_str:
+        return None
+
+    if isinstance(b64_str, bytes):
+        b64_str = b64_str.decode('utf-8', errors='ignore')
+
+    clean_str = str(b64_str).strip().strip('"\'').replace('\n', '').replace('\r', '')
+
+    # 1. Jika dimasukkan raw JSON string langsung
+    if clean_str.startswith('{'):
+        try:
+            info = json.loads(clean_str)
+            return _creds_from_dict(info)
+        except Exception as e:
+            print(f"[GDRIVE-AUTH] Raw JSON decode error (periksa apakah string JSON terpotong): {e}", flush=True)
+            return None
+
+    # Auto fix Base64 padding & trailing invalid dot
+    if clean_str.endswith('.'):
+        clean_str = clean_str[:-1] + 'u'
+
+    missing_padding = len(clean_str) % 4
+    if missing_padding:
+        clean_str += '=' * (4 - missing_padding)
+
+    try:
+        raw_bytes = base64.b64decode(clean_str)
+    except Exception as e:
+        print(f"[GDRIVE-AUTH] Base64 decode failed: {e}", flush=True)
+        return None
+
+    # 2. Jika data adalah JSON (diawali '{') -> jangan coba pickle
+    if raw_bytes.strip().startswith(b'{'):
+        try:
+            data_str = raw_bytes.decode('utf-8')
+            info = json.loads(data_str)
+            return _creds_from_dict(info)
+        except Exception as e:
+            print(f"[GDRIVE-AUTH] JSON format error in token (periksa apakah string token terpotong): {e}", flush=True)
+            return None
+
+    # 3. Coba format Pickle standar
+    try:
+        import sys, types
+        if 'google.auth._regional_access_boundary_utils' not in sys.modules:
+            try:
+                import google.auth._regional_access_boundary_utils
+            except Exception:
+                sys.modules['google.auth._regional_access_boundary_utils'] = types.ModuleType('google.auth._regional_access_boundary_utils')
+        return pickle.loads(raw_bytes)
+    except Exception:
+        pass
+
+    # 4. Fallback Custom Unpickler (ekstrak credential jika class Google Auth beda versi)
+    try:
+        import io
+        class FallbackUnpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                if 'google.auth' in module or 'RegionalAccessBoundary' in name:
+                    class Dummy:
+                        def __init__(self, *args, **kwargs): pass
+                        def __setstate__(self, state): self.__dict__.update(state)
+                    return Dummy
+                return super().find_class(module, name)
+        obj = FallbackUnpickler(io.BytesIO(raw_bytes)).load()
+        d = getattr(obj, '__dict__', {})
+        info = {
+            'token': d.get('token'),
+            'refresh_token': d.get('_refresh_token') or d.get('refresh_token'),
+            'token_uri': d.get('_token_uri') or d.get('token_uri', 'https://oauth2.googleapis.com/token'),
+            'client_id': d.get('_client_id') or d.get('client_id'),
+            'client_secret': d.get('_client_secret') or d.get('client_secret'),
+            'scopes': d.get('_scopes') or d.get('scopes', []),
+            'universe_domain': d.get('_universe_domain', 'googleapis.com'),
+            'account': d.get('_account', ''),
+        }
+        return _creds_from_dict(info)
+    except Exception as e:
+        print(f"[GDRIVE-AUTH] Failed to load credentials from token: {e}", flush=True)
+        return None
+
 def get_gdrive_service():
     if hasattr(_gdrive_local, 'service') and _gdrive_local.service and hasattr(_gdrive_local.service, '_http') and _gdrive_local.service._http.credentials.valid: return _gdrive_local.service
     creds = None
     if GDRIVE_TOKEN_B64:
-        try: creds = pickle.loads(base64.b64decode(GDRIVE_TOKEN_B64))
-        except: pass
+        creds = _load_gdrive_credentials(GDRIVE_TOKEN_B64)
     if not creds and os.path.exists('token.pickle'):
         try:
             with open('token.pickle', 'rb') as t: creds = pickle.load(t)
@@ -2950,8 +3643,7 @@ def get_gdrive_subtitle_service():
         return _gdrive_sub_local.service
     creds = None
     if GDRIVE_SUBTITLE_TOKEN_B64:
-        try: creds = pickle.loads(base64.b64decode(GDRIVE_SUBTITLE_TOKEN_B64))
-        except: pass
+        creds = _load_gdrive_credentials(GDRIVE_SUBTITLE_TOKEN_B64)
     if not creds: return None
     if creds.expired and creds.refresh_token: creds.refresh(Request())
     try:
@@ -2959,6 +3651,207 @@ def get_gdrive_subtitle_service():
         _gdrive_sub_local.service = svc
         return svc
     except: return None
+
+_gdrive_poster_local = threading.local()
+
+def get_gdrive_poster_service():
+    """Separate GDrive service for the poster-dedicated account."""
+    if hasattr(_gdrive_poster_local, 'service') and _gdrive_poster_local.service and hasattr(_gdrive_poster_local.service, '_http') and _gdrive_poster_local.service._http.credentials.valid:
+        return _gdrive_poster_local.service
+    creds = None
+    if GDRIVE_POSTER_TOKEN_B64:
+        creds = _load_gdrive_credentials(GDRIVE_POSTER_TOKEN_B64)
+    if not creds: return None
+    if creds.expired and creds.refresh_token: creds.refresh(Request())
+    try:
+        svc = build('drive', 'v3', credentials=creds, cache_discovery=False)
+        _gdrive_poster_local.service = svc
+        return svc
+    except Exception as e:
+        print(f"[POSTER-GDRIVE] Error building GDrive service: {e}", flush=True)
+        return None
+
+# Poster & Backdrop map RAM and Disk cache state
+_poster_map_cache = ({}, {})
+_poster_map_ts = 0
+_poster_map_lock = threading.Lock()
+_poster_map_is_fetching = False
+_POSTER_MAP_TTL = 21600  # 6 hours
+
+def _bg_fetch_gdrive_poster_map():
+    global _poster_map_cache, _poster_map_ts, _poster_map_is_fetching
+    for _attempt in range(3):
+        try:
+            # Force fresh service on retry to avoid stale SSL connections
+            if _attempt > 0:
+                if hasattr(_gdrive_poster_local, 'service'):
+                    delattr(_gdrive_poster_local, 'service')
+                time.sleep(1)
+                print(f"[POSTER-GDRIVE] Retry attempt {_attempt + 1}/3...", flush=True)
+            svc = get_gdrive_poster_service()
+            if not svc:
+                return
+
+            poster_map = {}
+            backdrop_map = {}
+
+            # 1. Fetch all folders
+            folder_map = {}
+            p_token = None
+            while True:
+                res = svc.files().list(
+                    q="mimeType = 'application/vnd.google-apps.folder' and trashed = false",
+                    pageSize=1000,
+                    fields="nextPageToken, files(id, name, parents)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    pageToken=p_token
+                ).execute()
+                for f in res.get('files', []):
+                    folder_map[f['id']] = {'name': f.get('name', '').strip(), 'parents': f.get('parents', [])}
+                p_token = res.get('nextPageToken')
+                if not p_token:
+                    break
+
+            # 2. Fetch all non-folder files (posters + backdrops)
+            image_files = []
+            p_token = None
+            while True:
+                res = svc.files().list(
+                    q="mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+                    pageSize=1000,
+                    fields="nextPageToken, files(id, name, parents)",
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                    pageToken=p_token
+                ).execute()
+                image_files.extend(res.get('files', []))
+                p_token = res.get('nextPageToken')
+                if not p_token:
+                    break
+
+            def _get_path_parts(fid):
+                parts = []
+                curr = fid
+                visited = set()
+                while curr in folder_map and curr not in visited:
+                    visited.add(curr)
+                    parts.insert(0, folder_map[curr]['name'].lower())
+                    p = folder_map[curr]['parents']
+                    curr = p[0] if p else None
+                return parts
+
+            def _gdrive_map_append(target, key, fid):
+                if key not in target:
+                    target[key] = [fid]
+                elif fid not in target[key]:
+                    target[key].append(fid)
+
+            for f in image_files:
+                fid = f.get('id')
+                fname = f.get('name', '').strip()
+                if not fid or not fname:
+                    continue
+
+                parents = f.get('parents', [])
+                parent_id = parents[0] if parents else None
+                parts = _get_path_parts(parent_id) if parent_id else []
+
+                # Tentukan apakah backdrop atau poster
+                is_backdrop = any('backdrop' in part for part in parts) or 'backdrop' in fname.lower()
+                target = backdrop_map if is_backdrop else poster_map
+
+                # Deteksi kategori (series / movies) dari jalur folder
+                cat = ''
+                for p in parts:
+                    if p in ('series', 'tv', 'shows', 'drama', 'drakor', 'anime'):
+                        cat = 'series'
+                        break
+                    elif p in ('movies', 'movie', 'film', 'films'):
+                        cat = 'movies'
+                        break
+
+                if parts:
+                    item_id = parts[-1]
+                    if cat:
+                        _gdrive_map_append(target, f"{cat}_{item_id}", fid)
+                        _gdrive_map_append(target, f"{cat}_{item_id}_{fname.lower()}", fid)
+                    elif not item_id.isdigit():
+                        _gdrive_map_append(target, item_id, fid)
+
+                    # Map setiap nama folder non-generik (seperti judul serial/film)
+                    for p in parts:
+                        p_clean = p.lower().strip()
+                        if p_clean not in ('posters', 'backdrops', 'series', 'movies', 'tv', 'shows', 'root', 'drive'):
+                            if not p_clean.isdigit() and len(p_clean) > 1:
+                                _gdrive_map_append(target, p_clean, fid)
+                                norm_p = _normalize_key(p_clean)
+                                if norm_p and not norm_p.isdigit():
+                                    _gdrive_map_append(target, norm_p, fid)
+
+                base_name, _ = os.path.splitext(fname)
+                if base_name and not base_name.isdigit() and len(base_name) > 1:
+                    base_clean = base_name.lower().strip()
+                    if base_clean not in ('poster', 'backdrop', 'cover', 'folder', 'fanart', 'thumb'):
+                        _gdrive_map_append(target, fname.lower(), fid)
+                        _gdrive_map_append(target, base_clean, fid)
+                        norm_k = _normalize_key(base_name)
+                        if norm_k and not norm_k.isdigit():
+                            _gdrive_map_append(target, norm_k, fid)
+                _gdrive_map_append(target, f"file_{fid}", fid)
+
+            now = time.time()
+            res_tuple = (poster_map, backdrop_map)
+            with _poster_map_lock:
+                _poster_map_cache = res_tuple
+                _poster_map_ts = now
+            try:
+                disk_cache.set("gdrive_poster_map_all_v3", res_tuple)
+                disk_cache.set("gdrive_poster_map_all_v3__ts", now)
+            except Exception:
+                pass
+            print(f"[POSTER-GDRIVE] Loaded {len(poster_map)} posters and {len(backdrop_map)} backdrops from GDrive", flush=True)
+            _invalidate_response_cache('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
+            return  # Success, exit retry loop
+        except Exception as e:
+            print(f"[POSTER-GDRIVE] fetch_gdrive_poster_map attempt {_attempt + 1} failed: {e}", flush=True)
+            if _attempt >= 2:
+                print("[POSTER-GDRIVE] All 3 attempts failed, giving up.", flush=True)
+            continue
+        finally:
+            _poster_map_is_fetching = False
+
+def fetch_gdrive_poster_map(force=False, sync=False):
+    """List actual image files from dedicated GDrive poster account and map to poster_map & backdrop_map."""
+    global _poster_map_cache, _poster_map_ts, _poster_map_is_fetching
+    if not GDRIVE_POSTER_FOLDER_ID or not GDRIVE_POSTER_TOKEN_B64:
+        return {}, {}
+    now = time.time()
+    with _poster_map_lock:
+        if not force and _poster_map_cache and _poster_map_cache[0] and (now - _poster_map_ts) < _POSTER_MAP_TTL:
+            return _poster_map_cache
+
+    if not force:
+        try:
+            cached_disk = disk_cache.get("gdrive_poster_map_all_v3")
+            ts_disk = disk_cache.get("gdrive_poster_map_all_v3__ts")
+            if cached_disk and ts_disk and (now - ts_disk) < _POSTER_MAP_TTL:
+                with _poster_map_lock:
+                    _poster_map_cache = cached_disk
+                    _poster_map_ts = ts_disk
+                return _poster_map_cache
+        except Exception:
+            pass
+
+    # Trigger background fetch if not already fetching
+    if not _poster_map_is_fetching:
+        _poster_map_is_fetching = True
+        if sync:
+            _bg_fetch_gdrive_poster_map()
+        else:
+            threading.Thread(target=_bg_fetch_gdrive_poster_map, daemon=True).start()
+
+    return _poster_map_cache or ({}, {})
 
 # === CACHE HELPERS (diskcache-based, HuggingFace Optimized) ===
 
@@ -3256,7 +4149,6 @@ def build_search_index():
         _search_index.update(new_index)
         _search_index_built = True
     _invalidate_response_cache_prefix('resp_search_v2_')
-    _invalidate_response_cache_prefix('resp_search_v3_')
     
 
 
@@ -3784,6 +4676,12 @@ def background_cache_worker():
             # === REBUILD SEARCH INDEX after folders refresh ===
             build_search_index()
             
+            # === REFRESH POSTER GDRIVE MAP ===
+            try:
+                fetch_gdrive_poster_map()
+            except Exception:
+                pass
+            
             # === CLEANUP RATE LIMITER STORE (prevent memory leak) ===
             now = _monotonic()
             with _rate_limit_lock:
@@ -3877,7 +4775,32 @@ def get_folders(current_user):
             payload = copy.deepcopy(cached)
             _merge_content_release_tmdb_into_folders(payload)
             _merge_tmdb_overrides_into_folders(payload)
+            _merge_gdrive_posters_into_folders(payload)
+            _merge_local_posters_into_folders(payload)
+            _merge_backdrops_into_folders(payload)
+            _assign_ids_to_folders(payload)
             return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
+
+        # [OFFLINE-FIRST] Cek list.json lokal jika ada dan berisi item
+        list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+        if os.path.exists(list_path):
+            try:
+                with open(list_path, 'r', encoding='utf-8') as f:
+                    local_list = json.load(f)
+                if local_list.get('series') or local_list.get('movies'):
+                    payload = copy.deepcopy(local_list)
+                    _merge_content_release_tmdb_into_folders(payload)
+                    _merge_tmdb_overrides_into_folders(payload)
+                    _merge_gdrive_posters_into_folders(payload, force=False)
+                    _merge_local_posters_into_folders(payload)
+                    _merge_backdrops_into_folders(payload)
+                    _assign_ids_to_folders(payload)
+                    mem_set(key, local_list)
+                    return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
+            except Exception as e:
+                print(f"[CATALOG-OFFLINE] Fallback ke GDrive karena list.json error: {e}", flush=True)
+
+    # Fallback / Live Scan ke Google Drive API
     res = fetch_gdrive_categorized_content(get_gdrive_service())
     if res:
         all_c = {"series": [], "movies": []}
@@ -3923,18 +4846,26 @@ def get_folders(current_user):
         all_c["series"] = series_dedup
         all_c["movies"] = movies_dedup
 
+        _assign_ids_to_folders(all_c)
         mem_set(key, all_c)
         _invalidate_response_cache('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
         build_search_index()  # [NEW] Build search index immediately so search works instantly after server restart
         payload = copy.deepcopy(all_c)
         _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
+        _merge_gdrive_posters_into_folders(payload, force=force)
+        _merge_local_posters_into_folders(payload)
+        _merge_backdrops_into_folders(payload)
+        _assign_ids_to_folders(payload)
         return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
     stale = mem_get(key)
     if stale:
         payload = copy.deepcopy(stale)
         _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
+        _merge_gdrive_posters_into_folders(payload, force=force)
+        _merge_local_posters_into_folders(payload)
+        _merge_backdrops_into_folders(payload)
         return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
     return add_no_cache_headers(orjson_jsonify({"series": [], "movies": []}))
 
@@ -5122,19 +6053,13 @@ def _subtitle_response(content, file_path):
 @rate_limited()
 def search_content(current_user):
     """[IMPROVED] Server-side instant search with fallback substring matching.
-    Query params: q=search_term, limit=max_results"""
+    Query params: q=search_term"""
     query = request.args.get('q', '').strip()
     if not query or len(query) < 1:
         return orjson_jsonify([])
 
-    try:
-        result_limit = int(request.args.get('limit', '300') or 300)
-    except (TypeError, ValueError):
-        result_limit = 300
-    result_limit = max(1, min(result_limit, 1000))
-
     normalized_query = _normalize_search_string(query)
-    resp_key = f"resp_search_v3_{result_limit}_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
+    resp_key = "resp_search_v2_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
     cached_bytes = _response_cache.get(resp_key)
     cached_at = _response_cache_ts.get(resp_key, 0)
     if cached_bytes and (time.time() - cached_at) < SEARCH_RESPONSE_CACHE_TTL_SECONDS:
@@ -5224,7 +6149,7 @@ def search_content(current_user):
     releases = mem_get('content_releases') or []
     tmdb_by_folder = {r.get('folder_name', '').lower(): r for r in releases if r.get('folder_name')}
     
-    for res in results[:result_limit]:
+    for res in results[:50]:
         rel = tmdb_by_folder.get(res['name'].lower())
         if rel:
             if rel.get('tmdb_title'): res['tmdb_title'] = rel['tmdb_title']
@@ -5235,8 +6160,8 @@ def search_content(current_user):
                 res['release_date'] = rel['release_date']
                 if res.get('type') in ('tv', 'series'):
                     res['first_air_date'] = rel['release_date']
-
-    return add_cache_headers(orjson_jsonify(results[:result_limit], cache_key=resp_key), max_age=30)
+            
+    return add_cache_headers(orjson_jsonify(results[:50], cache_key=resp_key), max_age=30)  # Max 50 results
 
 # ==========================================
 # CONTENT RELEASES API (Publish / Schedule)
@@ -5404,11 +6329,155 @@ def debug_routes(current_user):
     except Exception as e:
         return orjson_jsonify({"error": str(e)}, 500)
 
+# --- ALL POSTERS LIST ENDPOINT ---
+@app.route("/api/posters/<media_type>/<int:item_id>")
+@token_required(check_expiry=False)
+@rate_limited()
+def get_all_posters(current_user, media_type, item_id):
+    """Return all available poster URLs for a given media item (local + GDrive)."""
+    if media_type not in ('movies', 'series', 'movie', 'tv'):
+        return jsonify({"error": "Invalid media type"}), 400
+    p_cat = 'series' if media_type in ('series', 'tv') else 'movies'
+    item_id_str = str(item_id)
+    posters = []
+    seen_urls = set()
+
+    # 1. Local filesystem posters
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    poster_dirs = [
+        os.path.join(base_dir, 'storage', 'posters', p_cat, item_id_str),
+        os.path.join(base_dir, 'posters', p_cat, item_id_str),
+    ]
+    for p_dir in poster_dirs:
+        if os.path.isdir(p_dir):
+            try:
+                imgs = sorted(
+                    [f.name for f in os.scandir(p_dir) if f.is_file() and f.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))],
+                    key=lambda x: int(os.path.splitext(x)[0]) if os.path.splitext(x)[0].isdigit() else x
+                )
+                for img in imgs:
+                    url = f"/posters/{p_cat}/{item_id_str}/{img}"
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        posters.append({"url": url, "source": "local", "filename": img})
+            except Exception:
+                pass
+            break
+
+    # 2. GDrive posters
+    try:
+        poster_map, _ = fetch_gdrive_poster_map()
+        if poster_map:
+            p_ids = poster_map.get(f"{p_cat}_{item_id_str}")
+            if not p_ids:
+                p_ids = poster_map.get(item_id_str)
+            if p_ids:
+                if isinstance(p_ids, list):
+                    for fid in p_ids:
+                        url = f"/api/gdrive-poster/{fid}"
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            posters.append({"url": url, "source": "gdrive", "file_id": fid})
+                elif isinstance(p_ids, str):
+                    url = f"/api/gdrive-poster/{p_ids}"
+                    if url not in seen_urls:
+                        seen_urls.add(url)
+                        posters.append({"url": url, "source": "gdrive", "file_id": p_ids})
+    except Exception:
+        pass
+
+    # 3. media.db primary poster (fallback if nothing found above)
+    if not posters:
+        try:
+            p_map = _get_local_poster_map()
+            p_urls = p_map.get(p_cat, {}).get('by_id', {}).get(item_id_str)
+            if p_urls:
+                if isinstance(p_urls, list):
+                    for url in p_urls:
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            posters.append({"url": url, "source": "local", "filename": os.path.basename(url)})
+                elif isinstance(p_urls, str):
+                    posters.append({"url": p_urls, "source": "local", "filename": os.path.basename(p_urls)})
+        except Exception:
+            pass
+
+    return jsonify({
+        "media_type": p_cat,
+        "item_id": item_id,
+        "total": len(posters),
+        "posters": posters
+    })
+
+# --- POSTER & BACKDROP SERVING ENDPOINTS ---
+@app.route("/posters/<path:filename>")
+def serve_posters(filename):
+    poster_dirs = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage", "posters"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "posters"),
+    ]
+    for p_dir in poster_dirs:
+        if os.path.exists(os.path.join(p_dir, filename)):
+            return send_from_directory(p_dir, filename)
+    return jsonify({"error": "Poster not found"}), 404
+
+@app.route("/backdrops/<path:filename>")
+def serve_backdrops(filename):
+    backdrop_dirs = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage", "backdrops"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "backdrops"),
+    ]
+    for b_dir in backdrop_dirs:
+        if os.path.exists(os.path.join(b_dir, filename)):
+            return send_from_directory(b_dir, filename)
+    return jsonify({"error": "Backdrop not found"}), 404
+
+@app.route("/api/gdrive-poster/<file_id>")
+def serve_gdrive_poster(file_id):
+    """Proxy and cache poster images from dedicated GDrive poster account."""
+    if not file_id or not re.fullmatch(r'^[a-zA-Z0-9_-]{10,100}$', file_id):
+        return jsonify({"error": "Invalid file ID"}), 400
+
+    cache_key = f"gdrive_poster_blob_{file_id}"
+    cached_img = disk_cache.get(cache_key)
+    if cached_img:
+        resp = Response(cached_img, mimetype="image/jpeg")
+        resp.headers['Cache-Control'] = 'public, max-age=604800, immutable'
+        return resp
+
+    services = []
+    poster_svc = get_gdrive_poster_service()
+    if poster_svc:
+        services.append(poster_svc)
+    main_svc = get_gdrive_service()
+    if main_svc and main_svc not in services:
+        services.append(main_svc)
+    sub_svc = get_gdrive_subtitle_service()
+    if sub_svc and sub_svc not in services:
+        services.append(sub_svc)
+
+    if not services:
+        return jsonify({"error": "Poster service not configured"}), 503
+
+    for svc in services:
+        try:
+            req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
+            img_bytes = req.execute()
+            if img_bytes:
+                disk_cache.set(cache_key, img_bytes, expire=86400 * 7)
+                resp = Response(img_bytes, mimetype="image/jpeg")
+                resp.headers['Cache-Control'] = 'public, max-age=604800, immutable'
+                return resp
+        except Exception:
+            continue
+
+    return jsonify({"error": "Poster not found"}), 404
+
 # Frontend Serve
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_fe(path):
-    if path.startswith("api/") or path.startswith("video/") or path.startswith("subtitle/"): return jsonify({"error": "Not found"}), 404
+    if path.startswith("api/") or path.startswith("video/") or path.startswith("subtitle/") or path.startswith("posters/") or path.startswith("backdrops/"): return jsonify({"error": "Not found"}), 404
     if path and os.path.exists(os.path.join(app.static_folder, path)): return send_from_directory(app.static_folder, path)
     return send_from_directory(app.static_folder, "index.html")
 
