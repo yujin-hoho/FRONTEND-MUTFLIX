@@ -239,6 +239,36 @@ export async function fetchTmdbOverride(authToken, folderName) {
   return (Array.isArray(data) ? data : []).find((entry) => entry.folder_name === folderName) || null
 }
 
+export async function fetchServerItemPosters(authToken, item = {}, { signal } = {}) {
+  const params = new URLSearchParams()
+  const mediaType = item.media_type || item.type || ''
+  if (mediaType) params.set('media_type', mediaType)
+  if (item.id) params.set('id', String(item.id))
+  if (item.folder_name) params.set('folder_name', item.folder_name)
+  if (item.name) params.set('name', item.name)
+  if (item.tmdb_title) params.set('tmdb_title', item.tmdb_title)
+  if (item.title) params.set('title', item.title)
+
+  const headers = {}
+  if (authToken) {
+    headers['x-access-token'] = authToken
+    headers.Authorization = `Bearer ${authToken}`
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/posters/item?${params.toString()}`, {
+      headers,
+      signal,
+    })
+    if (!response.ok) return []
+    const data = await response.json()
+    return Array.isArray(data?.posters) ? data.posters : []
+  } catch (error) {
+    if (error.name === 'AbortError') throw error
+    return []
+  }
+}
+
 export async function fetchResolvedTmdbMetadata(authToken, { folderName, mediaType = 'tv', signal }) {
   const tmdbMediaType = mediaType === 'movie' ? 'movie' : 'tv'
   const response = await fetch(`${API_BASE_URL}/api/tmdb-meta/${tmdbMediaType}?folder_name=${encodeURIComponent(folderName)}`, {
@@ -1007,7 +1037,8 @@ async function enrichEpisodesFromServer(item, videos, headers) {
         ...video,
         name: episode.name || video.name,
         overview: episode.overview || '',
-        still_path: episode.still_path || '',
+        still_path: video.still_path || video.still_url || episode.still_path || '',
+        still_url: video.still_url || video.still_path || episode.still_path || '',
       }
     })
   } catch {
@@ -1135,8 +1166,12 @@ function getItemsNeedingMetadata(items, mediaType, maxItems) {
       )
     })
     .slice(0, maxItems)
-    .map((item) => ({ media_type: getMetadataRequestType(item, mediaType), folder_name: item.folder_name || item.name }))
-    .filter((item) => item.folder_name)
+    .map((item) => ({
+      media_type: getMetadataRequestType(item, mediaType),
+      folder_name: item.folder_name || item.name,
+      tmdb_id: getTmdbId(item),
+    }))
+    .filter((item) => item.folder_name || item.tmdb_id)
 }
 
 function getMetadataRequestType(item, fallbackMediaType) {

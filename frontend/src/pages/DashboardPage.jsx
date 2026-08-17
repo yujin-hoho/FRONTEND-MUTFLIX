@@ -17,6 +17,7 @@ import {
   getTitle,
   isCatalogItemCompleted,
   isWatchCompleted,
+  preloadImages,
   rotateItems,
 } from '../utils/media'
 
@@ -46,14 +47,29 @@ function DashboardPage({
     () => buildDashboardView(catalogData, selectedProfile, featuredItemKey, profileData.watchHistory, myList),
     [catalogData, featuredItemKey, myList, profileData.watchHistory, selectedProfile],
   )
-  const displayView = catalogData.isFromCache && catalogData.rows
+  const displayView = catalogData.rows
     ? { ...dashboardView, ...catalogData.rows }
     : dashboardView
 
   useEffect(() => {
-    if (!onDashboardRowsReady || catalogData.isLoading || catalogData.isFromCache) return
+    if (!onDashboardRowsReady || catalogData.isLoading) return
     onDashboardRowsReady(createDashboardRowsSnapshot(dashboardView))
-  }, [catalogData.isFromCache, catalogData.isLoading, dashboardView, onDashboardRowsReady])
+  }, [catalogData.isLoading, dashboardView, onDashboardRowsReady])
+
+  // Background preload all rows so lower rows are already cached when scrolled
+  useEffect(() => {
+    const allRows = [...(displayView.curatedRows || []), ...(displayView.catalogRows || [])]
+    const urls = []
+    allRows.forEach((row) => {
+      (row.items || []).slice(0, 10).forEach((item) => {
+        const url = getPosterUrl(item) || getDetailArtworkUrl(item)
+        if (url) urls.push(url)
+      })
+    })
+    if (urls.length) {
+      preloadImages(urls, { concurrency: 6 })
+    }
+  }, [displayView])
 
   return (
     <main className="dashboard-page">

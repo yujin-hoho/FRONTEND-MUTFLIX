@@ -21,17 +21,27 @@ export function resolveServerMediaUrl(path, size = 'w342') {
   if (!trimmed) return ''
   if (/^(?:https?:|data:|blob:)/i.test(trimmed)) return trimmed
 
+  const widthMatch = String(size || '').match(/(\d+)/)
+  const widthParam = widthMatch ? `w=${widthMatch[1]}` : ''
+
+  const appendSize = (url) => {
+    if (!widthParam) return url
+    return url.includes('?') ? `${url}&${widthParam}` : `${url}?${widthParam}`
+  }
+
+  // Extract file ID if path contains gdrive-poster pattern (e.g. /api/gdrive-poster/xyz or still path/api/gdrive-poster/xyz)
+  const gdriveMatch = trimmed.match(/gdrive-poster\/([a-zA-Z0-9_-]+)/i)
+  if (gdriveMatch) {
+    return appendSize(`${API_BASE_URL}/api/gdrive-poster/${gdriveMatch[1]}`)
+  }
+
   if (
     trimmed.startsWith('/api/')
     || trimmed.startsWith('/posters/')
     || trimmed.startsWith('/backdrops/')
     || trimmed.startsWith('/storage/')
   ) {
-    return `${API_BASE_URL}${trimmed}`
-  }
-
-  if (trimmed.startsWith('/gdrive-poster/')) {
-    return `${API_BASE_URL}/api${trimmed}`
+    return appendSize(`${API_BASE_URL}${trimmed}`)
   }
 
   if (
@@ -40,25 +50,96 @@ export function resolveServerMediaUrl(path, size = 'w342') {
     || trimmed.startsWith('backdrops/')
     || trimmed.startsWith('storage/')
   ) {
-    return `${API_BASE_URL}/${trimmed}`
+    return appendSize(`${API_BASE_URL}/${trimmed}`)
   }
 
-  if (trimmed.startsWith('gdrive-poster/')) {
-    return `${API_BASE_URL}/api/${trimmed}`
+  // Handle standalone Google Drive file ID
+  if (/^[a-zA-Z0-9_-]{20,100}$/.test(trimmed)) {
+    return appendSize(`${API_BASE_URL}/api/gdrive-poster/${trimmed}`)
   }
 
   return ''
 }
 
+const LOCAL_POSTER_OVERRIDES_KEY = 'mutflix_local_poster_overrides'
+
+export function getLocalPosterOverrideMap() {
+  try {
+    const raw = localStorage.getItem(LOCAL_POSTER_OVERRIDES_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+export function getLocalPosterOverride(item) {
+  if (!item) return ''
+  try {
+    const map = getLocalPosterOverrideMap()
+    const keys = [
+      getCatalogIdentityKey(item),
+      item.folder_name,
+      item.id ? String(item.id) : '',
+      item.name,
+      getTitle(item),
+    ].filter(Boolean)
+
+    for (const key of keys) {
+      if (map[key]) return map[key]
+    }
+  } catch {
+    return ''
+  }
+  return ''
+}
+
+export function setLocalPosterOverride(item, posterUrl) {
+  if (!item) return
+  try {
+    const map = getLocalPosterOverrideMap()
+    const identityKey = getCatalogIdentityKey(item) || item.folder_name || (item.id ? String(item.id) : '') || getTitle(item)
+    if (!identityKey) return
+
+    if (posterUrl) {
+      map[identityKey] = posterUrl
+    } else {
+      delete map[identityKey]
+    }
+    localStorage.setItem(LOCAL_POSTER_OVERRIDES_KEY, JSON.stringify(map))
+    window.dispatchEvent(new CustomEvent('mutflix:poster-override-changed', {
+      detail: { identityKey, item, posterUrl },
+    }))
+  } catch (error) {
+    console.warn('[LOCAL-POSTER] Failed to save override:', error)
+  }
+}
+
+export function removeLocalPosterOverride(item) {
+  setLocalPosterOverride(item, null)
+}
+
 export function getTmdbId(item) {
   if (!item) return null
-  const id = item.tmdb_id || item.idtmdb || item.tmdb_override_id
+  const id = item.tmdb_id
+    || item.idtmdb
+    || item.id_tmdb
+    || item.tmdb_override_id
+    || item.idTmdb
+    || item.tmdbId
   const parsed = Number(id)
   return parsed > 0 ? parsed : null
 }
 
 export function getPosterUrl(item, size = 'w342') {
   if (!item) return ''
+
+  // 1. Locally selected poster override (saved in browser localStorage)
+  const localOverride = getLocalPosterOverride(item)
+  if (localOverride) {
+    return resolveServerMediaUrl(localOverride, size)
+  }
+
+  // 2. Multi-poster rotation
   const posters = Array.isArray(item.all_poster_urls) && item.all_poster_urls.length > 0
     ? item.all_poster_urls.filter(Boolean)
     : []
@@ -79,6 +160,8 @@ export function getPosterUrl(item, size = 'w342') {
     || item.poster
     || item.thumbnail_url
     || item.image_url
+    || (item.tmdb_poster_path ? getTmdbImageUrl(item.tmdb_poster_path, size) : '')
+    || (item.poster_path ? getTmdbImageUrl(item.poster_path, size) : '')
 
   return resolveServerMediaUrl(poster, size)
 }
@@ -104,18 +187,21 @@ export function getBackdropUrl(item, size = 'w1280') {
     || item.backdrop
     || item.background_url
     || item.fanart_url
+    || (item.tmdb_backdrop_path ? getTmdbImageUrl(item.tmdb_backdrop_path, size) : '')
+    || (item.backdrop_path ? getTmdbImageUrl(item.backdrop_path, size) : '')
 
   return resolveServerMediaUrl(backdrop, size)
 }
 
 export function getDetailArtworkUrl(item) {
-  return getBackdropUrl(item) || getPosterUrl(item, 'w780')
+  return getBackdropUrl(item, 'w1280') || getPosterUrl(item, 'w780')
 }
 
 export function getStillUrl(item) {
   if (!item) return ''
   const stillPath = item.still_path
     || item.still_url
+    || (item.still_file_id ? `/api/gdrive-poster/${item.still_file_id}` : '')
     || item.thumbnail_url
     || item.backdrop_url
     || item.primary_backdrop_url
@@ -123,6 +209,8 @@ export function getStillUrl(item) {
     || item.poster_url
     || item.primary_poster_url
     || (Array.isArray(item.all_poster_urls) && item.all_poster_urls[0])
+    || (item.tmdb_backdrop_path ? getTmdbImageUrl(item.tmdb_backdrop_path, 'w500') : '')
+    || (item.tmdb_poster_path ? getTmdbImageUrl(item.tmdb_poster_path, 'w500') : '')
 
   return resolveServerMediaUrl(stillPath, 'w500')
 }

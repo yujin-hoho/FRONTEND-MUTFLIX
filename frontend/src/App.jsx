@@ -259,7 +259,7 @@ function App() {
 
         const refreshedDashboard = mergeDashboardCache(dashboard, cachedDashboard)
 
-        // Show data immediately — merge with current state to preserve cached metadata
+        // Show data immediately — merge with current state to preserve cached metadata & rows
         if (!ignore) {
           setProfileData({ myList, watchHistory: refreshedDashboard.history, isLoading: false, error: null })
           setCatalogData((current) => {
@@ -267,7 +267,15 @@ function App() {
               { movies: refreshedDashboard.movies, series: refreshedDashboard.series },
               current,
             )
-            return { ...merged, totals: refreshedDashboard.totals || { movies: merged.movies.length, series: merged.series.length }, rows: null, isLoading: false, isFromCache: false, error: null }
+            const preservedRows = current.rows || refreshedDashboard.rows
+            return {
+              ...merged,
+              totals: refreshedDashboard.totals || { movies: merged.movies.length, series: merged.series.length },
+              rows: preservedRows,
+              isLoading: false,
+              isFromCache: Boolean(preservedRows),
+              error: null,
+            }
           })
         }
 
@@ -278,8 +286,20 @@ function App() {
             if (ignore) return
             setCatalogData((current) => {
               const merged = mergeCatalogMetadataUpdates(current, enrichedSoFar)
-              writeDashboardCache(profileId, { history: refreshedDashboard.history, movies: merged.movies, series: merged.series })
-              return { ...merged, totals: refreshedDashboard.totals || current.totals || { movies: merged.movies.length, series: merged.series.length }, rows: null, isLoading: false, isFromCache: false, error: null }
+              writeDashboardCache(profileId, {
+                history: refreshedDashboard.history,
+                movies: merged.movies,
+                series: merged.series,
+                rows: current.rows,
+              })
+              return {
+                ...merged,
+                totals: refreshedDashboard.totals || current.totals || { movies: merged.movies.length, series: merged.series.length },
+                rows: current.rows,
+                isLoading: false,
+                isFromCache: Boolean(current.rows),
+                error: null,
+              }
             })
           },
         })
@@ -288,8 +308,20 @@ function App() {
         if (!ignore) {
           setCatalogData((current) => {
             const merged = mergeCatalogMetadataUpdates(current, enrichedCatalog)
-            writeDashboardCache(profileId, { history: refreshedDashboard.history, movies: merged.movies, series: merged.series })
-            return { ...merged, totals: refreshedDashboard.totals || current.totals || { movies: merged.movies.length, series: merged.series.length }, rows: null, isLoading: false, isFromCache: false, error: null }
+            writeDashboardCache(profileId, {
+              history: refreshedDashboard.history,
+              movies: merged.movies,
+              series: merged.series,
+              rows: current.rows,
+            })
+            return {
+              ...merged,
+              totals: refreshedDashboard.totals || current.totals || { movies: merged.movies.length, series: merged.series.length },
+              rows: current.rows,
+              isLoading: false,
+              isFromCache: Boolean(current.rows),
+              error: null,
+            }
           })
         }
       } catch (error) {
@@ -673,27 +705,53 @@ function App() {
     })
   }
 
-  const handleCatalogOverrideSaved = useCallback((item, tmdbResult, mediaType) => {
-    if (!item || !tmdbResult) return
+  const handleCatalogOverrideSaved = useCallback((item, selectedPosterUrl) => {
+    if (!item) return
 
     const originalKey = getCatalogIdentityKey(item)
-    const updatedItem = createCatalogOverrideItem(item, tmdbResult, mediaType)
-    writeLocalTmdbOverride(updatedItem)
+    const updatedItem = {
+      ...item,
+      ...(selectedPosterUrl ? { poster_url: selectedPosterUrl, primary_poster_url: selectedPosterUrl } : {}),
+    }
+
     setCatalogData((currentData) => {
+      const nextMovies = replaceCatalogItem(currentData.movies, originalKey, updatedItem)
+      const nextSeries = replaceCatalogItem(currentData.series, originalKey, updatedItem)
+
+      const replaceInList = (list) => (
+        Array.isArray(list)
+          ? list.map((entry) => (getCatalogIdentityKey(entry) === originalKey ? { ...entry, ...updatedItem } : entry))
+          : list
+      )
+
+      const nextRows = currentData.rows
+        ? {
+            ...currentData.rows,
+            trendingMovies: replaceInList(currentData.rows.trendingMovies),
+            trendingSeries: replaceInList(currentData.rows.trendingSeries),
+            top10Movies: replaceInList(currentData.rows.top10Movies),
+            top10Series: replaceInList(currentData.rows.top10Series),
+            genreRows: Array.isArray(currentData.rows.genreRows)
+              ? currentData.rows.genreRows.map((g) => ({
+                  ...g,
+                  items: replaceInList(g.items),
+                }))
+              : currentData.rows.genreRows,
+          }
+        : null
+
       const nextData = {
         ...currentData,
-        isFromCache: false,
-        rows: null,
-        movies: replaceCatalogItem(currentData.movies, originalKey, updatedItem),
-        series: replaceCatalogItem(currentData.series, originalKey, updatedItem),
+        movies: nextMovies,
+        series: nextSeries,
+        rows: nextRows,
       }
 
       if (selectedProfile) {
-        dashboardRowsCacheKey.current = ''
         writeDashboardCache(selectedProfile.id, {
           history: profileData.watchHistory,
           movies: nextData.movies,
-          rows: null,
+          rows: nextRows,
           series: nextData.series,
         })
       }

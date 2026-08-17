@@ -1,163 +1,116 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, BadgeInfo, Check, Clapperboard, RefreshCw, Search } from 'lucide-react'
+import { ArrowLeft, BadgeInfo, Check, Image as ImageIcon, RefreshCw, RotateCcw, Sparkles } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
-import { fetchResolvedTmdbMetadata, fetchTmdbOverride, fetchTmdbSearchResults, saveTmdbOverride } from '../services/api'
+import { fetchServerItemPosters } from '../services/api'
 import {
   getDetailArtworkUrl,
   getGenres,
   getItemPath,
+  getLocalPosterOverride,
   getMediaType,
   getPosterFallbackUrl,
+  getPosterUrl,
   getRating,
-  getTmdbImageUrl,
   getTitle,
+  removeLocalPosterOverride,
+  resolveServerMediaUrl,
+  setLocalPosterOverride,
 } from '../utils/media'
 
 function AdminCatalogEditPage({ authToken, item, onBack, onOverrideSaved }) {
-  const [currentMeta, setCurrentMeta] = useState(null)
-  const displayItem = useMemo(() => mergeTmdbMetaIntoItem(item, currentMeta), [currentMeta, item])
-  const title = getTitle(displayItem)
-  const mediaType = getMediaType(displayItem)
-  const tmdbMediaType = mediaType === 'movie' ? 'movie' : 'tv'
-  const genres = getGenres(displayItem)
-  const backdrop = getDetailArtworkUrl(displayItem)
-  const fallback = getPosterFallbackUrl(displayItem)
-  const ratingPercent = Math.round(getRating(displayItem) * 10)
-  const folderName = getItemPath(item) || getTitle(item)
-  const initialQuery = useMemo(() => cleanSearchQuery(getTitle(item) || folderName), [folderName, item])
-  const [query, setQuery] = useState(initialQuery)
-  const [searchType, setSearchType] = useState(tmdbMediaType)
-  const [results, setResults] = useState([])
-  const [selectedId, setSelectedId] = useState(null)
-  const [isSearching, setIsSearching] = useState(Boolean(initialQuery))
-  const [isSaving, setIsSaving] = useState(false)
+  const title = getTitle(item)
+  const mediaType = getMediaType(item)
+  const genres = getGenres(item)
+  const backdrop = getDetailArtworkUrl(item)
+  const fallback = getPosterFallbackUrl(item)
+  const ratingPercent = Math.round(getRating(item) * 10)
+  const folderPath = getItemPath(item) || title
+
+  const [localSelectedPoster, setLocalSelectedPoster] = useState(() => getLocalPosterOverride(item))
+  const [serverPosters, setServerPosters] = useState(() => getInitialPosters(item))
+  const [isLoadingPosters, setIsLoadingPosters] = useState(true)
   const [message, setMessage] = useState(null)
 
+  // Fetch all posters available on server (Local filesystem + GDrive)
   useEffect(() => {
-    if (!folderName) return undefined
-
     const controller = new AbortController()
+    setIsLoadingPosters(true)
 
-    let activeOverride = null
-
-    fetchTmdbOverride(authToken, folderName)
-      .then((override) => {
-        activeOverride = override
-        const overrideType = override?.media_type === 'movie' ? 'movie' : override?.media_type === 'tv' ? 'tv' : tmdbMediaType
-        if (override?.tmdb_query) setQuery(override.tmdb_query)
-        if (override?.tmdb_id) setSelectedId(Number(override.tmdb_id))
-        setSearchType(overrideType)
-        return fetchResolvedTmdbMetadata(authToken, {
-          folderName,
-          mediaType: overrideType,
-          signal: controller.signal,
-        })
-      })
-      .then((metadata) => {
-        setCurrentMeta(metadata)
-        if (metadata?.id) setSelectedId(Number(metadata.id))
-        if (activeOverride && metadata?.id && Number(item.tmdb_id || 0) !== Number(metadata.id)) {
-          onOverrideSaved?.(item, metadata, activeOverride.media_type === 'movie' ? 'movie' : 'tv')
-        }
-      })
-      .catch((error) => {
-        if (error.name !== 'AbortError') setCurrentMeta(null)
-      })
-
-    return () => controller.abort()
-  }, [authToken, folderName, item, onOverrideSaved, tmdbMediaType])
-
-  useEffect(() => {
-    if (!query.trim()) return undefined
-
-    const controller = new AbortController()
-
-    fetchTmdbSearchResults(authToken, {
-      mediaType: searchType,
-      query,
-      signal: controller.signal,
-    })
-      .then((nextResults) => {
-        setResults(nextResults)
+    fetchServerItemPosters(authToken, item, { signal: controller.signal })
+      .then((fetchedPosters) => {
+        const merged = mergeUniquePosters(getInitialPosters(item), fetchedPosters)
+        setServerPosters(merged)
       })
       .catch((error) => {
         if (error.name !== 'AbortError') {
-          setResults([])
-          setMessage({ type: 'error', text: error.message })
+          console.warn('[POSTER-PICKER] Fetch server posters failed:', error)
         }
       })
       .finally(() => {
-        if (!controller.signal.aborted) setIsSearching(false)
+        if (!controller.signal.aborted) {
+          setIsLoadingPosters(false)
+        }
       })
 
     return () => controller.abort()
-  }, [authToken, query, searchType])
+  }, [authToken, item])
 
-  async function handleUseResult(result) {
-    const resultTitle = getTmdbResultTitle(result)
-    if (!folderName || !resultTitle || isSaving) return
+  // Sync active local selection with instant resized URL
+  const currentActivePosterUrl = useMemo(() => {
+    const raw = localSelectedPoster || getPosterUrl(item)
+    return resolveServerMediaUrl(raw, 'w342')
+  }, [item, localSelectedPoster])
 
-    setIsSaving(true)
-    setSelectedId(result.id)
-    setMessage(null)
-
-    try {
-      await saveTmdbOverride(authToken, {
-        folder_name: folderName,
-        tmdb_id: result.id,
-        tmdb_query: resultTitle,
-        media_type: searchType,
-        override_year: getTmdbResultYear(result),
-      })
-      setCurrentMeta(result)
-      onOverrideSaved?.(item, result, searchType)
-      setMessage({ type: 'success', text: 'TMDB data selected. Catalog cards updated.' })
-    } catch (error) {
-      setMessage({ type: 'error', text: error.message })
-    } finally {
-      setIsSaving(false)
-    }
+  function handleSelectPoster(posterUrl) {
+    if (!posterUrl) return
+    setLocalPosterOverride(item, posterUrl)
+    setLocalSelectedPoster(posterUrl)
+    setMessage({ type: 'success', text: 'Poster lokal berhasil dipilih.' })
+    onOverrideSaved?.(item, posterUrl)
   }
 
-  function handleQueryChange(event) {
-    const nextQuery = event.target.value
-    setQuery(nextQuery)
-    setMessage(null)
-    setIsSearching(Boolean(nextQuery.trim()))
-    setSelectedId(null)
-    if (!nextQuery.trim()) {
-      setResults([])
-      setSelectedId(null)
-    }
-  }
-
-  function handleSearchTypeChange(nextSearchType) {
-    setSearchType(nextSearchType)
-    setMessage(null)
-    if (query.trim()) setIsSearching(true)
+  function handleResetToDefault() {
+    removeLocalPosterOverride(item)
+    setLocalSelectedPoster('')
+    setMessage({ type: 'success', text: 'Pilihan poster telah di-reset ke default server.' })
+    onOverrideSaved?.(item, null)
   }
 
   return (
     <main className="admin-edit-page">
-      <nav className="admin-edit-topbar" aria-label="Catalog edit">
+      <nav className="admin-edit-topbar" aria-label="Poster selection">
         <button className="admin-edit-back" onClick={onBack} type="button">
           <ArrowLeft size={18} strokeWidth={2.8} />
-          <span>Back</span>
+          <span>Kembali</span>
         </button>
         <div className="admin-edit-actions">
-          <span className="admin-edit-status">{isSearching ? 'Searching TMDB...' : `${results.length} results`}</span>
+          {localSelectedPoster && (
+            <button className="admin-edit-reset-btn" onClick={handleResetToDefault} type="button">
+              <RotateCcw size={15} />
+              <span>Reset ke Default</span>
+            </button>
+          )}
+          <span className="admin-edit-status">
+            {isLoadingPosters ? 'Memuat poster server...' : `${serverPosters.length} poster tersedia`}
+          </span>
         </div>
       </nav>
 
       <section className="admin-edit-hero">
-        <LoadableImage className="admin-edit-backdrop" fallbackSrc={fallback} key={`${backdrop}-${fallback}`} loading="eager" src={backdrop} />
+        <LoadableImage className="admin-edit-backdrop" fallbackSrc={fallback} loading="eager" src={backdrop} />
         <div className="admin-edit-shade" />
         <div className="admin-edit-copy">
-          <p className="admin-edit-kicker">{mediaType === 'movie' ? 'Movie' : 'Series'} editor</p>
+          <p className="admin-edit-kicker">{mediaType === 'movie' ? 'Film' : 'Serial'} &bull; Pilih Poster Server</p>
           <h1>{title}</h1>
           <div className="admin-edit-meta">
             {ratingPercent > 0 && <span>{ratingPercent}%</span>}
             {genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
+            {localSelectedPoster && (
+              <span className="admin-edit-custom-badge">
+                <Sparkles size={13} />
+                Poster Kustom Aktif
+              </span>
+            )}
           </div>
         </div>
       </section>
@@ -166,128 +119,189 @@ function AdminCatalogEditPage({ authToken, item, onBack, onOverrideSaved }) {
         <div className="admin-edit-panel">
           <div className="admin-edit-panel-heading">
             <BadgeInfo size={20} />
-            <h2>Catalog data</h2>
+            <h2>Informasi Media</h2>
           </div>
           <dl className="admin-edit-fields">
             <div>
-              <dt>Title</dt>
+              <dt>Judul</dt>
               <dd>{title}</dd>
             </div>
             <div>
-              <dt>Folder path</dt>
-              <dd>{getItemPath(item) || '-'}</dd>
+              <dt>Folder Path</dt>
+              <dd>{folderPath}</dd>
             </div>
             <div>
-              <dt>Media type</dt>
-              <dd>{searchType === 'movie' ? 'movie' : 'series'}</dd>
+              <dt>Tipe Media</dt>
+              <dd>{mediaType === 'movie' ? 'Movie (Film)' : 'Series (Serial)'}</dd>
+            </div>
+            <div>
+              <dt>Penyimpanan Pilihan</dt>
+              <dd>Tersimpan secara lokal di browser (LocalStorage)</dd>
             </div>
           </dl>
         </div>
 
         <div className="admin-edit-panel">
           <div className="admin-edit-panel-heading">
-            <Clapperboard size={20} />
-            <h2>TMDB match</h2>
+            <ImageIcon size={20} />
+            <h2>Poster Aktif Saat Ini</h2>
           </div>
-          <form className="admin-edit-search" onSubmit={(event) => event.preventDefault()}>
-            <label>
-              <Search size={17} />
-              <input
-                onChange={handleQueryChange}
-                placeholder="Search TMDB title"
-                type="search"
-                value={query}
+          <div className="admin-edit-current-preview">
+            <div className="admin-edit-current-poster-box">
+              <LoadableImage
+                alt={title}
+                fallbackSrc={fallback}
+                loading="eager"
+                src={currentActivePosterUrl}
               />
-            </label>
-            <div className="admin-edit-type-toggle" aria-label="TMDB media type">
-              <button className={searchType === 'tv' ? 'active' : ''} onClick={() => handleSearchTypeChange('tv')} type="button">Series</button>
-              <button className={searchType === 'movie' ? 'active' : ''} onClick={() => handleSearchTypeChange('movie')} type="button">Movie</button>
             </div>
-          </form>
+            <div className="admin-edit-current-details">
+              <p className="admin-edit-current-status">
+                {localSelectedPoster ? 'Menggunakan poster kustom lokal' : 'Menggunakan rotasi / poster server default'}
+              </p>
+              {localSelectedPoster && (
+                <button className="admin-edit-reset-btn" onClick={handleResetToDefault} type="button">
+                  <RotateCcw size={14} />
+                  <span>Kembalikan ke Rotasi Default</span>
+                </button>
+              )}
+            </div>
+          </div>
           {message && <p className={`admin-edit-message ${message.type}`}>{message.text}</p>}
         </div>
       </section>
 
-      <section className="admin-edit-results" aria-label="TMDB search results">
-        {isSearching && (
+      <section className="admin-edit-poster-section" aria-label="Daftar Poster Server">
+        <div className="admin-edit-section-header">
+          <h2>Semua Poster di Server ({serverPosters.length})</h2>
+          <p>Klik salah satu poster di bawah untuk menyimpannya sebagai poster favorit Anda.</p>
+        </div>
+
+        {isLoadingPosters && !serverPosters.length && (
           <div className="admin-edit-loading">
             <RefreshCw className="spinner" size={20} />
-            <span>Fetching TMDB data...</span>
+            <span>Mengambil daftar poster dari server...</span>
           </div>
         )}
-        {!isSearching && !results.length && (
-          <p className="admin-edit-muted">No TMDB results found for this title.</p>
-        )}
-        {results.map((result) => {
-          const resultTitle = getTmdbResultTitle(result)
-          const year = getTmdbResultYear(result)
-          const resultRating = Math.round(Number(result.vote_average || 0) * 10)
-          const poster = getTmdbImageUrl(result.poster_path, 'w342')
-          const resultFallback = getPosterFallbackUrl({ name: resultTitle })
-          const isSelected = selectedId === result.id
 
-          return (
-            <article className="tmdb-result-card" key={`${searchType}-${result.id}`}>
-              <div className="tmdb-result-poster">
-                <LoadableImage alt={resultTitle} fallbackSrc={resultFallback} key={poster} src={poster} />
-              </div>
-              <div className="tmdb-result-copy">
-                <div className="tmdb-result-title-row">
-                  <h3>{resultTitle}</h3>
-                  {year && <span>{year}</span>}
+        {!isLoadingPosters && !serverPosters.length && (
+          <p className="admin-edit-muted">Tidak ditemukan file poster di server untuk item ini.</p>
+        )}
+
+        <div className="admin-edit-poster-grid">
+          {serverPosters.map((poster, index) => {
+            const rawUrl = typeof poster === 'string' ? poster : poster.url
+            const optimizedPreviewUrl = resolveServerMediaUrl(rawUrl, 'w342')
+            const isLocalActive = localSelectedPoster ? isSamePoster(localSelectedPoster, rawUrl) : false
+            const isCurrentDefault = !localSelectedPoster && isSamePoster(getPosterUrl(item), rawUrl)
+            const isSelected = isLocalActive || isCurrentDefault
+            const sourceLabel = getPosterSourceLabel(poster)
+
+            return (
+              <article
+                className={`admin-poster-card ${isSelected ? 'selected' : ''} ${isLocalActive ? 'local-active' : ''}`}
+                key={rawUrl || index}
+                onClick={() => handleSelectPoster(rawUrl)}
+              >
+                <div className="admin-poster-thumbnail">
+                  <LoadableImage
+                    alt={`${title} poster ${index + 1}`}
+                    fallbackSrc={fallback}
+                    key={optimizedPreviewUrl}
+                    src={optimizedPreviewUrl}
+                  />
+                  {isSelected && (
+                    <div className="admin-poster-active-overlay">
+                      <span className="admin-poster-check-badge">
+                        <Check size={16} strokeWidth={3} />
+                        {isLocalActive ? 'Pilihan Anda' : 'Aktif'}
+                      </span>
+                    </div>
+                  )}
                 </div>
-                <div className="tmdb-result-meta">
-                  <span>{searchType === 'movie' ? 'Movie' : 'Series'}</span>
-                  {resultRating > 0 && <span>{resultRating}%</span>}
-                  {result.original_language && <span>{String(result.original_language).toUpperCase()}</span>}
+                <div className="admin-poster-info">
+                  <div className="admin-poster-tag-row">
+                    <span className="admin-poster-source-tag">{sourceLabel}</span>
+                    <span className="admin-poster-index-tag">#{index + 1}</span>
+                  </div>
+                  <button
+                    className={`admin-poster-select-btn ${isSelected ? 'active' : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleSelectPoster(rawUrl)
+                    }}
+                    type="button"
+                  >
+                    {isSelected ? <Check size={15} strokeWidth={2.8} /> : null}
+                    <span>{isLocalActive ? 'Tersimpan Lokal' : isSelected ? 'Sedang Aktif' : 'Pilih Poster'}</span>
+                  </button>
                 </div>
-                <p>{result.overview || 'No overview from TMDB.'}</p>
-              </div>
-              <button className="tmdb-result-use" disabled={isSaving && isSelected} onClick={() => handleUseResult(result)} type="button">
-                {isSelected && isSaving ? <RefreshCw className="spinner" size={17} /> : isSelected && message?.type === 'success' ? <Check size={17} /> : <Check size={17} />}
-                <span>{isSelected && message?.type === 'success' ? 'Selected' : 'Use this'}</span>
-              </button>
-            </article>
-          )
-        })}
+              </article>
+            )
+          })}
+        </div>
       </section>
     </main>
   )
 }
 
-function cleanSearchQuery(value) {
-  return String(value || '')
-    .replace(/\(\d{4}\)/g, ' ')
-    .replace(/[._-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
+function getInitialPosters(item) {
+  const posters = []
+  const seen = new Set()
 
-function getTmdbResultTitle(result) {
-  return result.title || result.name || result.original_title || result.original_name || ''
-}
-
-function getTmdbResultYear(result) {
-  const date = result.release_date || result.first_air_date || ''
-  const year = Number(String(date).slice(0, 4))
-  return year > 0 ? year : null
-}
-
-function mergeTmdbMetaIntoItem(item, meta) {
-  if (!meta) return item
-
-  return {
-    ...item,
-    tmdb_backdrop_path: meta.backdrop_path || item.tmdb_backdrop_path,
-    tmdb_genres: Array.isArray(meta.genres) && meta.genres.length ? meta.genres : item.tmdb_genres,
-    tmdb_id: meta.id || item.tmdb_id,
-    tmdb_metadata_resolved: true,
-    tmdb_original_language: meta.original_language || item.tmdb_original_language,
-    tmdb_overview: meta.overview || item.tmdb_overview,
-    tmdb_poster_path: meta.poster_path || item.tmdb_poster_path,
-    tmdb_rating: Number(meta.vote_average || item.tmdb_rating || 0),
-    tmdb_title: getTmdbResultTitle(meta) || item.tmdb_title,
+  const add = (url, source = 'server') => {
+    if (!url) return
+    const clean = String(url).trim()
+    if (!clean || seen.has(clean)) return
+    seen.add(clean)
+    posters.push({ url: clean, source })
   }
+
+  if (Array.isArray(item?.all_poster_urls)) {
+    item.all_poster_urls.forEach((u) => add(u, 'gdrive'))
+  }
+  if (item?.poster_url) add(item.poster_url, 'gdrive')
+  if (item?.poster_file_id) add(`/api/gdrive-poster/${item.poster_file_id}`, 'gdrive')
+  if (item?.display_poster) add(item.display_poster, 'server')
+  if (item?.primary_poster_url) add(item.primary_poster_url, 'local')
+
+  return posters
+}
+
+function mergeUniquePosters(initial, fetched) {
+  const seen = new Set()
+  const result = []
+
+  const add = (p) => {
+    if (!p) return
+    const url = typeof p === 'string' ? p : p.url
+    if (!url) return
+    const clean = String(url).trim()
+    if (seen.has(clean)) return
+    seen.add(clean)
+    result.push(typeof p === 'object' ? p : { url: clean, source: 'server' })
+  }
+
+  initial.forEach(add)
+  if (Array.isArray(fetched)) {
+    fetched.forEach(add)
+  }
+  return result
+}
+
+function getPosterSourceLabel(poster) {
+  const url = typeof poster === 'string' ? poster : poster?.url || ''
+  const source = typeof poster === 'object' ? poster?.source : ''
+  if (source === 'gdrive' || url.includes('gdrive-poster')) return 'Google Drive'
+  if (source === 'local' || url.includes('/posters/')) return 'Server Local'
+  return 'Server'
+}
+
+function isSamePoster(urlA, urlB) {
+  if (!urlA || !urlB) return false
+  const cleanA = String(urlA).split('?')[0].trim()
+  const cleanB = String(urlB).split('?')[0].trim()
+  return cleanA === cleanB
 }
 
 export default AdminCatalogEditPage

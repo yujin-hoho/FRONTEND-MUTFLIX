@@ -11,6 +11,7 @@ import {
   getStillUrl,
   getTitle,
   getWatchProgress,
+  preloadImage,
 } from '../../utils/media'
 
 export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenCatalogAll, onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, title }) {
@@ -19,6 +20,14 @@ export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = fal
   if (!items.length) return emptyMessage ? <p className="empty-catalog">{emptyMessage}</p> : null
   const visibleItems = showAll ? items : items.slice(0, 15)
   const isHorizontal = layout === 'horizontal'
+
+  useEffect(() => {
+    // Preload posters in this row ahead of time so they render immediately without scroll delays
+    visibleItems.slice(0, 8).forEach((item) => {
+      const url = isHorizontal ? getDetailArtworkUrl(item) : getPosterUrl(item)
+      if (url) preloadImage(url)
+    })
+  }, [isHorizontal, visibleItems])
 
   return (
     <section className={`catalog-row ${isHorizontal ? 'catalog-row-horizontal' : ''}`} aria-label={title}>

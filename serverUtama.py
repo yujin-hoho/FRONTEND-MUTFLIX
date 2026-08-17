@@ -25,6 +25,14 @@ import unicodedata
 from time import monotonic as _monotonic
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import io
+
+try:
+    from PIL import Image, ImageOps
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
+    print("WARNING: 'PIL' (Pillow) library not installed. Image resizing fallback to raw.", flush=True)
 
 # --- HIGH-PERFORMANCE LIBRARIES (HuggingFace Optimized) ---
 import orjson
@@ -1314,17 +1322,25 @@ def _tmdb_meta_lock_for(cache_key):
             _tmdb_meta_key_locks[cache_key] = lock
         return lock
 
-def _get_or_resolve_tmdb_meta_payload(media_type, folder_name):
-    """Resolve one TMDB metadata payload, using the same cache path as the GET endpoint."""
+def _get_or_resolve_tmdb_meta_payload(media_type, folder_name, tmdb_id=None):
+    """Resolve one TMDB metadata payload, prioritizing direct tmdb_id if available."""
     media_type = (media_type or '').strip().lower()
     folder_name = (folder_name or '').strip()
     if media_type not in ('tv', 'movie'):
         return 400, {'error': 'media_type must be tv or movie'}, None
-    if not folder_name:
-        return 400, {'error': 'folder_name is required'}, None
 
-    override = _get_tmdb_overrides_map().get(folder_name)
-    cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
+    tmdb_id = _positive_int_or_none(tmdb_id)
+    override = _get_tmdb_overrides_map().get(folder_name) if folder_name else None
+    if not tmdb_id and override:
+        tmdb_id = _positive_int_or_none(override.get('tmdb_id'))
+
+    if tmdb_id:
+        cache_key = f"tmdb_meta_by_id_{media_type}_{tmdb_id}"
+    elif folder_name:
+        cache_key = _tmdb_meta_cache_key(media_type, folder_name, override)
+    else:
+        return 400, {'error': 'folder_name or tmdb_id is required'}, None
+
     cached_entry, cache_status = _get_tmdb_meta_cache(cache_key)
     if cached_entry:
         return cached_entry.get('status', 200), cached_entry.get('payload'), cache_status
@@ -1335,9 +1351,40 @@ def _get_or_resolve_tmdb_meta_payload(media_type, folder_name):
         if cached_entry:
             return cached_entry.get('status', 200), cached_entry.get('payload'), cache_status
 
-        status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
+        if tmdb_id:
+            detail_prefix = 'tv' if media_type == 'tv' else 'movie'
+            detail_params = {'append_to_response': 'content_ratings,videos,credits,recommendations'}
+            status, payload = _fetch_tmdb_json_server(f'{detail_prefix}/{tmdb_id}', detail_params)
+        else:
+            status, payload = _resolve_tmdb_meta(media_type, folder_name, override)
+
         _set_tmdb_meta_cache(cache_key, status, payload)
         return status, payload, 'MISS'
+
+
+@app.route('/api/tmdb-meta/<media_type>', methods=['GET'])
+@token_required(check_expiry=False)
+def get_tmdb_meta(current_user, media_type):
+    """Resolve metadata from TMDB based directly on tmdb_id (or folder_name fallback)."""
+    if not TMDB_API_KEY:
+        return orjson_jsonify({'error': 'TMDB_API_KEY is not configured on server'}, 503)
+
+    tmdb_id = _positive_int_or_none(request.args.get('tmdb_id') or request.args.get('id'))
+    folder_name = request.args.get('folder_name')
+    resolved_name = folder_name
+    if folder_name and folder_name.startswith(("gdrive_folder/", "gdrive/", "telegram/")):
+        folders_data = mem_get('folders_list')
+        if folders_data:
+            for movie_item in folders_data.get('movies', []):
+                if movie_item.get('source') == folder_name:
+                    resolved_name = movie_item['name']
+                    break
+    status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(media_type, resolved_name, tmdb_id=tmdb_id)
+
+    resp = orjson_jsonify(payload, status=status)
+    resp.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if status in (200, 404) else 'no-store'
+    resp.headers['X-TMDB-Meta-Cache'] = cache_status or 'MISS'
+    return resp
 
 def _parse_year_from_folder_name(folder_name):
     patterns = [
@@ -1625,20 +1672,23 @@ def bulk_tmdb_meta(current_user):
             if media_type == 'series':
                 media_type = 'tv'
             folder_name = str(raw.get('folder_name') or raw.get('name') or '').strip()
-            key = (media_type, folder_name)
-            if media_type not in ('tv', 'movie') or not folder_name or key in seen:
+            tmdb_id = _positive_int_or_none(raw.get('tmdb_id') or raw.get('idtmdb') or raw.get('id_tmdb'))
+            key = (media_type, folder_name, tmdb_id)
+            if media_type not in ('tv', 'movie') or (not folder_name and not tmdb_id) or key in seen:
                 continue
             seen.add(key)
-            unique_items.append({'media_type': media_type, 'folder_name': folder_name})
+            unique_items.append({'media_type': media_type, 'folder_name': folder_name, 'tmdb_id': tmdb_id})
 
         def _resolve_item(item):
             status, payload, cache_status = _get_or_resolve_tmdb_meta_payload(
                 item['media_type'],
                 item['folder_name'],
+                tmdb_id=item.get('tmdb_id'),
             )
             return {
                 'media_type': item['media_type'],
                 'folder_name': item['folder_name'],
+                'tmdb_id': item.get('tmdb_id'),
                 'status': status,
                 'cache': cache_status or 'MISS',
                 'payload': payload,
@@ -6764,84 +6814,250 @@ def debug_routes(current_user):
         return orjson_jsonify({"error": str(e)}, 500)
 
 # --- ALL POSTERS LIST ENDPOINT ---
-@app.route("/api/posters/<media_type>/<int:item_id>")
-@token_required(check_expiry=False)
-@rate_limited()
-def get_all_posters(current_user, media_type, item_id):
-    """Return all available poster URLs for a given media item (local + GDrive)."""
-    if media_type not in ('movies', 'series', 'movie', 'tv'):
-        return jsonify({"error": "Invalid media type"}), 400
-    p_cat = 'series' if media_type in ('series', 'tv') else 'movies'
-    item_id_str = str(item_id)
+def _collect_posters_for_query(media_type=None, item_id=None, folder_name=None, name=None, tmdb_title=None):
+    p_cat = 'series' if str(media_type).lower() in ('series', 'tv') else 'movies'
     posters = []
     seen_urls = set()
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Candidates for matching
+    candidates = []
+    if item_id:
+        candidates.append(str(item_id).strip())
+    if folder_name:
+        candidates.append(str(folder_name).strip())
+    if name:
+        candidates.append(str(name).strip())
+    if tmdb_title:
+        candidates.append(str(tmdb_title).strip())
 
     # 1. Local filesystem posters
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    poster_dirs = [
-        os.path.join(base_dir, 'storage', 'posters', p_cat, item_id_str),
-        os.path.join(base_dir, 'posters', p_cat, item_id_str),
-    ]
-    for p_dir in poster_dirs:
-        if os.path.isdir(p_dir):
-            try:
-                imgs = sorted(
-                    [f.name for f in os.scandir(p_dir) if f.is_file() and f.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))],
-                    key=lambda x: int(os.path.splitext(x)[0]) if os.path.splitext(x)[0].isdigit() else x
-                )
-                for img in imgs:
-                    url = f"/posters/{p_cat}/{item_id_str}/{img}"
-                    if url not in seen_urls:
-                        seen_urls.add(url)
-                        posters.append({"url": url, "source": "local", "filename": img})
-            except Exception:
-                pass
-            break
+    for cand in candidates:
+        if not cand:
+            continue
+        cleaned_cand = os.path.basename(cand.rstrip('/\\'))
+        check_dirs = [
+            os.path.join(base_dir, 'storage', 'posters', p_cat, cand),
+            os.path.join(base_dir, 'posters', p_cat, cand),
+            os.path.join(base_dir, 'storage', 'posters', cand),
+            os.path.join(base_dir, 'posters', cand),
+            os.path.join(base_dir, 'storage', 'posters', p_cat, cleaned_cand),
+            os.path.join(base_dir, 'posters', p_cat, cleaned_cand),
+        ]
+        for p_dir in check_dirs:
+            if os.path.isdir(p_dir):
+                try:
+                    imgs = sorted(
+                        [f.name for f in os.scandir(p_dir) if f.is_file() and f.name.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))],
+                        key=lambda x: int(os.path.splitext(x)[0]) if os.path.splitext(x)[0].isdigit() else x
+                    )
+                    rel_base = os.path.relpath(p_dir, os.path.join(base_dir, 'storage', 'posters')).replace('\\', '/')
+                    if rel_base.startswith('..'):
+                        rel_base = os.path.relpath(p_dir, os.path.join(base_dir, 'posters')).replace('\\', '/')
+                    for img in imgs:
+                        url = f"/posters/{rel_base}/{img}" if not rel_base.startswith('..') else f"/posters/{img}"
+                        if url not in seen_urls:
+                            seen_urls.add(url)
+                            posters.append({"url": url, "source": "local", "filename": img})
+                except Exception:
+                    pass
 
     # 2. GDrive posters
     try:
         poster_map, *rest = fetch_gdrive_poster_map()
         if poster_map:
-            p_ids = poster_map.get(f"{p_cat}_{item_id_str}")
-            if not p_ids:
-                p_ids = poster_map.get(item_id_str)
-            if p_ids:
-                if isinstance(p_ids, list):
-                    for fid in p_ids:
-                        url = f"/api/gdrive-poster/{fid}"
-                        if url not in seen_urls:
-                            seen_urls.add(url)
-                            posters.append({"url": url, "source": "gdrive", "file_id": fid})
-                elif isinstance(p_ids, str):
-                    url = f"/api/gdrive-poster/{p_ids}"
-                    if url not in seen_urls:
-                        seen_urls.add(url)
-                        posters.append({"url": url, "source": "gdrive", "file_id": p_ids})
+            for cand in candidates:
+                if not cand:
+                    continue
+                keys_to_test = [
+                    f"{p_cat}_{cand}",
+                    cand,
+                    cand.lower().strip(),
+                    _normalize_key(cand),
+                    os.path.basename(cand.rstrip('/\\')).lower().strip(),
+                    _normalize_key(os.path.basename(cand.rstrip('/\\'))),
+                ]
+                for k in keys_to_test:
+                    p_ids = poster_map.get(k)
+                    if p_ids:
+                        if isinstance(p_ids, (list, tuple)):
+                            for fid in p_ids:
+                                url = f"/api/gdrive-poster/{fid}"
+                                if url not in seen_urls:
+                                    seen_urls.add(url)
+                                    posters.append({"url": url, "source": "gdrive", "file_id": fid})
+                        elif isinstance(p_ids, str):
+                            url = f"/api/gdrive-poster/{p_ids}"
+                            if url not in seen_urls:
+                                seen_urls.add(url)
+                                posters.append({"url": url, "source": "gdrive", "file_id": p_ids})
     except Exception:
         pass
 
-    # 3. media.db primary poster (fallback if nothing found above)
-    if not posters:
-        try:
-            p_map = _get_local_poster_map()
-            p_urls = p_map.get(p_cat, {}).get('by_id', {}).get(item_id_str)
+    # 3. media.db local poster map
+    try:
+        p_map = _get_local_poster_map()
+        for cand in candidates:
+            if not cand:
+                continue
+            p_urls = p_map.get(p_cat, {}).get('by_id', {}).get(cand) or p_map.get(p_cat, {}).get('by_name', {}).get(cand.lower().strip())
             if p_urls:
-                if isinstance(p_urls, list):
+                if isinstance(p_urls, (list, tuple)):
                     for url in p_urls:
                         if url not in seen_urls:
                             seen_urls.add(url)
                             posters.append({"url": url, "source": "local", "filename": os.path.basename(url)})
                 elif isinstance(p_urls, str):
-                    posters.append({"url": p_urls, "source": "local", "filename": os.path.basename(p_urls)})
-        except Exception:
-            pass
+                    if p_urls not in seen_urls:
+                        seen_urls.add(p_urls)
+                        posters.append({"url": p_urls, "source": "local", "filename": os.path.basename(p_urls)})
+    except Exception:
+        pass
 
-    return jsonify({
+    return {
         "media_type": p_cat,
-        "item_id": item_id,
         "total": len(posters),
         "posters": posters
-    })
+    }
+
+
+@app.route("/api/posters/item", methods=["GET"])
+@app.route("/api/posters", methods=["GET"])
+@token_required(check_expiry=False)
+@rate_limited()
+def get_item_posters(current_user):
+    """Return all available poster URLs for a given media query."""
+    media_type = request.args.get('media_type') or request.args.get('type') or 'movies'
+    item_id = request.args.get('id') or request.args.get('item_id')
+    folder_name = request.args.get('folder_name') or request.args.get('folder')
+    name = request.args.get('name') or request.args.get('title')
+    tmdb_title = request.args.get('tmdb_title')
+    res = _collect_posters_for_query(media_type, item_id, folder_name, name, tmdb_title)
+    return jsonify(res)
+
+
+@app.route("/api/posters/<media_type>/<path:item_id>")
+@token_required(check_expiry=False)
+@rate_limited()
+def get_all_posters(current_user, media_type, item_id):
+    """Return all available poster URLs for a given media item (local + GDrive)."""
+    folder_name = request.args.get('folder_name')
+    name = request.args.get('name')
+    tmdb_title = request.args.get('tmdb_title')
+    res = _collect_posters_for_query(media_type, item_id, folder_name, name, tmdb_title)
+    return jsonify(res)
+
+def optimize_image_bytes(raw_bytes, target_width=None, quality=82, output_format="WEBP"):
+    """
+    Downscale and convert image to WebP (or specified format) to save bandwidth and accelerate frontend load times.
+    """
+    if not raw_bytes:
+        return None, None
+    if not _HAS_PIL:
+        return raw_bytes, "image/jpeg"
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as im:
+            # Correct orientation from EXIF
+            try:
+                im = ImageOps.exif_transpose(im)
+            except Exception:
+                pass
+            
+            orig_w, orig_h = im.size
+            if target_width and target_width > 0 and orig_w > target_width:
+                target_height = max(1, int(orig_h * (target_width / orig_w)))
+                resample = getattr(Image, 'Resampling', Image).LANCZOS
+                im = im.resize((target_width, target_height), resample=resample)
+            
+            fmt = (output_format or "WEBP").upper()
+            mimetype = "image/webp" if fmt == "WEBP" else "image/jpeg"
+            
+            buf = io.BytesIO()
+            if fmt == "WEBP":
+                if im.mode not in ('RGB', 'RGBA'):
+                    im = im.convert('RGBA' if 'A' in im.mode else 'RGB')
+                im.save(buf, format="WEBP", quality=quality, method=4)
+            else:
+                if im.mode not in ('RGB', 'L'):
+                    if 'A' in im.mode:
+                        bg = Image.new('RGB', im.size, (255, 255, 255))
+                        bg.paste(im, mask=im.split()[-1])
+                        im = bg
+                    else:
+                        im = im.convert('RGB')
+                im.save(buf, format="JPEG", quality=quality, optimize=True)
+            
+            return buf.getvalue(), mimetype
+    except Exception as e:
+        print(f"[IMAGE-OPT] Error optimizing image: {e}", flush=True)
+        return raw_bytes, "image/jpeg"
+
+
+def parse_requested_width(default=None, max_limit=2560):
+    w_arg = request.args.get('w') or request.args.get('width') or request.args.get('size')
+    if not w_arg:
+        return default
+    match = re.search(r'(\d+)', str(w_arg))
+    if match:
+        try:
+            w = int(match.group(1))
+            if 10 <= w <= max_limit:
+                # Snap to standard width buckets for maximum cache hit ratio
+                for standard_w in (185, 342, 500, 780, 1280, 1920):
+                    if abs(w - standard_w) <= 20:
+                        return standard_w
+                return w
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _serve_optimized_local_file(directories, filename):
+    full_path = None
+    for d in directories:
+        candidate = os.path.join(d, filename)
+        if os.path.exists(candidate) and os.path.isfile(candidate):
+            full_path = candidate
+            break
+
+    if not full_path:
+        return jsonify({"error": "File not found"}), 404
+
+    target_width = parse_requested_width(default=None)
+    ext = os.path.splitext(filename)[1].lower()
+
+    # If SVG or not standard raster image and no width requested, serve directly
+    if not target_width and ext not in ('.png', '.jpg', '.jpeg', '.webp'):
+        return send_from_directory(os.path.dirname(full_path), os.path.basename(full_path))
+
+    accept = request.headers.get('Accept', '')
+    fmt = "WEBP" if "image/webp" in accept or "*/*" in accept or not accept else "JPEG"
+    mimetype = "image/webp" if fmt == "WEBP" else "image/jpeg"
+
+    mtime = os.path.getmtime(full_path)
+    cache_key_opt = f"local_img_opt_{filename}_{int(mtime)}_w{target_width or 'orig'}_{fmt.lower()}"
+    cached_opt = disk_cache.get(cache_key_opt)
+    if cached_opt:
+        resp = Response(cached_opt, mimetype=mimetype)
+        resp.headers['Cache-Control'] = 'public, max-age=2592000, immutable'
+        resp.headers['X-Image-Cache'] = 'HIT-OPT'
+        return resp
+
+    try:
+        with open(full_path, 'rb') as f:
+            raw_bytes = f.read()
+        opt_bytes, out_mime = optimize_image_bytes(raw_bytes, target_width=target_width, quality=82, output_format=fmt)
+        if opt_bytes:
+            disk_cache.set(cache_key_opt, opt_bytes, expire=86400 * 30)
+            resp = Response(opt_bytes, mimetype=out_mime or mimetype)
+            resp.headers['Cache-Control'] = 'public, max-age=2592000, immutable'
+            resp.headers['X-Image-Cache'] = 'MISS-OPT'
+            return resp
+    except Exception as e:
+        print(f"[LOCAL-IMAGE] Error optimizing {filename}: {e}", flush=True)
+
+    return send_from_directory(os.path.dirname(full_path), os.path.basename(full_path))
+
 
 # --- POSTER & BACKDROP SERVING ENDPOINTS ---
 @app.route("/posters/<path:filename>")
@@ -6850,10 +7066,8 @@ def serve_posters(filename):
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage", "posters"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "posters"),
     ]
-    for p_dir in poster_dirs:
-        if os.path.exists(os.path.join(p_dir, filename)):
-            return send_from_directory(p_dir, filename)
-    return jsonify({"error": "Poster not found"}), 404
+    return _serve_optimized_local_file(poster_dirs, filename)
+
 
 @app.route("/backdrops/<path:filename>")
 def serve_backdrops(filename):
@@ -6861,51 +7075,74 @@ def serve_backdrops(filename):
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "storage", "backdrops"),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "backdrops"),
     ]
-    for b_dir in backdrop_dirs:
-        if os.path.exists(os.path.join(b_dir, filename)):
-            return send_from_directory(b_dir, filename)
-    return jsonify({"error": "Backdrop not found"}), 404
+    return _serve_optimized_local_file(backdrop_dirs, filename)
+
 
 @app.route("/api/gdrive-poster/<file_id>")
 def serve_gdrive_poster(file_id):
-    """Proxy and cache poster images from dedicated GDrive poster account."""
+    """Proxy, optimize, resize and cache poster images from dedicated GDrive poster account."""
     if not file_id or not re.fullmatch(r'^[a-zA-Z0-9_-]{10,100}$', file_id):
         return jsonify({"error": "Invalid file ID"}), 400
 
-    cache_key = f"gdrive_poster_blob_{file_id}"
-    cached_img = disk_cache.get(cache_key)
-    if cached_img:
-        resp = Response(cached_img, mimetype="image/jpeg")
-        resp.headers['Cache-Control'] = 'public, max-age=604800, immutable'
+    target_width = parse_requested_width(default=None)
+    accept = request.headers.get('Accept', '')
+    fmt = "WEBP" if "image/webp" in accept or "*/*" in accept or not accept else "JPEG"
+    mimetype = "image/webp" if fmt == "WEBP" else "image/jpeg"
+
+    # Fast path: Resized/Optimized cache
+    cache_key_opt = f"gdrive_poster_opt_{file_id}_w{target_width or 'orig'}_{fmt.lower()}"
+    cached_opt = disk_cache.get(cache_key_opt)
+    if cached_opt:
+        resp = Response(cached_opt, mimetype=mimetype)
+        resp.headers['Cache-Control'] = 'public, max-age=2592000, immutable'
+        resp.headers['X-Image-Cache'] = 'HIT-OPT'
         return resp
 
-    services = []
-    poster_svc = get_gdrive_poster_service()
-    if poster_svc:
-        services.append(poster_svc)
-    main_svc = get_gdrive_service()
-    if main_svc and main_svc not in services:
-        services.append(main_svc)
-    sub_svc = get_gdrive_subtitle_service()
-    if sub_svc and sub_svc not in services:
-        services.append(sub_svc)
+    # Check raw original image blob cache
+    raw_cache_key = f"gdrive_poster_blob_{file_id}"
+    raw_img = disk_cache.get(raw_cache_key)
 
-    if not services:
-        return jsonify({"error": "Poster service not configured"}), 503
+    if not raw_img:
+        services = []
+        poster_svc = get_gdrive_poster_service()
+        if poster_svc:
+            services.append(poster_svc)
+        main_svc = get_gdrive_service()
+        if main_svc and main_svc not in services:
+            services.append(main_svc)
+        sub_svc = get_gdrive_subtitle_service()
+        if sub_svc and sub_svc not in services:
+            services.append(sub_svc)
 
-    for svc in services:
-        try:
-            req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
-            img_bytes = req.execute()
-            if img_bytes:
-                disk_cache.set(cache_key, img_bytes, expire=86400 * 7)
-                resp = Response(img_bytes, mimetype="image/jpeg")
-                resp.headers['Cache-Control'] = 'public, max-age=604800, immutable'
-                return resp
-        except Exception:
-            continue
+        if not services:
+            return jsonify({"error": "Poster service not configured"}), 503
 
-    return jsonify({"error": "Poster not found"}), 404
+        for svc in services:
+            try:
+                req = svc.files().get_media(fileId=file_id, supportsAllDrives=True)
+                img_bytes = req.execute()
+                if img_bytes:
+                    raw_img = img_bytes
+                    disk_cache.set(raw_cache_key, raw_img, expire=86400 * 30)
+                    break
+            except Exception:
+                continue
+
+    if not raw_img:
+        return jsonify({"error": "Poster not found"}), 404
+
+    # Optimize and resize image
+    opt_bytes, out_mime = optimize_image_bytes(raw_img, target_width=target_width, quality=82, output_format=fmt)
+    if opt_bytes:
+        disk_cache.set(cache_key_opt, opt_bytes, expire=86400 * 30)
+        resp = Response(opt_bytes, mimetype=out_mime or mimetype)
+        resp.headers['Cache-Control'] = 'public, max-age=2592000, immutable'
+        resp.headers['X-Image-Cache'] = 'MISS-OPT'
+        return resp
+
+    resp = Response(raw_img, mimetype="image/jpeg")
+    resp.headers['Cache-Control'] = 'public, max-age=2592000, immutable'
+    return resp
 
 # Frontend Serve
 @app.route("/", defaults={"path": ""})
