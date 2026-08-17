@@ -4,7 +4,6 @@ import time
 import requests as py_requests
 from flask import request, Response
 
-# Import server app and background workers
 from serverUtama import app, background_cache_worker, warmup_cache
 
 
