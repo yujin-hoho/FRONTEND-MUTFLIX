@@ -146,8 +146,9 @@ function buildDashboardView(catalogData, selectedProfile, featuredItemKey, watch
     .filter((item) => !isCatalogItemCompleted(item, completedContext))
   const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
   const heroCandidates = backdropItems.length ? backdropItems : catalogItems
-  const featuredItem = catalogItems.find((item) => getItemKey(item) === featuredItemKey)
+  const featuredItem = (featuredItemKey && backdropItems.find((item) => getItemKey(item) === featuredItemKey))
     || rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
+    || backdropItems[0]
     || catalogItems[0]
   const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Animation', 'Documentary']
     .map((genre) => ({

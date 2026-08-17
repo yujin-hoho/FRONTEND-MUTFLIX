@@ -1264,15 +1264,15 @@ function replaceCatalogItem(items, originalKey, updatedItem) {
 function getFeaturedItemKey(featuredKeys, profileId, movies, series) {
   const rotationKey = getRotationKey(profileId)
   const catalogItems = [...movies, ...series]
+  const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
   const currentFeatured = featuredKeys.get(profileId)
   if (
     currentFeatured?.rotationKey === rotationKey
-    && catalogItems.some((item) => getItemKey(item) === currentFeatured.itemKey)
+    && backdropItems.some((item) => getItemKey(item) === currentFeatured.itemKey)
   ) {
     return currentFeatured.itemKey
   }
 
-  const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
   const heroItems = backdropItems.length ? backdropItems : catalogItems
   const heroItem = rotateItems(heroItems, `${rotationKey}-hero`)[0]
   const itemKey = heroItem ? getItemKey(heroItem) : ''

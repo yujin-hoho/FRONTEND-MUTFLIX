@@ -58,6 +58,7 @@ const LEGACY_DASHBOARD_CACHE_KEYS = [
   'mutflix_dashboard_cache_v2',
   'mutflix_dashboard_cache_v3',
   'mutflix_dashboard_cache_v4',
+  'mutflix_dashboard_cache_v5',
 ]
 const TMDB_OVERRIDE_CACHE_KEY = 'mutflix_tmdb_override_cache_v1'
 

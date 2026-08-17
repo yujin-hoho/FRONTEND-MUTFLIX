@@ -114,7 +114,8 @@ export function getDetailArtworkUrl(item) {
 
 export function getStillUrl(item) {
   if (!item) return ''
-  const stillPath = item.still_url
+  const stillPath = item.still_path
+    || item.still_url
     || item.thumbnail_url
     || item.backdrop_url
     || item.primary_backdrop_url
