@@ -53,7 +53,12 @@ const CATALOG_METADATA_FIELDS = [
   'vote_average',
   'genres',
 ]
-const LEGACY_DASHBOARD_CACHE_KEYS = ['mutflix_dashboard_cache_v1', 'mutflix_dashboard_cache_v2', 'mutflix_dashboard_cache_v3']
+const LEGACY_DASHBOARD_CACHE_KEYS = [
+  'mutflix_dashboard_cache_v1',
+  'mutflix_dashboard_cache_v2',
+  'mutflix_dashboard_cache_v3',
+  'mutflix_dashboard_cache_v4',
+]
 const TMDB_OVERRIDE_CACHE_KEY = 'mutflix_tmdb_override_cache_v1'
 
 export function readDashboardCache(profileId) {

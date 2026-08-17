@@ -26,9 +26,12 @@ export function resolveServerMediaUrl(path, size = 'w342') {
     || trimmed.startsWith('/posters/')
     || trimmed.startsWith('/backdrops/')
     || trimmed.startsWith('/storage/')
-    || trimmed.startsWith('/gdrive-poster/')
   ) {
     return `${API_BASE_URL}${trimmed}`
+  }
+
+  if (trimmed.startsWith('/gdrive-poster/')) {
+    return `${API_BASE_URL}/api${trimmed}`
   }
 
   if (
@@ -36,12 +39,15 @@ export function resolveServerMediaUrl(path, size = 'w342') {
     || trimmed.startsWith('posters/')
     || trimmed.startsWith('backdrops/')
     || trimmed.startsWith('storage/')
-    || trimmed.startsWith('gdrive-poster/')
   ) {
     return `${API_BASE_URL}/${trimmed}`
   }
 
-  return `${API_BASE_URL}/api/tmdb-image/${size}/${trimmed.replace(/^\//, '')}`
+  if (trimmed.startsWith('gdrive-poster/')) {
+    return `${API_BASE_URL}/api/${trimmed}`
+  }
+
+  return ''
 }
 
 export function getTmdbId(item) {
@@ -67,14 +73,12 @@ export function getPosterUrl(item, size = 'w342') {
 
   const poster = posters[0]
     || item.poster_url
+    || (item.poster_file_id ? `/api/gdrive-poster/${item.poster_file_id}` : '')
     || item.display_poster
     || item.primary_poster_url
     || item.poster
     || item.thumbnail_url
     || item.image_url
-    || item.tmdb_poster_path
-    || item.poster_path
-    || item.thumbnail_path
 
   return resolveServerMediaUrl(poster, size)
 }
@@ -95,12 +99,11 @@ export function getBackdropUrl(item, size = 'w1280') {
 
   const backdrop = backdrops[0]
     || item.backdrop_url
+    || (item.backdrop_file_id ? `/api/gdrive-poster/${item.backdrop_file_id}` : '')
     || item.primary_backdrop_url
     || item.backdrop
     || item.background_url
     || item.fanart_url
-    || item.tmdb_backdrop_path
-    || item.backdrop_path
 
   return resolveServerMediaUrl(backdrop, size)
 }
@@ -112,14 +115,13 @@ export function getDetailArtworkUrl(item) {
 export function getStillUrl(item) {
   if (!item) return ''
   const stillPath = item.still_url
-    || item.still_path
     || item.thumbnail_url
-    || item.thumbnail_path
     || item.backdrop_url
     || item.primary_backdrop_url
     || (Array.isArray(item.all_backdrop_urls) && item.all_backdrop_urls[0])
-    || item.tmdb_backdrop_path
-    || item.backdrop_path
+    || item.poster_url
+    || item.primary_poster_url
+    || (Array.isArray(item.all_poster_urls) && item.all_poster_urls[0])
 
   return resolveServerMediaUrl(stillPath, 'w500')
 }
@@ -390,7 +392,11 @@ export async function preloadImages(urls, { concurrency = 12 } = {}) {
 }
 
 export function getTmdbImageUrl(path, size = 'w342') {
-  return resolveServerMediaUrl(path, size)
+  if (!path) return ''
+  const trimmed = String(path).trim()
+  if (!trimmed) return ''
+  if (/^(?:https?:|data:|blob:)/i.test(trimmed)) return trimmed
+  return `https://image.tmdb.org/t/p/${size}/${trimmed.replace(/^\//, '')}`
 }
 
 function getRotationItemKey(item, index) {
