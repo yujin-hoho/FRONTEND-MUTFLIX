@@ -14,20 +14,12 @@ import {
   preloadImage,
 } from '../../utils/media'
 
-export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenCatalogAll, onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, title }) {
+export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenCatalogAll, onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, rowIndex = 0, title }) {
   const [showAll, setShowAll] = useState(false)
 
   if (!items.length) return emptyMessage ? <p className="empty-catalog">{emptyMessage}</p> : null
   const visibleItems = showAll ? items : items.slice(0, 15)
   const isHorizontal = layout === 'horizontal'
-
-  useEffect(() => {
-    // Preload posters in this row ahead of time so they render immediately without scroll delays
-    visibleItems.slice(0, 8).forEach((item) => {
-      const url = isHorizontal ? getDetailArtworkUrl(item) : getPosterUrl(item)
-      if (url) preloadImage(url)
-    })
-  }, [isHorizontal, visibleItems])
 
   return (
     <section className={`catalog-row ${isHorizontal ? 'catalog-row-horizontal' : ''}`} aria-label={title}>
@@ -39,14 +31,24 @@ export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = fal
       </div>
       <DraggableScroller className={`catalog-scroller ${isHorizontal ? 'horizontal-scroller' : ''} ${ranked ? 'ranked-scroller' : ''}`} variant={isHorizontal ? 'horizontal' : ''}>
         {visibleItems.map((item, index) => (
-          <CatalogCard horizontal={isHorizontal} isAdmin={isAdmin} item={item} key={getItemKey(item)} onOpenContextMenu={onOpenContextMenu} onOpenDetail={onOpenDetail} onOpenEdit={onOpenEdit} rank={ranked ? index + 1 : null} />
+          <CatalogCard
+            horizontal={isHorizontal}
+            isAdmin={isAdmin}
+            isPriority={rowIndex < 2 && index < 6}
+            item={item}
+            key={getItemKey(item)}
+            onOpenContextMenu={onOpenContextMenu}
+            onOpenDetail={onOpenDetail}
+            onOpenEdit={onOpenEdit}
+            rank={ranked ? index + 1 : null}
+          />
         ))}
       </DraggableScroller>
     </section>
   )
 })
 
-const CatalogCard = memo(function CatalogCard({ horizontal = false, isAdmin = false, item, onOpenContextMenu, onOpenDetail, onOpenEdit, rank }) {
+const CatalogCard = memo(function CatalogCard({ horizontal = false, isAdmin = false, isPriority = false, item, onOpenContextMenu, onOpenDetail, onOpenEdit, rank }) {
   const artwork = horizontal ? getDetailArtworkUrl(item) : getPosterUrl(item)
   const rating = getRating(item)
   const title = getTitle(item)
@@ -68,7 +70,14 @@ const CatalogCard = memo(function CatalogCard({ horizontal = false, isAdmin = fa
               {Math.round(rating * 10)}%
             </span>
           )}
-          <LoadableImage alt={title} fallbackSrc={getPosterFallbackUrl(item)} key={artwork} src={artwork} />
+          <LoadableImage
+            alt={title}
+            fallbackSrc={getPosterFallbackUrl(item)}
+            fetchPriority={isPriority ? 'high' : 'auto'}
+            key={artwork}
+            loading={isPriority ? 'eager' : 'lazy'}
+            src={artwork}
+          />
         </div>
         <h3>{title}</h3>
       </button>

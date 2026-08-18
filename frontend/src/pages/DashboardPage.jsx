@@ -56,18 +56,28 @@ function DashboardPage({
     onDashboardRowsReady(createDashboardRowsSnapshot(dashboardView))
   }, [catalogData.isLoading, dashboardView, onDashboardRowsReady])
 
-  // Background preload all rows so lower rows are already cached when scrolled
+  // Low-priority background preload only after page has loaded and browser is idle
   useEffect(() => {
     const allRows = [...(displayView.curatedRows || []), ...(displayView.catalogRows || [])]
     const urls = []
-    allRows.forEach((row) => {
-      (row.items || []).slice(0, 10).forEach((item) => {
+    allRows.slice(0, 4).forEach((row) => {
+      (row.items || []).slice(0, 6).forEach((item) => {
         const url = getPosterUrl(item) || getDetailArtworkUrl(item)
         if (url) urls.push(url)
       })
     })
-    if (urls.length) {
-      preloadImages(urls, { concurrency: 6 })
+    if (!urls.length) return
+
+    const idleId = (window.requestIdleCallback || ((cb) => setTimeout(cb, 2500)))(() => {
+      preloadImages(urls, { concurrency: 2 })
+    })
+
+    return () => {
+      if (window.cancelIdleCallback) {
+        window.cancelIdleCallback(idleId)
+      } else {
+        clearTimeout(idleId)
+      }
     }
   }, [displayView])
 
@@ -145,6 +155,7 @@ function DashboardPage({
                 onOpenContextMenu={onOpenContextMenu}
                 onOpenDetail={onOpenDetail}
                 ranked={row.ranked}
+                rowIndex={index}
                 title={row.genre}
               />
             ))}

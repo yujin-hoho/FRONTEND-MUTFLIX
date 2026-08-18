@@ -7,6 +7,28 @@ export function hasLoadedImageUrl(url) {
   return getLoadedImageUrls().has(normalizeImageUrl(url))
 }
 
+let persistTimer = null
+
+function schedulePersist() {
+  if (persistTimer) return
+  persistTimer = setTimeout(() => {
+    persistTimer = null
+    if (!loadedImageUrls) return
+    const list = Array.from(loadedImageUrls)
+    try {
+      localStorage.setItem(LOADED_IMAGE_CACHE_KEY, JSON.stringify(list))
+    } catch {
+      try {
+        const halved = list.slice(-Math.floor(MAX_LOADED_IMAGE_URLS / 2))
+        loadedImageUrls = new Set(halved)
+        localStorage.setItem(LOADED_IMAGE_CACHE_KEY, JSON.stringify(halved))
+      } catch {
+        localStorage.removeItem(LOADED_IMAGE_CACHE_KEY)
+      }
+    }
+  }, 1000)
+}
+
 export function rememberLoadedImageUrl(url) {
   const normalizedUrl = normalizeImageUrl(url)
   if (!isCacheableImageUrl(normalizedUrl)) return
@@ -15,19 +37,12 @@ export function rememberLoadedImageUrl(url) {
   if (urls.has(normalizedUrl)) return
 
   urls.add(normalizedUrl)
-  const nextUrls = Array.from(urls).slice(-MAX_LOADED_IMAGE_URLS)
-  loadedImageUrls = new Set(nextUrls)
-
-  try {
-    localStorage.setItem(LOADED_IMAGE_CACHE_KEY, JSON.stringify(nextUrls))
-  } catch {
-    loadedImageUrls = new Set(nextUrls.slice(-Math.floor(MAX_LOADED_IMAGE_URLS / 2)))
-    try {
-      localStorage.setItem(LOADED_IMAGE_CACHE_KEY, JSON.stringify(Array.from(loadedImageUrls)))
-    } catch {
-      localStorage.removeItem(LOADED_IMAGE_CACHE_KEY)
-    }
+  if (urls.size > MAX_LOADED_IMAGE_URLS) {
+    const nextUrls = Array.from(urls).slice(-MAX_LOADED_IMAGE_URLS)
+    loadedImageUrls = new Set(nextUrls)
   }
+
+  schedulePersist()
 }
 
 function getLoadedImageUrls() {

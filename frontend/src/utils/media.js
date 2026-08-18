@@ -286,7 +286,11 @@ export function getPersonFallbackUrl(person = {}) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
-export function getPosterFallbackUrl() {
+export function getPosterFallbackUrl(item) {
+  if (!item) return ''
+  if (item.tmdb_poster_path) return getTmdbImageUrl(item.tmdb_poster_path, 'w342')
+  if (item.poster_path) return getTmdbImageUrl(item.poster_path, 'w342')
+  if (item.backdrop_url && !item.backdrop_url.includes('gdrive-poster')) return resolveServerMediaUrl(item.backdrop_url, 'w500')
   return ''
 }
 

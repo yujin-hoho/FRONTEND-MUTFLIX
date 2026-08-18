@@ -87,7 +87,7 @@
 
 .image-loaded {
   opacity: 1;
-  transition: opacity 180ms ease;
+  transition: opacity 220ms ease;
 }
 
 @keyframes shimmer-slide {
