@@ -945,9 +945,10 @@ export async function fetchDetailData(authToken, item) {
   const data = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(data.message || data.error || 'Failed to load title details.')
 
+  const serverCatalogItem = data.catalog_item || {}
   const mergedItem = mergeMeaningfulValues(
     detailItem,
-    data.catalog_item || {},
+    serverCatalogItem,
     { media_type: detailItem.media_type },
   )
 
@@ -956,17 +957,28 @@ export async function fetchDetailData(authToken, item) {
     getCreditsFromServer(mergedItem, headers),
   ])
 
+  const serverDesc = serverCatalogItem.description || serverCatalogItem.overview || detailItem.description || detailItem.overview || ''
+  const serverGenres = getGenres(serverCatalogItem).length ? getGenres(serverCatalogItem) : getGenres(detailItem)
+  const serverRating = serverCatalogItem.rating ?? detailItem.rating
+  const serverYear = serverCatalogItem.year || serverCatalogItem.override_year || detailItem.year || detailItem.override_year
+  const serverReleaseDate = serverCatalogItem.release_date || serverCatalogItem.first_air_date || detailItem.release_date || detailItem.first_air_date
+
   return {
     item: mergeMeaningfulValues(
-      detailItem,
-      data.catalog_item || {},
       getCatalogMetadataFromTmdb(credits.meta),
+      detailItem,
+      serverCatalogItem,
       {
-        poster_url: detailItem.poster_url || data.catalog_item?.poster_url,
-        backdrop_url: detailItem.backdrop_url || data.catalog_item?.backdrop_url,
-        display_poster: detailItem.display_poster || data.catalog_item?.display_poster,
-        all_poster_urls: detailItem.all_poster_urls || data.catalog_item?.all_poster_urls,
-        all_backdrop_urls: detailItem.all_backdrop_urls || data.catalog_item?.all_backdrop_urls,
+        ...(serverDesc ? { description: serverDesc, overview: serverDesc, tmdb_overview: serverDesc } : {}),
+        ...(serverGenres.length ? { genres: serverGenres, tmdb_genres: serverGenres } : {}),
+        ...(serverRating !== undefined && serverRating !== null ? { rating: serverRating, tmdb_rating: serverRating } : {}),
+        ...(serverYear ? { year: serverYear, override_year: serverYear } : {}),
+        ...(serverReleaseDate ? { release_date: serverReleaseDate, first_air_date: serverReleaseDate } : {}),
+        poster_url: detailItem.poster_url || serverCatalogItem.poster_url,
+        backdrop_url: detailItem.backdrop_url || serverCatalogItem.backdrop_url,
+        display_poster: detailItem.display_poster || serverCatalogItem.display_poster,
+        all_poster_urls: detailItem.all_poster_urls || serverCatalogItem.all_poster_urls,
+        all_backdrop_urls: detailItem.all_backdrop_urls || serverCatalogItem.all_backdrop_urls,
         media_type: detailItem.media_type,
       },
     ),
@@ -1002,10 +1014,32 @@ export async function fetchVideoQueue(authToken, item) {
 async function enrichEpisodesFromServer(item, videos, headers) {
   if (getMediaType(item) === 'movie' || !videos.length) return videos
 
+  // If server already provided title and overview/description for episodes, no need to fetch TMDB seasons
+  const needsEnrichment = videos.some((video) => !video.title || (!video.overview && !video.description))
+  if (!needsEnrichment) {
+    return videos.map((video) => ({
+      ...video,
+      title: video.title || video.name,
+      name: video.title || video.name,
+      overview: video.overview || video.description || '',
+      description: video.description || video.overview || '',
+      still_path: video.still_path || video.still_url || '',
+      still_url: video.still_url || video.still_path || '',
+    }))
+  }
+
   let tmdbId = getTmdbId(item)
   if (!tmdbId) {
     const folderName = item.folder_name || item.name || getItemPath(item)
-    if (!folderName) return videos
+    if (!folderName) {
+      return videos.map((video) => ({
+        ...video,
+        title: video.title || video.name,
+        name: video.title || video.name,
+        overview: video.overview || video.description || '',
+        description: video.description || video.overview || '',
+      }))
+    }
 
     try {
       const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/tv?folder_name=${encodeURIComponent(folderName)}`, { headers })
@@ -1016,7 +1050,15 @@ async function enrichEpisodesFromServer(item, videos, headers) {
     }
   }
 
-  if (!tmdbId) return videos
+  if (!tmdbId) {
+    return videos.map((video) => ({
+      ...video,
+      title: video.title || video.name,
+      name: video.title || video.name,
+      overview: video.overview || video.description || '',
+      description: video.description || video.overview || '',
+    }))
+  }
 
   try {
     const seasons = [...new Set(videos.map((video) => Number(video.season || 1)))]
@@ -1032,13 +1074,17 @@ async function enrichEpisodesFromServer(item, videos, headers) {
 
     return videos.map((video) => {
       const episode = episodeMap.get(`${Number(video.season || 1)}:${Number(video.episode || 0)}`)
-      if (!episode) return video
+      const title = video.title || episode?.name || video.name
+      const overview = video.overview || video.description || episode?.overview || ''
+      const stillPath = video.still_path || video.still_url || episode?.still_path || ''
       return {
         ...video,
-        name: episode.name || video.name,
-        overview: episode.overview || '',
-        still_path: video.still_path || video.still_url || episode.still_path || '',
-        still_url: video.still_url || video.still_path || episode.still_path || '',
+        title,
+        name: title,
+        overview,
+        description: overview,
+        still_path: stillPath,
+        still_url: stillPath,
       }
     })
   } catch {
@@ -1160,9 +1206,18 @@ function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
     .filter((item) => {
       const hasTmdbId = Number(item.tmdb_id || item.idtmdb || item.tmdb_override_id || 0) > 0
+      const hasDesc = Boolean(item.description || item.overview || item.tmdb_overview)
+      const hasGenres = Boolean(getGenres(item).length)
+      const hasPoster = Boolean(getPosterUrl(item))
+      const hasBackdrop = Boolean(getBackdropUrl(item))
+
+      if (hasPoster && hasBackdrop && hasGenres && hasDesc) {
+        return false
+      }
+
       return (
         hasUnresolvedOverride(item)
-        || (!item.tmdb_metadata_resolved && (!hasTmdbId || !getPosterUrl(item) || !getBackdropUrl(item) || !getGenres(item).length))
+        || (!item.tmdb_metadata_resolved && (!hasTmdbId || !hasPoster || !hasBackdrop || !hasGenres || !hasDesc))
       )
     })
     .slice(0, maxItems)

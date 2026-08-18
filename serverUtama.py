@@ -1692,6 +1692,28 @@ def bulk_tmdb_meta(current_user):
         print(f"[TMDB-BULK] request_id={request_id} route failed: {e}\n{traceback.format_exc()}", flush=True)
         return _response({'error': 'TMDB bulk metadata request failed', 'request_id': request_id}, 500)
 
+import collections
+_IMG_MEM_CACHE = collections.OrderedDict()
+_IMG_MEM_LOCK = threading.Lock()
+
+def _get_img_mem(key):
+    with _IMG_MEM_LOCK:
+        if key in _IMG_MEM_CACHE:
+            _IMG_MEM_CACHE.move_to_end(key)
+            return _IMG_MEM_CACHE[key]
+        return None
+
+def _set_img_mem(key, val):
+    with _IMG_MEM_LOCK:
+        _IMG_MEM_CACHE[key] = val
+        _IMG_MEM_CACHE.move_to_end(key)
+        if len(_IMG_MEM_CACHE) > 5000:
+            _IMG_MEM_CACHE.popitem(last=False)
+
+_TMDB_IMAGE_SESSION = requests.Session()
+_tmdb_img_adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=1)
+_TMDB_IMAGE_SESSION.mount('https://', _tmdb_img_adapter)
+
 def _tmdb_image_cache_key(size, image_path):
     raw = json.dumps({'v': 1, 'size': size, 'path': image_path}, sort_keys=True, separators=(',', ':'))
     return 'tmdb_image_' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
@@ -1703,17 +1725,24 @@ def _tmdb_image_response_from_cache(entry, cache_status):
         status=entry.get('status', 200),
         content_type=entry.get('content_type') or 'image/jpeg',
     )
-    resp.headers['Cache-Control'] = f'public, max-age={remaining}'
+    resp.headers['Cache-Control'] = f'public, max-age={remaining}, immutable'
     resp.headers['X-TMDB-Image-Cache'] = cache_status
     return resp
 
 def _get_tmdb_image_cache(cache_key):
     now = time.time()
+    # 1. RAM Memory Cache
+    mem_entry = _get_img_mem(cache_key)
+    if mem_entry and now - mem_entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+        return mem_entry, 'HIT-MEM'
+
+    # 2. Disk Cache
     try:
         entry = disk_cache.get(cache_key)
     except Exception:
         entry = None
     if entry and now - entry.get('ts', 0) < TMDB_CACHE_TTL_SECONDS:
+        _set_img_mem(cache_key, entry)
         return entry, 'HIT-DISK'
     return None, None
 
@@ -1739,6 +1768,7 @@ def _set_tmdb_image_cache(cache_key, response, size="w500"):
         'body': body,
         'ts': time.time(),
     }
+    _set_img_mem(cache_key, entry)
     try:
         disk_cache.set(cache_key, entry, expire=TMDB_CACHE_TTL_SECONDS)
     except Exception as e:
@@ -1763,9 +1793,9 @@ def proxy_tmdb_image(size, image_path):
 
     try:
         quoted_path = quote(image_path, safe='/')
-        response = requests.get(
+        response = _TMDB_IMAGE_SESSION.get(
             f'https://image.tmdb.org/t/p/{size}/{quoted_path}',
-            timeout=15,
+            timeout=10,
         )
         _set_tmdb_image_cache(cache_key, response, size=size)
         cached_entry, _ = _get_tmdb_image_cache(cache_key)
@@ -1777,7 +1807,7 @@ def proxy_tmdb_image(size, image_path):
             status=response.status_code,
             content_type=response.headers.get('Content-Type', 'image/jpeg'),
         )
-        proxied.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}' if response.status_code in (200, 404) else 'no-store'
+        proxied.headers['Cache-Control'] = f'public, max-age={TMDB_CACHE_TTL_SECONDS}, immutable' if response.status_code in (200, 404) else 'no-store'
         proxied.headers['X-TMDB-Image-Cache'] = 'MISS'
         return proxied
     except requests.RequestException as e:
@@ -2064,6 +2094,144 @@ def _merge_tmdb_overrides_into_folders(all_c):
                 item['include_adult'] = bool(ia) if ia is not None else False
     except Exception as e:
         print(f"[TMDB-OVERRIDE] merge into folders failed: {e}", flush=True)
+    return all_c
+
+def _get_tmdb_meta_by_id(tmdb_id, media_type='movie'):
+    """Fetch TMDB rating, description/overview & genres based on tmdb_id."""
+    if not tmdb_id:
+        return {}
+    try:
+        t_id = int(tmdb_id)
+        if t_id <= 0:
+            return {}
+    except (ValueError, TypeError):
+        return {}
+
+    prefix = 'tv' if str(media_type).lower() in ('tv', 'series') else 'movie'
+    cache_key = f"tmdb_meta_info:{prefix}:{t_id}"
+
+    # 1. Check RAM memory cache
+    cached_val = mem_get(cache_key)
+    if cached_val is not None and isinstance(cached_val, dict):
+        return cached_val
+
+    # 2. Check Redis cache
+    r_val = redis_get(cache_key)
+    if r_val is not None:
+        try:
+            val = json.loads(r_val) if isinstance(r_val, str) else r_val
+            if isinstance(val, dict):
+                mem_set(cache_key, val)
+                return val
+        except Exception:
+            pass
+
+    if not TMDB_API_KEY:
+        return {}
+
+    # 3. Fetch from TMDB (via server proxy cache or upstream)
+    try:
+        status, data = _fetch_tmdb_json_server(f"{prefix}/{t_id}", {})
+        if status == 200 and isinstance(data, dict):
+            va = data.get('vote_average')
+            rating = round(float(va), 1) if va is not None else None
+            overview = data.get('overview') or ''
+            title = data.get('title') or data.get('name') or ''
+            raw_genres = data.get('genres') or []
+            genres = [g.get('name') for g in raw_genres if isinstance(g, dict) and g.get('name')]
+            result = {
+                'rating': rating,
+                'description': overview,
+                'overview': overview,
+                'tmdb_title': title,
+                'genres': genres,
+            }
+            mem_set(cache_key, result)
+            redis_set(cache_key, json.dumps(result), ttl_seconds=604800)  # 7 days cache
+            return result
+    except Exception as e:
+        print(f"[TMDB-META-INFO] Fetch meta failed for {prefix}/{t_id}: {e}", flush=True)
+
+    return {}
+
+def _merge_tmdb_ratings_into_folders(all_c):
+    """Attach rating, tmdb_rating, description, overview & genres to each item based on tmdb_id."""
+    if not all_c:
+        return all_c
+    try:
+        items_to_fetch = []
+        for cat in ('series', 'movies'):
+            default_mt = 'tv' if cat == 'series' else 'movie'
+            for item in all_c.get(cat) or []:
+                # Synchronize existing description/overview if present
+                existing_desc = item.get('description') or item.get('overview') or item.get('tmdb_overview')
+                if existing_desc:
+                    item['description'] = existing_desc
+                    item['overview'] = existing_desc
+                    item['tmdb_overview'] = existing_desc
+
+                existing_rating = item.get('rating') or item.get('tmdb_rating')
+                if existing_rating is not None:
+                    try:
+                        r_val = round(float(existing_rating), 1)
+                        item['rating'] = r_val
+                        item['tmdb_rating'] = r_val
+                    except (ValueError, TypeError):
+                        pass
+
+                existing_genres = item.get('genres') or item.get('genre')
+                if existing_genres and isinstance(existing_genres, list):
+                    item['genres'] = existing_genres
+                    item['genre'] = existing_genres
+
+                # If rating, description, and genres are already populated, no need to fetch
+                if item.get('rating') is not None and item.get('description') and item.get('genres'):
+                    continue
+
+                t_id = item.get('tmdb_id') or item.get('idtmdb')
+                if t_id:
+                    mt = item.get('tmdb_override_media_type') or item.get('type') or default_mt
+                    prefix = 'tv' if str(mt).lower() in ('tv', 'series') else 'movie'
+                    cache_key = f"tmdb_meta_info:{prefix}:{t_id}"
+                    cached = mem_get(cache_key)
+                    if cached and isinstance(cached, dict):
+                        if cached.get('rating') is not None and item.get('rating') is None:
+                            item['rating'] = cached['rating']
+                            item['tmdb_rating'] = cached['rating']
+                        if cached.get('description') and not item.get('description'):
+                            item['description'] = cached['description']
+                            item['overview'] = cached['description']
+                            item['tmdb_overview'] = cached['description']
+                        if cached.get('genres') and not item.get('genres'):
+                            item['genres'] = cached['genres']
+                            item['genre'] = cached['genres']
+                    else:
+                        items_to_fetch.append((item, t_id, prefix))
+
+        if items_to_fetch:
+            def _worker(entry):
+                it, tid, pfx = entry
+                meta_info = _get_tmdb_meta_by_id(tid, pfx)
+                if meta_info:
+                    if meta_info.get('rating') is not None:
+                        it['rating'] = meta_info['rating']
+                        it['tmdb_rating'] = meta_info['rating']
+                    if meta_info.get('description'):
+                        it['description'] = meta_info['description']
+                        it['overview'] = meta_info['description']
+                        it['tmdb_overview'] = meta_info['description']
+                    if meta_info.get('genres'):
+                        it['genres'] = meta_info['genres']
+                        it['genre'] = meta_info['genres']
+                    if meta_info.get('tmdb_title') and not it.get('tmdb_title'):
+                        it['tmdb_title'] = meta_info['tmdb_title']
+
+            max_workers = min(16, len(items_to_fetch))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(executor.map(_worker, items_to_fetch))
+
+    except Exception as e:
+        print(f"[TMDB-METADATA] merge into folders failed: {e}", flush=True)
     return all_c
 
 def _assign_ids_to_folders(all_c):
@@ -2489,31 +2657,93 @@ def _merge_backdrops_into_folders(all_c):
         print(f"[BACKDROP] merge into folders failed: {e}", flush=True)
     return all_c
 
+def _normalize_title(s):
+    """Normalize media titles by removing years, quality tags, and special characters."""
+    if not s:
+        return ''
+    s = str(s).lower()
+    s = re.sub(r'\.(mkv|mp4|avi|mov|ts)$', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'[\(\[]\s*\d{4}\s*[\)\]]', '', s)
+    s = re.sub(r'\b(1080p|720p|480p|4k|2160p|webdl|web-dl|bluray|x264|h264|hevc|aac|dts|chios)\b', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'[^a-z0-9]', '', s)
+    return s
+
 def _catalog_item_for_folder(folder_name, resolved_name=None):
     """Build the same lightweight catalog metadata used by /api/folders for one detail page."""
     names = [
         n for n in (folder_name, resolved_name)
         if n and not str(n).startswith(("gdrive/", "gdrive_folder/", "telegram/"))
     ]
-    folders_data = mem_get('folders_list') or {}
-    for item in (folders_data.get('series') or []) + (folders_data.get('movies') or []):
+
+    # 1. Load folders list from memory or list.json
+    folders_data = mem_get('folders_list')
+    if not folders_data or not isinstance(folders_data, dict) or not (folders_data.get('series') or folders_data.get('movies')):
+        list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+        if os.path.exists(list_path):
+            try:
+                with open(list_path, 'r', encoding='utf-8') as f:
+                    folders_data = json.load(f)
+            except Exception:
+                folders_data = {}
+    folders_data = folders_data or {}
+
+    all_items = (folders_data.get('series') or []) + (folders_data.get('movies') or [])
+
+    # Priority 1: Exact match by item['name'] or item['source']
+    matched_item = None
+    for item in all_items:
         item_name = item.get('name')
         item_source = item.get('source')
-        if item_name in names or item_source == folder_name:
-            catalog_item = copy.deepcopy(item)
-            catalog_item['folder_name'] = item_name or resolved_name or folder_name
-            payload = {'series': [catalog_item], 'movies': []}
-            if catalog_item.get('type') == 'movie' or catalog_item.get('media_type') == 'movie':
-                payload = {'series': [], 'movies': [catalog_item]}
-            _assign_ids_to_folders(payload)
-            _merge_content_release_tmdb_into_folders(payload)
-            _merge_tmdb_overrides_into_folders(payload)
-            _merge_gdrive_posters_into_folders(payload)
-            _merge_local_posters_into_folders(payload)
-            _merge_backdrops_into_folders(payload)
-            merged = (payload.get('series') or payload.get('movies') or [catalog_item])[0]
-            merged['folder_name'] = merged.get('folder_name') or merged.get('name') or resolved_name or folder_name
-            return merged
+        if item_name in names or (folder_name and item_source == folder_name):
+            matched_item = item
+            break
+
+    # Priority 2: Normalized match (ignoring year, punctuation, case)
+    if not matched_item and names:
+        norm_names = [_normalize_title(n) for n in names if _normalize_title(n)]
+        for item in all_items:
+            item_norm = _normalize_title(item.get('name', ''))
+            query_norm = _normalize_title(item.get('tmdb_query', ''))
+            for n_norm in norm_names:
+                if n_norm and (item_norm == n_norm or query_norm == n_norm or 
+                              (len(n_norm) >= 5 and (n_norm in item_norm or item_norm in n_norm))):
+                    matched_item = item
+                    break
+            if matched_item:
+                break
+
+    # Priority 3: Fuzzy sequence match
+    if not matched_item and names:
+        import difflib
+        norm_names = [_normalize_title(n) for n in names if _normalize_title(n)]
+        best_ratio = 0.0
+        best_candidate = None
+        for item in all_items:
+            item_norm = _normalize_title(item.get('name', ''))
+            for n_norm in norm_names:
+                ratio = difflib.SequenceMatcher(None, item_norm, n_norm).ratio()
+                if ratio > best_ratio and ratio >= 0.75:
+                    best_ratio = ratio
+                    best_candidate = item
+        if best_candidate:
+            matched_item = best_candidate
+
+    if matched_item:
+        catalog_item = copy.deepcopy(matched_item)
+        catalog_item['folder_name'] = catalog_item.get('name') or resolved_name or folder_name
+        payload = {'series': [catalog_item], 'movies': []}
+        if catalog_item.get('type') == 'movie' or catalog_item.get('media_type') == 'movie':
+            payload = {'series': [], 'movies': [catalog_item]}
+        _assign_ids_to_folders(payload)
+        _merge_content_release_tmdb_into_folders(payload)
+        _merge_tmdb_overrides_into_folders(payload)
+        _merge_tmdb_ratings_into_folders(payload)
+        _merge_gdrive_posters_into_folders(payload)
+        _merge_local_posters_into_folders(payload)
+        _merge_backdrops_into_folders(payload)
+        merged = (payload.get('series') or payload.get('movies') or [catalog_item])[0]
+        merged['folder_name'] = merged.get('folder_name') or merged.get('name') or resolved_name or folder_name
+        return merged
 
     name = resolved_name or (names[0] if names else folder_name)
     if not name:
@@ -2524,6 +2754,7 @@ def _catalog_item_for_folder(folder_name, resolved_name=None):
     _assign_ids_to_folders(payload)
     _merge_content_release_tmdb_into_folders(payload)
     _merge_tmdb_overrides_into_folders(payload)
+    _merge_tmdb_ratings_into_folders(payload)
     _merge_gdrive_posters_into_folders(payload)
     _merge_local_posters_into_folders(payload)
     _merge_backdrops_into_folders(payload)
@@ -3375,8 +3606,20 @@ def get_history(current_user, profile_id):
     username = str(current_user.get('username') or '').strip()
     profile_id_str = str(profile_id or '').strip()
 
-    where = f'user_id = {ph} AND profile_id = {ph}'
-    params = [user_id, profile_id_str]
+    # Search for this profile AND any web/unassigned legacy history for this user
+    profile_candidates = [profile_id_str] if profile_id_str else []
+    for candidate in (str(user_id), username, 'default', ''):
+        if candidate and candidate not in profile_candidates:
+            profile_candidates.append(candidate)
+
+    if profile_candidates:
+        cand_ph = ', '.join([ph] * len(profile_candidates))
+        where = f'user_id = {ph} AND (profile_id IN ({cand_ph}) OR profile_id IS NULL)'
+        params = [user_id, *profile_candidates]
+    else:
+        where = f'user_id = {ph}'
+        params = [user_id]
+
     if not include_hidden:
         where += ' AND (is_hidden = 0 OR is_hidden IS NULL)'
     if active_only:
@@ -3398,45 +3641,21 @@ def get_history(current_user, profile_id):
             cur = conn.cursor()
             res = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
 
-        # [FALLBACK] Jika riwayat untuk profile_id ini kosong, cari riwayat legacy/web untuk user_id ini
-        # (misal yang disimpan dari web versi lama dengan user_id/username/default atau NULL)
-        if not res and profile_id_str:
-            fallback_candidates = []
-            for candidate in (str(user_id), username, 'default', ''):
-                if candidate and candidate != profile_id_str and candidate not in fallback_candidates:
-                    fallback_candidates.append(candidate)
-
-            if fallback_candidates:
-                fb_ph = ', '.join([ph] * len(fallback_candidates))
-                fb_where = f'user_id = {ph} AND (profile_id IN ({fb_ph}) OR profile_id IS NULL)'
-                fb_params = [user_id, *fallback_candidates]
-                if not include_hidden:
-                    fb_where += ' AND (is_hidden = 0 OR is_hidden IS NULL)'
-                if active_only:
-                    fb_where += f' AND (duration_ms <= 0 OR position_ms < (duration_ms * {ph}))'
-                    fb_params.append(WATCH_HISTORY_ACTIVE_CUTOFF)
-
-                fb_sql = f'''SELECT media_path, media_title, series_title, series_path, source, still_path, subtitle_path, season, episode, position_ms, duration_ms, is_hidden, last_watched
-                             FROM watch_history WHERE {fb_where} ORDER BY last_watched DESC'''
-                if fetch_limit:
-                    fb_sql += f' LIMIT {ph}'
-                    fb_params.append(fetch_limit)
-
-                if db_type == 'postgres':
-                    cur.execute(fb_sql, tuple(fb_params))
-                    res = [dict(r) for r in cur.fetchall()]
-                else:
-                    res = [dict(r) for r in conn.execute(fb_sql, tuple(fb_params)).fetchall()]
-
-                # Auto-migrasikan data legacy/web ke profil aktif saat ini agar selanjutnya langsung cepat
-                if res:
-                    try:
-                        migrate_sql = f'''UPDATE watch_history SET profile_id = {ph}
-                                         WHERE user_id = {ph} AND (profile_id IN ({fb_ph}) OR profile_id IS NULL)'''
-                        cur.execute(migrate_sql, (profile_id_str, user_id, *fallback_candidates))
-                        conn.commit()
-                    except Exception as mig_err:
-                        print(f"[HISTORY-MIGRATE] Warning: failed to auto-migrate legacy history: {mig_err}", flush=True)
+        # Auto-migrasikan riwayat web/unassigned ke profil aktif saat ini
+        if res and profile_id_str:
+            other_candidates = [c for c in profile_candidates if c != profile_id_str]
+            if other_candidates:
+                try:
+                    mig_ph = ', '.join([ph] * len(other_candidates))
+                    migrate_sql = f'''UPDATE watch_history SET profile_id = {ph}
+                                     WHERE user_id = {ph} AND (profile_id IN ({mig_ph}) OR profile_id IS NULL)'''
+                    if db_type == 'postgres':
+                        cur.execute(migrate_sql, (profile_id_str, user_id, *other_candidates))
+                    else:
+                        conn.execute(migrate_sql, (profile_id_str, user_id, *other_candidates))
+                    conn.commit()
+                except Exception as mig_err:
+                    pass
 
         for item in res:
             item['media_path'] = _normalize_history_media_path(item.get('media_path'))
@@ -4369,51 +4588,247 @@ def _lookup_episode_still_fid(episode_still_map, series_id, series_name, tmdb_ti
             return fid[0] if isinstance(fid, list) else fid
     return None
 
-def _merge_episode_stills_into_videos(videos, catalog_item=None, folder_name=None, resolved_name=None):
-    """Attach still_path and still_url from GDrive episode still map to each video."""
+def _get_tmdb_season_episodes_map(tmdb_id, season=1):
+    """Fetch all episodes for a given season from TMDB and return {episode_number: info_dict}."""
+    if not tmdb_id:
+        return {}
+    try:
+        t_id = int(tmdb_id)
+        s_num = int(season or 1)
+        if t_id <= 0:
+            return {}
+    except (ValueError, TypeError):
+        return {}
+
+    cache_key = f"tmdb_season_eps:{t_id}:{s_num}"
+    cached = mem_get(cache_key)
+    if cached is not None and isinstance(cached, dict):
+        return cached
+
+    r_val = redis_get(cache_key)
+    if r_val is not None:
+        try:
+            val = json.loads(r_val) if isinstance(r_val, str) else r_val
+            if isinstance(val, dict):
+                mem_set(cache_key, val)
+                return val
+        except Exception:
+            pass
+
+    if not TMDB_API_KEY:
+        return {}
+
+    eps_map = {}
+    try:
+        status, data = _fetch_tmdb_json_server(f"tv/{t_id}/season/{s_num}", {})
+        if status == 200 and isinstance(data, dict):
+            episodes = data.get('episodes') or []
+            # If overviews are blank in primary language, attempt English fallback
+            has_desc = any(ep.get('overview') for ep in episodes if isinstance(ep, dict))
+            if not has_desc:
+                st_en, data_en = _fetch_tmdb_json_server(f"tv/{t_id}/season/{s_num}", {'language': 'en-US'})
+                if st_en == 200 and isinstance(data_en, dict) and data_en.get('episodes'):
+                    episodes = data_en.get('episodes')
+
+            for ep in episodes:
+                if isinstance(ep, dict):
+                    ep_num = ep.get('episode_number')
+                    ep_title = ep.get('name') or ''
+                    ep_overview = ep.get('overview') or ''
+                    ep_still = ep.get('still_path') or ''
+                    ep_air = ep.get('air_date') or ''
+                    if ep_num is not None:
+                        eps_map[str(ep_num)] = {
+                            'title': ep_title,
+                            'overview': ep_overview,
+                            'description': ep_overview,
+                            'still_path': ep_still,
+                            'air_date': ep_air,
+                            'air_on': ep_air,
+                        }
+            if eps_map:
+                mem_set(cache_key, eps_map)
+                redis_set(cache_key, json.dumps(eps_map), ttl_seconds=604800)
+            return eps_map
+    except Exception as e:
+        print(f"[TMDB-SEASON] Failed fetching season {s_num} for tv/{t_id}: {e}", flush=True)
+
+    return eps_map
+
+def _merge_episode_metadata_into_videos(videos, catalog_item=None, folder_name=None, resolved_name=None):
+    """Enrich each video item in /api/videos with title (episode title), description/overview, and air_date/air_on."""
     if not videos:
         return videos
     try:
-        gmaps = fetch_gdrive_poster_map()
-        episode_still_map = gmaps[2] if len(gmaps) > 2 and isinstance(gmaps[2], dict) else {}
-        if not episode_still_map:
+        t_id = None
+        media_type = 'tv'
+        fallback_overview = ''
+        fallback_title = ''
+        
+        if catalog_item and isinstance(catalog_item, dict):
+            t_id = catalog_item.get('tmdb_id') or catalog_item.get('idtmdb')
+            media_type = catalog_item.get('tmdb_override_media_type') or catalog_item.get('type') or catalog_item.get('media_type') or 'tv'
+            fallback_overview = catalog_item.get('description') or catalog_item.get('overview') or catalog_item.get('tmdb_overview') or ''
+            fallback_title = catalog_item.get('tmdb_title') or catalog_item.get('name') or ''
+
+        # Auto-resolve tmdb_id if missing from catalog_item
+        if not t_id:
+            candidate_names = [n for n in (folder_name, resolved_name) if n]
+            if videos and isinstance(videos[0], dict):
+                v_name = videos[0].get('name') or videos[0].get('original_name') or ''
+                m = re.match(r'^(.*?)(?:\s*-\s*s\d+|\s+s\d+e\d+|\s*-\s*episode\s*\d+)', v_name, flags=re.IGNORECASE)
+                if m:
+                    candidate_names.append(m.group(1).strip())
+
+            overrides = _get_tmdb_overrides_map() or {}
+            for cname in candidate_names:
+                if not cname: continue
+                # Exact
+                if cname in overrides and overrides[cname].get('tmdb_id'):
+                    t_id = overrides[cname]['tmdb_id']
+                    break
+                # Normalized
+                cn_norm = _normalize_title(cname)
+                for ov_name, ov in overrides.items():
+                    ov_norm = _normalize_title(ov_name)
+                    if ov_norm == cn_norm or (len(cn_norm) >= 5 and (cn_norm in ov_norm or ov_norm in cn_norm)):
+                        if ov.get('tmdb_id'):
+                            t_id = ov['tmdb_id']
+                            break
+                if t_id: break
+
+        is_movie = str(media_type).lower() in ('movie', 'movies')
+
+        if is_movie:
+            if t_id and not fallback_overview:
+                movie_meta = _get_tmdb_meta_by_id(t_id, 'movie')
+                if movie_meta:
+                    fallback_overview = movie_meta.get('description') or movie_meta.get('overview') or fallback_overview
+                    fallback_title = movie_meta.get('tmdb_title') or fallback_title
+
+            for video in videos:
+                if not isinstance(video, dict):
+                    continue
+                v_name = video.get('name') or ''
+                if not video.get('title'):
+                    video['title'] = fallback_title or v_name
+                if not video.get('description'):
+                    video['description'] = fallback_overview
+                    video['overview'] = fallback_overview
             return videos
 
-        series_id = None
-        series_name = None
-        tmdb_title = None
-        if catalog_item and isinstance(catalog_item, dict):
-            series_id = str(catalog_item.get('id') or '')
-            series_name = catalog_item.get('name') or catalog_item.get('folder_name') or ''
-            tmdb_title = catalog_item.get('tmdb_title') or ''
+        # For TV series, resolve distinct seasons in the video list
+        seasons_present = set()
+        for video in videos:
+            if isinstance(video, dict):
+                s = video.get('season') or 1
+                try:
+                    seasons_present.add(int(s))
+                except (ValueError, TypeError):
+                    seasons_present.add(1)
 
-        if not series_name:
-            series_name = resolved_name or folder_name or ''
-
-        if not series_id and series_name:
-            series_id = _get_series_id_from_list_json(series_name)
+        season_maps = {}
+        if t_id:
+            for s in seasons_present:
+                season_maps[s] = _get_tmdb_season_episodes_map(t_id, s)
 
         for video in videos:
             if not isinstance(video, dict):
                 continue
             season = video.get('season') or 1
+            try:
+                s_int = int(season)
+            except (ValueError, TypeError):
+                s_int = 1
+
             episode = video.get('episode')
             if episode is None:
                 s_p, e_p = get_season_episode_from_string(video.get('name', ''))
                 if e_p is not None:
                     episode = e_p
-                    if s_p is not None:
-                        season = s_p
+                    video['episode'] = e_p
+                if s_p is not None:
+                    video['season'] = s_p
+                    s_int = s_p
 
-            if episode is not None:
-                fid = _lookup_episode_still_fid(episode_still_map, series_id, series_name, tmdb_title, season, episode)
-                if fid:
-                    still_url = f"/api/gdrive-poster/{fid}"
+            ep_info = None
+            if episode is not None and s_int in season_maps:
+                ep_info = season_maps[s_int].get(str(episode)) or season_maps[s_int].get(int(episode))
+
+            if ep_info:
+                ep_title = ep_info.get('title')
+                ep_desc = ep_info.get('overview') or ep_info.get('description') or ''
+                ep_air = ep_info.get('air_date') or ep_info.get('air_on') or ''
+                if ep_title:
+                    video['title'] = ep_title
+                else:
+                    video['title'] = video.get('title') or (f"Episode {episode}" if episode else video.get('name'))
+                video['description'] = ep_desc
+                video['overview'] = ep_desc
+                if ep_air:
+                    video['air_date'] = ep_air
+                    video['air_on'] = ep_air
+                if ep_info.get('still_path') and not video.get('still_path'):
+                    still_url = f"/api/tmdb-image/w342{ep_info['still_path']}"
                     video['still_path'] = still_url
                     video['still_url'] = still_url
-                    video['still_file_id'] = fid
+            else:
+                if not video.get('title'):
+                    video['title'] = f"Episode {episode}" if episode is not None else video.get('name')
+                if not video.get('description'):
+                    video['description'] = fallback_overview
+                    video['overview'] = fallback_overview
+
+    except Exception as e:
+        print(f"[EPISODE-META] Enrich episode metadata failed: {e}", flush=True)
+    return videos
+
+def _merge_episode_stills_into_videos(videos, catalog_item=None, folder_name=None, resolved_name=None):
+    """Attach still_path and still_url from GDrive episode still map to each video, and enrich with TMDB metadata."""
+    if not videos:
+        return videos
+    try:
+        gmaps = fetch_gdrive_poster_map()
+        episode_still_map = gmaps[2] if len(gmaps) > 2 and isinstance(gmaps[2], dict) else {}
+        if episode_still_map:
+            series_id = None
+            series_name = None
+            tmdb_title = None
+            if catalog_item and isinstance(catalog_item, dict):
+                series_id = str(catalog_item.get('id') or '')
+                series_name = catalog_item.get('name') or catalog_item.get('folder_name') or ''
+                tmdb_title = catalog_item.get('tmdb_title') or ''
+
+            if not series_name:
+                series_name = resolved_name or folder_name or ''
+
+            if not series_id and series_name:
+                series_id = _get_series_id_from_list_json(series_name)
+
+            for video in videos:
+                if not isinstance(video, dict):
+                    continue
+                season = video.get('season') or 1
+                episode = video.get('episode')
+                if episode is None:
+                    s_p, e_p = get_season_episode_from_string(video.get('name', ''))
+                    if e_p is not None:
+                        episode = e_p
+                        if s_p is not None:
+                            season = s_p
+
+                if episode is not None:
+                    fid = _lookup_episode_still_fid(episode_still_map, series_id, series_name, tmdb_title, season, episode)
+                    if fid:
+                        still_url = f"/api/gdrive-poster/{fid}"
+                        video['still_path'] = still_url
+                        video['still_url'] = still_url
+                        video['still_file_id'] = fid
     except Exception as e:
         print(f"[EPISODE-STILL] Merge stills failed: {e}", flush=True)
+
+    # Enrich with episode title & description from TMDB
+    _merge_episode_metadata_into_videos(videos, catalog_item, folder_name, resolved_name)
     return videos
 
 # === CACHE HELPERS (diskcache-based, HuggingFace Optimized) ===
@@ -5339,6 +5754,7 @@ def get_folders(current_user):
             _assign_ids_to_folders(payload)
             _merge_content_release_tmdb_into_folders(payload)
             _merge_tmdb_overrides_into_folders(payload)
+            _merge_tmdb_ratings_into_folders(payload)
             _merge_gdrive_posters_into_folders(payload)
             _merge_local_posters_into_folders(payload)
             _merge_backdrops_into_folders(payload)
@@ -5355,6 +5771,7 @@ def get_folders(current_user):
                     _assign_ids_to_folders(payload)
                     _merge_content_release_tmdb_into_folders(payload)
                     _merge_tmdb_overrides_into_folders(payload)
+                    _merge_tmdb_ratings_into_folders(payload)
                     _merge_gdrive_posters_into_folders(payload, force=False)
                     _merge_local_posters_into_folders(payload)
                     _merge_backdrops_into_folders(payload)
@@ -5417,6 +5834,7 @@ def get_folders(current_user):
         _assign_ids_to_folders(payload)
         _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
+        _merge_tmdb_ratings_into_folders(payload)
         _merge_gdrive_posters_into_folders(payload, force=force)
         _merge_local_posters_into_folders(payload)
         _merge_backdrops_into_folders(payload)
@@ -5427,6 +5845,7 @@ def get_folders(current_user):
         _assign_ids_to_folders(payload)
         _merge_content_release_tmdb_into_folders(payload)
         _merge_tmdb_overrides_into_folders(payload)
+        _merge_tmdb_ratings_into_folders(payload)
         _merge_gdrive_posters_into_folders(payload, force=force)
         _merge_local_posters_into_folders(payload)
         _merge_backdrops_into_folders(payload)
@@ -7089,24 +7508,24 @@ def parse_requested_width(default=None, max_limit=2560):
     return default
 
 
-import collections
-_IMG_MEM_CACHE = collections.OrderedDict()
-_IMG_MEM_LOCK = threading.Lock()
+_CACHED_GDRIVE_CREDS = {}
+_CACHED_CREDS_LOCK = threading.Lock()
 
-def _get_img_mem(key):
-    with _IMG_MEM_LOCK:
-        if key in _IMG_MEM_CACHE:
-            _IMG_MEM_CACHE.move_to_end(key)
-            return _IMG_MEM_CACHE[key]
+def _get_cached_gdrive_creds(b64):
+    if not b64:
         return None
-
-def _set_img_mem(key, val):
-    with _IMG_MEM_LOCK:
-        _IMG_MEM_CACHE[key] = val
-        _IMG_MEM_CACHE.move_to_end(key)
-        if len(_IMG_MEM_CACHE) > 5000:
-            _IMG_MEM_CACHE.popitem(last=False)
-
+    with _CACHED_CREDS_LOCK:
+        creds = _CACHED_GDRIVE_CREDS.get(b64)
+        if not creds:
+            creds = _load_gdrive_credentials(b64)
+            if creds:
+                _CACHED_GDRIVE_CREDS[b64] = creds
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                pass
+        return creds
 
 _GDRIVE_POSTER_SESSION = requests.Session()
 _gdrive_adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=1)
@@ -7133,18 +7552,15 @@ def _fetch_gdrive_raw_poster_bytes(file_id):
 
     for b64 in token_sources:
         try:
-            creds = _load_gdrive_credentials(b64)
-            if creds:
-                if creds.expired and creds.refresh_token:
-                    creds.refresh(Request())
-                if creds.token:
-                    res = _GDRIVE_POSTER_SESSION.get(
-                        f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
-                        headers={"Authorization": f"Bearer {creds.token}", "User-Agent": "Mutflix/1.0"},
-                        timeout=8,
-                    )
-                    if res.status_code == 200 and res.content:
-                        return res.content
+            creds = _get_cached_gdrive_creds(b64)
+            if creds and creds.token:
+                res = _GDRIVE_POSTER_SESSION.get(
+                    f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&supportsAllDrives=true",
+                    headers={"Authorization": f"Bearer {creds.token}", "User-Agent": "Mutflix/1.0"},
+                    timeout=8,
+                )
+                if res.status_code == 200 and res.content:
+                    return res.content
         except Exception:
             pass
 

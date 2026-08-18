@@ -7,12 +7,12 @@ import {
   formatDuration,
   getBackdropUrl,
   getCleanEpisodeTitle,
-  getDetailArtworkUrl,
   getGenres,
   getItemPath,
   getMediaType,
   getPosterFallbackUrl,
   getRating,
+  getReleaseYear,
   getStillUrl,
   getTitle,
   getWatchProgress,
@@ -37,7 +37,8 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
   const backdropFallback = isLoading ? '' : getPosterFallbackUrl(item)
   const genres = getGenres(item).length ? getGenres(item) : getGenres(credits?.meta)
   const rating = getRating(item) || getRating(credits?.meta)
-  const overview = item?.tmdb_overview || item?.overview || credits?.meta?.overview || 'No description is available for this title yet.'
+  const releaseYear = getReleaseYear(item) || getReleaseYear(credits?.meta)
+  const overview = item?.description || item?.overview || item?.tmdb_overview || credits?.meta?.overview || 'No description is available for this title yet.'
   const firstVideo = videos[0]
   const findWatchEntry = (video) => watchHistory.find((entry) => (
     normalizeMediaPath(entry.media_path) === normalizeMediaPath(video?.path)
@@ -75,6 +76,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
           <h1>{getTitle(item)}</h1>
           <div className="detail-meta">
+            {releaseYear > 0 && <span>{releaseYear}</span>}
             {rating > 0 && <span className="detail-rating">TMDB {rating.toFixed(1)}</span>}
             {genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
           </div>
@@ -101,7 +103,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
         {error && <p className="detail-error">{error}</p>}
         {isMovie && (
           <div className="detail-content-grid movie-detail-content-grid">
-            <CreditsPanel credits={credits} mediaType="movie" onOpenPerson={onOpenPerson} />
+            <CreditsPanel credits={credits} item={item} mediaType="movie" onOpenPerson={onOpenPerson} />
           </div>
         )}
         {!isMovie && (
@@ -190,11 +192,11 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
                       </div>
                       <div className="episode-copy">
                         <div className="episode-title-row">
-                          <h3>{getCleanEpisodeTitle(video.name, video.path) || `Episode ${episodeNumber}`}</h3>
+                          <h3>{video.title || video.episode_title || getCleanEpisodeTitle(video.name, video.path) || `Episode ${episodeNumber}`}</h3>
                           {duration && <span>{duration}</span>}
                         </div>
                         <p className="episode-meta">Season {video.season || 1} &middot; Episode {episodeNumber}</p>
-                        {video.overview && <p className="episode-description">{video.overview}</p>}
+                        {(video.description || video.overview) && <p className="episode-description">{video.description || video.overview}</p>}
                       </div>
                     </article>
                   )
@@ -216,7 +218,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
                   </div>
                 )}
               </div>
-              <CreditsPanel credits={credits} onOpenPerson={onOpenPerson} />
+              <CreditsPanel credits={credits} item={item} onOpenPerson={onOpenPerson} />
             </div>
           </>
         )}

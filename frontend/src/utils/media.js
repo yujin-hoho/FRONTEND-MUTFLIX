@@ -302,14 +302,18 @@ export function getMediaType(item = {}) {
 
 export function getGenres(item = {}) {
   if (!item) return []
-  return (item.tmdb_genres || item.genres || [])
-    .map((genre) => typeof genre === 'string' ? genre : genre?.name)
+  const raw = item.genres || item.genre || item.tmdb_genres || []
+  if (typeof raw === 'string') {
+    return raw.split(',').map((genre) => genre.trim()).filter(Boolean)
+  }
+  return (Array.isArray(raw) ? raw : [])
+    .map((genre) => (typeof genre === 'string' ? genre : genre?.name))
     .filter(Boolean)
 }
 
 export function getRating(item) {
   if (!item) return 0
-  return Number(item.tmdb_rating || item.vote_average || 0)
+  return Number(item.rating || item.tmdb_rating || item.vote_average || 0)
 }
 
 export function getReleaseSortValue(item) {
@@ -323,12 +327,12 @@ export function getReleaseSortValue(item) {
 
 export function getReleaseDate(item = {}) {
   return getMediaType(item) === 'movie'
-    ? item.release_date || item.tmdb_release_date || item.first_air_date || ''
-    : item.first_air_date || item.tmdb_first_air_date || item.release_date || ''
+    ? item.release_date || item.first_air_date || item.tmdb_release_date || item.tmdb_first_air_date || ''
+    : item.first_air_date || item.release_date || item.tmdb_first_air_date || item.tmdb_release_date || ''
 }
 
 export function getReleaseYear(item = {}) {
-  const explicitYear = Number(item.release_year || item.tmdb_year || item.year || 0)
+  const explicitYear = Number(item.override_year || item.year || item.release_year || item.tmdb_year || 0)
   if (explicitYear > 0) return explicitYear
 
   const dateYear = Number(String(getReleaseDate(item)).slice(0, 4))
@@ -506,11 +510,3 @@ function getUnsignedHash(value) {
   return hashString(value) >>> 0
 }
 
-function escapeSvgText(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;')
-}

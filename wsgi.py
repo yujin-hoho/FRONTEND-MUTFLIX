@@ -4,6 +4,7 @@ import time
 import requests as py_requests
 from flask import request, Response
 
+# Import server app and background workers
 from serverUtama import app, background_cache_worker, warmup_cache
 
 
@@ -51,9 +52,8 @@ def gdrive_stream_proxy(file_id):
     resp_headers["Access-Control-Allow-Origin"] = "*"
     resp_headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
 
-    # Chunk lebih besar = lebih sedikit iterasi Python↔socket (membantu latency di proxy gratis / HF).
     return Response(
-        upstream.iter_content(chunk_size=1024 * 1024),  # 1 MiB
+        upstream.iter_content(chunk_size=1024 * 1024),  # 256KB chunks
         status=upstream.status_code,
         headers=resp_headers
     )

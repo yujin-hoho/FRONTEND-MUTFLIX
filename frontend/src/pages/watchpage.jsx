@@ -37,6 +37,7 @@ import {
   getStillUrl,
   getTitle,
   getWatchProgress,
+  isTechnicalEpisodeTitle,
   normalizeMediaPath,
 } from '../utils/media'
 
@@ -1230,7 +1231,7 @@ function WatchPage({
               <span className="watch-audio-codec">Audio: {selectedAudioLabel}</span>
             )}
           </div>
-          {isSeries && <span>{video.name}</span>}
+          {isSeries && <span>{video.title || video.episode_title || video.name}</span>}
         </div>
         {hasEpisodeList && (
           <div className="watch-episode-menu">
@@ -1706,7 +1707,12 @@ function clampPlaybackRate(playbackRate) {
 }
 
 function getEpisodeListTitle(episode = {}, index = 0) {
-  const explicitTitle = String(episode.title || episode.episode_title || episode.name || '').trim()
+  const explicitTitle = String(
+    episode.title
+    || episode.episode_title
+    || (isTechnicalEpisodeTitle(episode.name, episode.path) ? '' : episode.name)
+    || '',
+  ).trim()
   return explicitTitle || `Episode ${episode.episode || index + 1}`
 }
 

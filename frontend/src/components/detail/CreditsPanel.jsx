@@ -1,21 +1,25 @@
 import { memo } from 'react'
 import LoadableImage from '../LoadableImage'
-import { getPersonFallbackUrl, getPosterUrl, getStillUrl } from '../../utils/media'
+import { getGenres, getPersonFallbackUrl, getPosterUrl, getReleaseYear, getStillUrl } from '../../utils/media'
 
-const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series', onOpenPerson }) {
+const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'series', onOpenPerson }) {
   const cast = credits?.cast || []
   const crew = credits?.crew || []
   const meta = credits?.meta
   const recommendations = credits?.recommendations || []
   const trailerId = credits?.trailerId || ''
-  const genres = Array.isArray(meta?.genres) ? meta.genres.map((genre) => genre.name).filter(Boolean) : []
-  const networks = Array.isArray(meta?.networks) ? meta.networks.map((network) => network.name).filter(Boolean) : []
-  const isMovie = mediaType === 'movie'
-  const type = isMovie ? 'Movie' : meta?.type || (meta?.number_of_seasons ? 'TV Show' : '')
+  const itemGenres = item ? getGenres(item) : []
+  const genres = itemGenres.length > 0
+    ? itemGenres
+    : (Array.isArray(meta?.genres) ? meta.genres.map((genre) => (typeof genre === 'string' ? genre : genre?.name)).filter(Boolean) : [])
+  const networks = Array.isArray(meta?.networks) ? meta.networks.map((network) => (typeof network === 'string' ? network : network?.name)).filter(Boolean) : []
+  const isMovie = (item ? (item.media_type === 'movie' || item.type === 'movie') : mediaType === 'movie')
+  const type = isMovie ? 'Movie' : meta?.type || (meta?.number_of_seasons ? 'TV Show' : 'Series')
   const status = meta?.status || ''
   const episodeRuntime = Array.isArray(meta?.episode_run_time) ? meta.episode_run_time.filter(Boolean)[0] : null
   const runtime = isMovie ? Number(meta?.runtime || 0) : episodeRuntime
-  const year = (isMovie ? meta?.release_date : meta?.first_air_date)?.slice(0, 4)
+  const itemYear = item ? getReleaseYear(item) : 0
+  const year = itemYear > 0 ? String(itemYear) : (isMovie ? meta?.release_date : meta?.first_air_date)?.slice(0, 4)
   const uniqueCrew = [...crew.reduce((people, person) => {
     const key = person.id || person.name
     const role = person.job || person.department
@@ -29,11 +33,15 @@ const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series',
     people.set(key, { ...person, roles: role ? [role] : [] })
     return people
   }, new Map()).values()]
-  if (!cast.length && !crew.length && !meta) return null
+
+  const hasDetails = Boolean(status || type || genres.length > 0 || networks.length > 0)
+  const hasSeasonFacts = Boolean((!isMovie && (meta?.number_of_seasons > 0 || meta?.number_of_episodes > 0)) || runtime > 0 || year)
+
+  if (!cast.length && !crew.length && !meta && !genres.length && !year) return null
 
   return (
     <aside className="credits-panel">
-      {meta && (
+      {hasDetails && (
         <section className="title-facts">
           <h2>Details</h2>
           <dl>
@@ -64,12 +72,12 @@ const CreditsPanel = memo(function CreditsPanel({ credits, mediaType = 'series',
           </dl>
         </section>
       )}
-      {meta && (
+      {hasSeasonFacts && (
         <section className="season-facts">
           <h2>{isMovie ? 'Movie Info' : 'Season Info'}</h2>
           <div>
-            {!isMovie && meta.number_of_seasons > 0 && <span><strong>{meta.number_of_seasons}</strong> seasons</span>}
-            {!isMovie && meta.number_of_episodes > 0 && <span><strong>{meta.number_of_episodes}</strong> episodes</span>}
+            {!isMovie && meta?.number_of_seasons > 0 && <span><strong>{meta.number_of_seasons}</strong> seasons</span>}
+            {!isMovie && meta?.number_of_episodes > 0 && <span><strong>{meta.number_of_episodes}</strong> episodes</span>}
             {runtime > 0 && <span><strong>{runtime}</strong> min</span>}
             {year && <span><strong>{year}</strong> {isMovie ? 'released' : 'first aired'}</span>}
           </div>
