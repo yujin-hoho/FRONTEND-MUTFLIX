@@ -48,10 +48,6 @@ const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
 const CONTROLS_HIDE_DELAY_MS = 2600
 const STREAM_STALL_FALLBACK_DELAY_MS = 10000
 const SEEK_STALL_FALLBACK_DELAY_MS = 16000
-const STREAM_RECOVERY_RETRY_DELAYS_MS = [800, 2200, 5000]
-const STREAM_RECOVERY_STABLE_RESET_MS = 15000
-const SLOW_BUFFERING_STATUS_DELAY_MS = 3500
-const BUFFER_PROGRESS_THRESHOLD_SECONDS = 0.25
 const AUDIO_TRANSCODE_SEEK_DEBOUNCE_MS = 120
 const SUBTITLE_DELAY_LIMIT_SECONDS = 50
 const SUBTITLE_DELAY_STEP_SECONDS = 0.5
@@ -95,15 +91,8 @@ function WatchPage({
   const shellRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const streamStallTimeoutRef = useRef(null)
-  const streamRecoveryTimeoutRef = useRef(null)
-  const streamRecoveryStableTimeoutRef = useRef(null)
-  const streamRecoveryAttemptRef = useRef(0)
-  const isStreamRecoveryInFlightRef = useRef(false)
-  const recoverPlaybackRef = useRef(() => false)
-  const bufferingStatusTimeoutRef = useRef(null)
-  const lastBufferedEndRef = useRef(0)
   const activeVideoPathRef = useRef('')
-  const fallbackStreamUrlsRef = useRef([])
+  const fallbackStreamUrlRef = useRef('')
   const fallbackPositionRef = useRef(null)
   const sourceDurationRef = useRef(0)
   const playbackSourceRequestRef = useRef(0)
@@ -126,6 +115,7 @@ function WatchPage({
   const externalSubtitleCuesRef = useRef([])
   const isSubtitleDelayInputFocusedRef = useRef(false)
   const selectedSubtitleIdRef = useRef('')
+  const hasUsedStreamFallbackRef = useRef(false)
   const isSeekingRef = useRef(false)
   const pendingInitialSeekRef = useRef(false)
   const requestedSeekPositionRef = useRef(null)
@@ -165,7 +155,6 @@ function WatchPage({
   const [seekPreviewTime, setSeekPreviewTime] = useState(null)
   const [heldFrameUrl, setHeldFrameUrl] = useState('')
   const [playerError, setPlayerError] = useState('')
-  const [recoveryStatus, setRecoveryStatus] = useState('')
 
   const queue = useMemo(() => videos?.length ? videos : [video], [video, videos])
   const currentIndex = queue.findIndex((entry) => entry.path === video.path)
@@ -454,7 +443,6 @@ function WatchPage({
       audioTranscodeUrl,
       durationMs,
       fallbackUrl,
-      fallbackUrls,
       selectedAudioStreamIndex,
       url,
     } = playbackSource
@@ -465,9 +453,7 @@ function WatchPage({
     sourceDurationRef.current = sourceDurationSeconds
     audioTranscodeBaseUrlRef.current = audioTranscodeUrl
     audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
-    fallbackStreamUrlsRef.current = Array.isArray(fallbackUrls) && fallbackUrls.length
-      ? [...fallbackUrls]
-      : fallbackUrl ? [fallbackUrl] : []
+    fallbackStreamUrlRef.current = fallbackUrl
     audioTracksRef.current = nextAudioTracks
     selectedAudioStreamIndexRef.current = selectedTrack?.index ?? null
 
@@ -487,12 +473,7 @@ function WatchPage({
     setStreamUrl(url)
   }, [restartAudioTranscodeAt])
 
-  const loadPlaybackSource = useCallback((audioStreamIndex, {
-    autoplay = true,
-    fastAudioSwitch = false,
-    reportError = true,
-    startSeconds = 0,
-  } = {}) => {
+  const loadPlaybackSource = useCallback((audioStreamIndex, { autoplay = true, fastAudioSwitch = false, startSeconds = 0 } = {}) => {
     const requestId = playbackSourceRequestRef.current + 1
     playbackSourceRequestRef.current = requestId
     setPlayerError('')
@@ -512,10 +493,8 @@ function WatchPage({
       return nextPlaybackSource
     }).catch((error) => {
       if (playbackSourceRequestRef.current === requestId) {
-        if (reportError) {
-          setPlayerError(error.message)
-          setIsBuffering(false)
-        }
+        setPlayerError(error.message)
+        setIsBuffering(false)
       }
       return null
     })
@@ -543,12 +522,8 @@ function WatchPage({
   }, [revealControls, seekToPlaybackTime])
 
   const switchToFallbackStream = useCallback(() => {
-    let fallbackUrl = ''
-    while (fallbackStreamUrlsRef.current.length && !fallbackUrl) {
-      const candidateUrl = fallbackStreamUrlsRef.current.shift()
-      if (candidateUrl && candidateUrl !== streamUrl) fallbackUrl = candidateUrl
-    }
-    if (!fallbackUrl) return false
+    const fallbackUrl = fallbackStreamUrlRef.current
+    if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
 
     const player = playerRef.current
     fallbackPositionRef.current = Number.isFinite(pendingAudioTranscodeTargetRef.current)
@@ -563,117 +538,28 @@ function WatchPage({
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     clearStreamStallTimeout()
+    hasUsedStreamFallbackRef.current = true
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     restoredPositionRef.current = false
     holdCurrentFrame()
     setPlayerError('')
     setIsBuffering(true)
-    setRecoveryStatus('Mengalihkan pemutaran ke koneksi cadangan…')
     setStreamUrl(fallbackUrl)
     return true
   }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame, streamUrl])
 
   const armStreamStallFallback = useCallback((delayMs = STREAM_STALL_FALLBACK_DELAY_MS) => {
     clearStreamStallTimeout()
+    if (!fallbackStreamUrlRef.current || hasUsedStreamFallbackRef.current) return
 
     streamStallTimeoutRef.current = window.setTimeout(() => {
-      if (!switchToFallbackStream()) recoverPlaybackRef.current({ reason: 'stall' })
+      switchToFallbackStream()
     }, delayMs)
   }, [clearStreamStallTimeout, switchToFallbackStream])
 
-  const clearStreamRecoveryTimeouts = useCallback(() => {
-    window.clearTimeout(streamRecoveryTimeoutRef.current)
-    window.clearTimeout(streamRecoveryStableTimeoutRef.current)
-    window.clearTimeout(bufferingStatusTimeoutRef.current)
-    streamRecoveryTimeoutRef.current = null
-    streamRecoveryStableTimeoutRef.current = null
-    bufferingStatusTimeoutRef.current = null
-  }, [])
-
-  const recoverPlayback = useCallback(({ immediate = false, mediaError = null, reason = 'error' } = {}) => {
-    if (streamRecoveryTimeoutRef.current || isStreamRecoveryInFlightRef.current) return true
-    if (switchToFallbackStream()) return true
-
-    window.clearTimeout(streamRecoveryStableTimeoutRef.current)
-    streamRecoveryStableTimeoutRef.current = null
-
-    const attempt = streamRecoveryAttemptRef.current
-    if (attempt >= STREAM_RECOVERY_RETRY_DELAYS_MS.length) {
-      const errorCode = Number(mediaError?.code || playerRef.current?.error?.code || 0)
-      setRecoveryStatus('')
-      setIsBuffering(false)
-      setPlayerError(getPlaybackErrorMessage(errorCode, navigator.onLine))
-      return false
-    }
-
-    const player = playerRef.current
-    const startSeconds = player
-      ? getPlaybackPosition(player, audioTranscodeOffsetRef.current)
-      : currentTime
-    const delayMs = immediate ? 0 : STREAM_RECOVERY_RETRY_DELAYS_MS[attempt]
-    streamRecoveryAttemptRef.current = attempt + 1
-    holdCurrentFrame()
-    window.clearTimeout(bufferingStatusTimeoutRef.current)
-    bufferingStatusTimeoutRef.current = null
-    setPlayerError('')
-    setIsBuffering(true)
-    setRecoveryStatus(navigator.onLine
-      ? `Koneksi video terganggu. Mencoba menyambungkan ulang (${attempt + 1}/${STREAM_RECOVERY_RETRY_DELAYS_MS.length})…`
-      : 'Internet terputus. Pemutaran akan dilanjutkan otomatis saat tersambung…')
-
-    const retry = () => {
-      streamRecoveryTimeoutRef.current = null
-      if (!navigator.onLine) return
-      isStreamRecoveryInFlightRef.current = true
-      loadPlaybackSource(selectedAudioStreamIndexRef.current, {
-        autoplay: true,
-        fastAudioSwitch: true,
-        reportError: false,
-        startSeconds,
-      }).then((source) => {
-        isStreamRecoveryInFlightRef.current = false
-        if (activeVideoPathRef.current !== videoPath) return
-        if (!source) recoverPlaybackRef.current({ mediaError, reason })
-      })
-    }
-    streamRecoveryTimeoutRef.current = window.setTimeout(retry, delayMs)
-    return true
-  }, [currentTime, holdCurrentFrame, loadPlaybackSource, switchToFallbackStream, videoPath])
-
-  recoverPlaybackRef.current = recoverPlayback
-
-  const retryPlayback = useCallback(() => {
-    clearStreamRecoveryTimeouts()
-    streamRecoveryAttemptRef.current = 0
-    isStreamRecoveryInFlightRef.current = false
-    recoverPlayback({ immediate: true, reason: 'manual' })
-  }, [clearStreamRecoveryTimeouts, recoverPlayback])
-
   const handleBuffering = useCallback(() => {
-    window.clearTimeout(streamRecoveryStableTimeoutRef.current)
-    streamRecoveryStableTimeoutRef.current = null
     setIsBuffering(true)
-    if (!bufferingStatusTimeoutRef.current) {
-      bufferingStatusTimeoutRef.current = window.setTimeout(() => {
-        bufferingStatusTimeoutRef.current = null
-        setRecoveryStatus((currentStatus) => currentStatus
-          || 'Buffer belum cukup. Jika internet lambat, pemutaran akan mulai setelah beberapa saat…')
-      }, SLOW_BUFFERING_STATUS_DELAY_MS)
-    }
-    armStreamStallFallback(isSeekingRef.current ? SEEK_STALL_FALLBACK_DELAY_MS : STREAM_STALL_FALLBACK_DELAY_MS)
-  }, [armStreamStallFallback])
-
-  const handleBufferProgress = useCallback(() => {
-    const player = playerRef.current
-    if (!player) return
-
-    const bufferedEnd = getBufferedEndAt(player, player.currentTime)
-    if (bufferedEnd <= lastBufferedEndRef.current + BUFFER_PROGRESS_THRESHOLD_SECONDS) return
-
-    lastBufferedEndRef.current = bufferedEnd
-    // Data is still arriving, even if slowly. Give the active connection more
-    // time instead of misclassifying it as a dead or unsupported stream.
     armStreamStallFallback(isSeekingRef.current ? SEEK_STALL_FALLBACK_DELAY_MS : STREAM_STALL_FALLBACK_DELAY_MS)
   }, [armStreamStallFallback])
 
@@ -710,14 +596,7 @@ function WatchPage({
     pendingAudioTranscodeAutoplayRef.current = null
     clearSeekPreview()
     clearHeldFrame()
-    window.clearTimeout(bufferingStatusTimeoutRef.current)
-    bufferingStatusTimeoutRef.current = null
-    setRecoveryStatus('')
     setIsBuffering(false)
-    window.clearTimeout(streamRecoveryStableTimeoutRef.current)
-    streamRecoveryStableTimeoutRef.current = window.setTimeout(() => {
-      streamRecoveryAttemptRef.current = 0
-    }, STREAM_RECOVERY_STABLE_RESET_MS)
   }, [clearHeldFrame, clearSeekPreview, clearStreamStallTimeout])
 
   useEffect(() => {
@@ -751,17 +630,6 @@ function WatchPage({
 
   useEffect(() => clearStreamStallTimeout, [clearStreamStallTimeout])
 
-  useEffect(() => {
-    const handleOnline = () => {
-      if (!recoveryStatus) return
-      window.clearTimeout(streamRecoveryTimeoutRef.current)
-      streamRecoveryTimeoutRef.current = null
-      recoverPlaybackRef.current({ immediate: true, reason: 'online' })
-    }
-    window.addEventListener('online', handleOnline)
-    return () => window.removeEventListener('online', handleOnline)
-  }, [recoveryStatus])
-
   useEffect(() => () => window.clearTimeout(seekPreviewTimeoutRef.current), [])
 
   useEffect(() => {
@@ -780,11 +648,7 @@ function WatchPage({
 
     activeVideoPathRef.current = videoPath
     clearStreamStallTimeout()
-    clearStreamRecoveryTimeouts()
-    streamRecoveryAttemptRef.current = 0
-    isStreamRecoveryInFlightRef.current = false
-    lastBufferedEndRef.current = 0
-    fallbackStreamUrlsRef.current = []
+    fallbackStreamUrlRef.current = ''
     fallbackPositionRef.current = null
     playbackSourceRef.current = null
     sourceDurationRef.current = 0
@@ -795,6 +659,7 @@ function WatchPage({
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     pendingAudioTranscodeAutoplayRef.current = null
+    hasUsedStreamFallbackRef.current = false
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
@@ -802,7 +667,6 @@ function WatchPage({
     queueMicrotask(() => {
       if (!ignore) {
         setStreamUrl('')
-        setRecoveryStatus('')
         setNeedsAudioTranscode(false)
         setAudioCodecLabel('')
         setAudioTracks([])
@@ -831,11 +695,7 @@ function WatchPage({
 
     const playbackSourcePromise = loadPlaybackSource(null, {
       autoplay: true,
-      reportError: false,
       startSeconds: initialResumeSeconds,
-    }).then((source) => {
-      if (!source && !ignore) recoverPlaybackRef.current({ reason: 'source' })
-      return source
     })
 
     fetchPlaybackMarkers(authToken, markerFolderName).then((nextMarkers) => {
@@ -883,10 +743,9 @@ function WatchPage({
       ignore = true
       playbackSourceRequestRef.current += 1
       cancelAudioTranscodeStartRequest()
-      clearStreamRecoveryTimeouts()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamRecoveryTimeouts, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath, videoPath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath, videoPath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -953,13 +812,15 @@ function WatchPage({
       hls.attachMedia(player)
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal && !switchToFallbackStream()) {
-          recoverPlaybackRef.current({ reason: 'hls' })
+          setPlayerError('The HLS stream could not be loaded.')
+          setIsBuffering(false)
         }
       })
     }
 
     attachStream().catch(() => {
-      recoverPlaybackRef.current({ reason: 'hls-attach' })
+      setPlayerError('The HLS stream could not be loaded.')
+      setIsBuffering(false)
     })
 
     return () => {
@@ -1202,6 +1063,7 @@ function WatchPage({
     player?.pause()
     cancelAudioTranscodeStartRequest()
     clearStreamStallTimeout()
+    hasUsedStreamFallbackRef.current = false
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     pendingAudioTranscodeAutoplayRef.current = shouldResume
@@ -1291,17 +1153,15 @@ function WatchPage({
           persistProgress({ complete: true, force: true })
           setShowControls(true)
         }}
-        onError={(event) => {
-          const mediaError = event.currentTarget.error
-          if (!streamUrl) return
-          recoverPlayback({ mediaError })
+        onError={() => {
+          clearHeldFrame()
+          if (switchToFallbackStream()) return
+          if (streamUrl) setPlayerError('The browser could not play this video format.')
+          setIsBuffering(false)
         }}
         onLoadedData={() => {
           if (Number.isFinite(pendingAudioTranscodeTargetRef.current)) return
-          window.clearTimeout(bufferingStatusTimeoutRef.current)
-          bufferingStatusTimeoutRef.current = null
           clearHeldFrame()
-          setRecoveryStatus('')
           setIsBuffering(false)
         }}
         onLoadedMetadata={handleLoadedMetadata}
@@ -1317,7 +1177,6 @@ function WatchPage({
           }
         }}
         onPlaying={handlePlaying}
-        onProgress={handleBufferProgress}
         onSeeked={handleSeeked}
         onSeeking={handleSeeking}
         onTimeUpdate={handleTimeUpdate}
@@ -1454,10 +1313,7 @@ function WatchPage({
       {playerError && (
         <div className="watch-center-state watch-error" role="alert">
           <p>{playerError}</p>
-          <div className="watch-error-actions">
-            <button onClick={retryPlayback} type="button">Coba lagi</button>
-            <button onClick={handleBack} type="button">Kembali ke detail</button>
-          </div>
+          <button onClick={handleBack} type="button">Back to details</button>
         </div>
       )}
 
@@ -2076,8 +1932,6 @@ function createPlaybackSourceForAudioTrack(playbackSource, track) {
 
   if (needsAudioTranscode && (!audioTranscodeUrl || !audioTranscodeStartUrl)) return null
 
-  const canUseDirectFallbacks = !playbackSource.isHlsStream && !needsAudioTranscode
-
   return {
     ...playbackSource,
     audioCodec: String(track.codec || ''),
@@ -2086,8 +1940,7 @@ function createPlaybackSourceForAudioTrack(playbackSource, track) {
     audioTranscodeStartUrl,
     audioTranscodeUrl,
     browserAudioSupported: track.browserSupported !== false,
-    fallbackUrl: canUseDirectFallbacks ? playbackSource.fallbackUrl : '',
-    fallbackUrls: canUseDirectFallbacks ? playbackSource.fallbackUrls : [],
+    fallbackUrl: playbackSource.isHlsStream || selectedNonDefaultAudio ? '' : playbackSource.fallbackUrl,
     selectedAudioStreamIndex,
     url: audioTranscodeUrl || playbackSource.directUrl || playbackSource.url,
   }
@@ -2547,34 +2400,6 @@ function createSubtitleOutline(outlineWidth) {
     shadows.push(`${(Math.cos(radians) * width).toFixed(2)}px ${(Math.sin(radians) * width).toFixed(2)}px 0 #000000`)
   }
   return shadows.join(', ')
-}
-
-function getPlaybackErrorMessage(errorCode, isOnline) {
-  if (!isOnline) {
-    return 'Internet masih terputus. Periksa koneksi lalu coba lagi.'
-  }
-  if (errorCode === 2) {
-    return 'Koneksi ke server video terus terputus. Coba lagi setelah koneksi lebih stabil.'
-  }
-  if (errorCode === 3) {
-    return 'Video gagal didekode oleh browser. File mungkin rusak atau codec-nya tidak didukung.'
-  }
-  if (errorCode === 4) {
-    return 'Sumber video tidak dapat dimuat. Format mungkin tidak didukung atau server sedang bermasalah.'
-  }
-  return 'Video belum berhasil dimuat setelah beberapa percobaan. Periksa koneksi lalu coba lagi.'
-}
-
-function getBufferedEndAt(player, currentTime) {
-  const ranges = player?.buffered
-  if (!ranges?.length) return 0
-
-  for (let index = 0; index < ranges.length; index += 1) {
-    if (currentTime >= ranges.start(index) - 0.1 && currentTime <= ranges.end(index) + 0.1) {
-      return ranges.end(index)
-    }
-  }
-  return ranges.end(ranges.length - 1)
 }
 
 export default WatchPage
