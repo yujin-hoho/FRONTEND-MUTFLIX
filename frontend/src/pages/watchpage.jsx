@@ -1447,10 +1447,8 @@ function WatchPage({
       </div>
 
       {isBuffering && !playerError && (
-        <div className={`watch-center-state ${recoveryStatus ? 'watch-recovery-state' : ''}`} aria-label="Loading video">
+        <div className="watch-center-state" aria-label="Loading video">
           <Loader2 className="spinner" size={44} />
-          {recoveryStatus && <p className="watch-recovery-status">{recoveryStatus}</p>}
-          {recoveryStatus && <button className="watch-recovery-button" onClick={retryPlayback} type="button">Coba sambungkan ulang</button>}
         </div>
       )}
       {playerError && (
