@@ -103,7 +103,7 @@ function WatchPage({
   const bufferingStatusTimeoutRef = useRef(null)
   const lastBufferedEndRef = useRef(0)
   const activeVideoPathRef = useRef('')
-  const fallbackStreamUrlRef = useRef('')
+  const fallbackStreamUrlsRef = useRef([])
   const fallbackPositionRef = useRef(null)
   const sourceDurationRef = useRef(0)
   const playbackSourceRequestRef = useRef(0)
@@ -126,7 +126,6 @@ function WatchPage({
   const externalSubtitleCuesRef = useRef([])
   const isSubtitleDelayInputFocusedRef = useRef(false)
   const selectedSubtitleIdRef = useRef('')
-  const hasUsedStreamFallbackRef = useRef(false)
   const isSeekingRef = useRef(false)
   const pendingInitialSeekRef = useRef(false)
   const requestedSeekPositionRef = useRef(null)
@@ -455,6 +454,7 @@ function WatchPage({
       audioTranscodeUrl,
       durationMs,
       fallbackUrl,
+      fallbackUrls,
       selectedAudioStreamIndex,
       url,
     } = playbackSource
@@ -462,11 +462,12 @@ function WatchPage({
     const selectedTrack = getSelectedAudioTrack(nextAudioTracks, selectedAudioStreamIndex)
 
     playbackSourceRef.current = playbackSource
-    hasUsedStreamFallbackRef.current = false
     sourceDurationRef.current = sourceDurationSeconds
     audioTranscodeBaseUrlRef.current = audioTranscodeUrl
     audioTranscodeStartUrlRef.current = audioTranscodeStartUrl
-    fallbackStreamUrlRef.current = fallbackUrl
+    fallbackStreamUrlsRef.current = Array.isArray(fallbackUrls) && fallbackUrls.length
+      ? [...fallbackUrls]
+      : fallbackUrl ? [fallbackUrl] : []
     audioTracksRef.current = nextAudioTracks
     selectedAudioStreamIndexRef.current = selectedTrack?.index ?? null
 
@@ -542,8 +543,12 @@ function WatchPage({
   }, [revealControls, seekToPlaybackTime])
 
   const switchToFallbackStream = useCallback(() => {
-    const fallbackUrl = fallbackStreamUrlRef.current
-    if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
+    let fallbackUrl = ''
+    while (fallbackStreamUrlsRef.current.length && !fallbackUrl) {
+      const candidateUrl = fallbackStreamUrlsRef.current.shift()
+      if (candidateUrl && candidateUrl !== streamUrl) fallbackUrl = candidateUrl
+    }
+    if (!fallbackUrl) return false
 
     const player = playerRef.current
     fallbackPositionRef.current = Number.isFinite(pendingAudioTranscodeTargetRef.current)
@@ -558,7 +563,6 @@ function WatchPage({
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     clearStreamStallTimeout()
-    hasUsedStreamFallbackRef.current = true
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     restoredPositionRef.current = false
@@ -780,7 +784,7 @@ function WatchPage({
     streamRecoveryAttemptRef.current = 0
     isStreamRecoveryInFlightRef.current = false
     lastBufferedEndRef.current = 0
-    fallbackStreamUrlRef.current = ''
+    fallbackStreamUrlsRef.current = []
     fallbackPositionRef.current = null
     playbackSourceRef.current = null
     sourceDurationRef.current = 0
@@ -791,7 +795,6 @@ function WatchPage({
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     pendingAudioTranscodeAutoplayRef.current = null
-    hasUsedStreamFallbackRef.current = false
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
     requestedSeekPositionRef.current = null
@@ -1199,7 +1202,6 @@ function WatchPage({
     player?.pause()
     cancelAudioTranscodeStartRequest()
     clearStreamStallTimeout()
-    hasUsedStreamFallbackRef.current = false
     pendingAudioTranscodeOffsetRef.current = 0
     pendingAudioTranscodeTargetRef.current = null
     pendingAudioTranscodeAutoplayRef.current = shouldResume
@@ -2076,6 +2078,8 @@ function createPlaybackSourceForAudioTrack(playbackSource, track) {
 
   if (needsAudioTranscode && (!audioTranscodeUrl || !audioTranscodeStartUrl)) return null
 
+  const canUseDirectFallbacks = !playbackSource.isHlsStream && !needsAudioTranscode
+
   return {
     ...playbackSource,
     audioCodec: String(track.codec || ''),
@@ -2084,7 +2088,8 @@ function createPlaybackSourceForAudioTrack(playbackSource, track) {
     audioTranscodeStartUrl,
     audioTranscodeUrl,
     browserAudioSupported: track.browserSupported !== false,
-    fallbackUrl: playbackSource.isHlsStream || selectedNonDefaultAudio ? '' : playbackSource.fallbackUrl,
+    fallbackUrl: canUseDirectFallbacks ? playbackSource.fallbackUrl : '',
+    fallbackUrls: canUseDirectFallbacks ? playbackSource.fallbackUrls : [],
     selectedAudioStreamIndex,
     url: audioTranscodeUrl || playbackSource.directUrl || playbackSource.url,
   }
