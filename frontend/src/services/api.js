@@ -95,7 +95,7 @@ export async function editProfile(authToken, profile) {
 export async function fetchDashboardData(authToken, profileId) {
   const headers = { 'x-access-token': authToken }
   const [historyResponse, catalogResponse] = await Promise.all([
-    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&limit=100`, { headers }),
+    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&enrich_stills=true&limit=100`, { headers }),
     fetch(`${API_BASE_URL}/api/folders`, { headers }),
   ])
   const historyData = await historyResponse.json().catch(() => [])
@@ -930,7 +930,7 @@ export function mergeCatalogMetadataUpdates(catalog, updates) {
   }
 }
 
-export async function fetchDetailData(authToken, item) {
+export async function fetchDetailData(authToken, item, { onCoreReady } = {}) {
   const detailItem = { ...item, media_type: getMediaType(item) }
   const itemPath = getItemPath(detailItem)
   if (!itemPath || !navigator.onLine) {
@@ -938,7 +938,9 @@ export async function fetchDetailData(authToken, item) {
   }
 
   const headers = { 'x-access-token': authToken }
-  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, {
+  const initialTmdbId = getTmdbId(detailItem)
+  const creditsPromise = initialTmdbId ? getCreditsFromServer(detailItem, headers) : null
+  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}?defer_metadata=true`, {
     cache: 'no-store',
     headers,
   })
@@ -951,10 +953,14 @@ export async function fetchDetailData(authToken, item) {
     serverCatalogItem,
     { media_type: detailItem.media_type },
   )
+  const coreVideos = Array.isArray(data.videos) ? data.videos : []
+  onCoreReady?.({ item: mergedItem, videos: coreVideos, credits: createEmptyCredits() })
 
   const [videos, credits] = await Promise.all([
-    enrichEpisodesFromServer(mergedItem, Array.isArray(data.videos) ? data.videos : [], headers),
-    getCreditsFromServer(mergedItem, headers),
+    enrichEpisodesFromServer(mergedItem, coreVideos, headers),
+    creditsPromise && getTmdbId(mergedItem) === initialTmdbId
+      ? creditsPromise
+      : getCreditsFromServer(mergedItem, headers),
   ])
 
   const serverDesc = serverCatalogItem.description || serverCatalogItem.overview || detailItem.description || detailItem.overview || ''
@@ -1015,7 +1021,10 @@ async function enrichEpisodesFromServer(item, videos, headers) {
   if (getMediaType(item) === 'movie' || !videos.length) return videos
 
   // If server already provided title and overview/description for episodes, no need to fetch TMDB seasons
-  const needsEnrichment = videos.some((video) => !video.title || (!video.overview && !video.description))
+  const needsEnrichment = videos.some((video) => (
+    !video.episode_metadata_resolved
+    && (!video.title || (!video.overview && !video.description))
+  ))
   if (!needsEnrichment) {
     return videos.map((video) => ({
       ...video,
@@ -1076,7 +1085,7 @@ async function enrichEpisodesFromServer(item, videos, headers) {
       const episode = episodeMap.get(`${Number(video.season || 1)}:${Number(video.episode || 0)}`)
       const title = video.title || episode?.name || video.name
       const overview = video.overview || video.description || episode?.overview || ''
-      const stillPath = video.still_path || video.still_url || episode?.still_path || ''
+      const stillPath = video.still_path || video.still_url || ''
       return {
         ...video,
         title,
@@ -1096,35 +1105,28 @@ async function getCreditsFromServer(item, headers) {
   const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
   const folderName = item.folder_name || item.name || getItemPath(item)
   let tmdbId = getTmdbId(item)
-  let meta = null
 
   try {
-    if (tmdbId) {
-      const detailResponse = await fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}?language=en-US`, { headers })
-      if (detailResponse.ok) {
-        meta = await detailResponse.json().catch(() => ({}))
-      }
-    }
-
-    if (!meta || !meta.id) {
+    if (!tmdbId) {
       if (!folderName) return createEmptyCredits()
       const metaResponse = await fetch(`${API_BASE_URL}/api/tmdb-meta/${mediaType}?folder_name=${encodeURIComponent(folderName)}`, { headers })
-      meta = await metaResponse.json().catch(() => ({}))
-      if (!metaResponse.ok || !meta.id) return createEmptyCredits()
-      tmdbId = meta.id
+      const resolvedMeta = await metaResponse.json().catch(() => ({}))
+      if (!metaResponse.ok || !resolvedMeta.id) return createEmptyCredits()
+      tmdbId = resolvedMeta.id
     }
 
-    const [creditsResponse, recommendationsResponse, videosResponse] = await Promise.all([
-      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}/credits?language=en-US`, { headers }),
-      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}/recommendations?language=en-US`, { headers }),
-      fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}/videos?language=en-US`, { headers }),
-    ])
-    const [credits, recommendations, videos] = await Promise.all([
-      creditsResponse.json().catch(() => ({})),
-      recommendationsResponse.json().catch(() => ({})),
-      videosResponse.json().catch(() => ({})),
-    ])
-    const trailers = videosResponse.ok && Array.isArray(videos.results)
+    const params = new URLSearchParams({
+      append_to_response: 'credits,recommendations,videos',
+      language: 'en-US',
+    })
+    const detailResponse = await fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}?${params.toString()}`, { headers })
+    const details = await detailResponse.json().catch(() => ({}))
+    if (!detailResponse.ok || !details.id) return createEmptyCredits()
+
+    const credits = details.credits || {}
+    const recommendations = details.recommendations || {}
+    const videos = details.videos || {}
+    const trailers = Array.isArray(videos.results)
       ? videos.results.filter((video) => video.site === 'YouTube' && video.type === 'Trailer')
       : []
     const trailer = trailers.find((video) => video.official) || trailers[0]
@@ -1142,8 +1144,8 @@ async function getCreditsFromServer(item, headers) {
     return {
       cast: Array.isArray(credits.cast) ? credits.cast.slice(0, 5) : [],
       crew,
-      meta,
-      recommendations: recommendationsResponse.ok && Array.isArray(recommendations.results)
+      meta: details,
+      recommendations: Array.isArray(recommendations.results)
         ? recommendations.results.slice(0, 16)
         : [],
       trailerId: trailer?.key || '',

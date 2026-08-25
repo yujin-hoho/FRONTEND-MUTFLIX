@@ -50,6 +50,8 @@ import {
   getMediaType,
   getPosterUrl,
   getRotationKey,
+  getServerBackdropUrl,
+  getServerStillUrl,
   getTitle,
   getWatchUrl,
   normalizeMediaPath,
@@ -353,7 +355,11 @@ function App() {
     })
 
     try {
-      const nextDetail = await fetchDetailData(authToken, detailItem)
+      const nextDetail = await fetchDetailData(authToken, detailItem, {
+        onCoreReady: (coreDetail) => {
+          setDetailData({ ...coreDetail, isLoading: false, error: null })
+        },
+      })
       setDetailData({ ...nextDetail, isLoading: false, error: null })
     } catch (error) {
       setDetailData((currentData) => ({ ...currentData, isLoading: false, error: error.message }))
@@ -1372,7 +1378,7 @@ function createCompletedHistoryPayload({ item, profileId, video }, durationMs) {
     series_title: isMovie ? null : getTitle(item),
     series_path: isMovie ? null : getItemPath(item),
     source: video.source || item.source || '',
-    still_path: video.still_path || item.backdrop_url || item.poster_url || item.primary_backdrop_url || item.primary_poster_url || item.tmdb_backdrop_path || item.backdrop_path || item.tmdb_poster_path || item.poster_path || '',
+    still_path: getServerStillUrl(video) || getServerBackdropUrl(item),
     subtitle_path: video.subtitle_path || '',
     season: video.season || 1,
     episode: video.episode || 1,

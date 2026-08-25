@@ -65,8 +65,9 @@ function SearchResultsPage({
     () => mergeSearchResults(
       localResults,
       serverSearch.query === normalizedQuery ? filterCatalogItems(serverSearch.results, initialFilter) : [],
+      deferredQuery,
     ),
-    [initialFilter, localResults, normalizedQuery, serverSearch],
+    [deferredQuery, initialFilter, localResults, normalizedQuery, serverSearch],
   )
   const selectedPersonId = manualPersonSelection.query === normalizedQuery
     ? manualPersonSelection.id

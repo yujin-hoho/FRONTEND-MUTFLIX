@@ -8,6 +8,7 @@ const LoadableImage = memo(function LoadableImage({
   fallbackSrc = '',
   fetchPriority,
   loading = 'lazy',
+  showFallbackWhileLoading = false,
   shimmerOnError = true,
   src,
 }) {
@@ -63,7 +64,14 @@ const LoadableImage = memo(function LoadableImage({
       : null
   }
 
-  const showShimmer = imageState === 'loading' || (imageState === 'error' && shimmerOnError)
+  const showLoadingFallback = Boolean(
+    showFallbackWhileLoading
+    && !useFallback
+    && imageState === 'loading'
+    && fallbackSrc
+    && fallbackSrc !== resolvedSrc,
+  )
+  const showShimmer = (imageState === 'loading' && !showLoadingFallback) || (imageState === 'error' && shimmerOnError)
   const shouldRenderImage = imageState !== 'error' && Boolean(resolvedSrc)
 
   // For non-priority GDrive images managed by the queue:
@@ -76,6 +84,16 @@ const LoadableImage = memo(function LoadableImage({
   return (
     <>
       {showShimmer && <span className="image-shimmer" aria-hidden="true" />}
+      {showLoadingFallback && (
+        <img
+          alt=""
+          aria-hidden="true"
+          className={`${className} image-loaded image-loading-fallback`.trim()}
+          decoding="async"
+          loading="eager"
+          src={fallbackSrc}
+        />
+      )}
       {shouldRenderImage && imgSrc && (
         <img
           alt={alt}

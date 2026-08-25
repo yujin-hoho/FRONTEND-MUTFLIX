@@ -5,20 +5,19 @@ import LoadableImage from '../components/LoadableImage'
 import CreditsPanel from '../components/detail/CreditsPanel'
 import {
   formatDuration,
-  getBackdropUrl,
   getCleanEpisodeTitle,
   getGenres,
   getItemPath,
   getMediaType,
-  getPosterFallbackUrl,
   getRating,
   getReleaseYear,
-  getStillUrl,
+  getServerBackdropUrl,
+  getServerStillUrl,
   getTitle,
   getWatchProgress,
   isWatchCompleted,
   normalizeMediaPath,
-  preloadImage,
+  preloadImages,
 } from '../utils/media'
 
 function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPlayVideo, watchHistory = [] }) {
@@ -31,10 +30,8 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
   const [visibleEpisodeCount, setVisibleEpisodeCount] = useState(EPISODES_PER_PAGE)
   const selectedSeason = seasons.includes(activeSeason) ? activeSeason : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
-  const backdrop = getBackdropUrl(item)
-    || (credits?.meta ? getBackdropUrl(credits.meta) : '')
-    || (videos[0] ? getStillUrl(videos[0]) : '')
-  const backdropFallback = isLoading ? '' : getPosterFallbackUrl(item)
+  const serverBackdrop = getServerBackdropUrl(item, 'w1280')
+  const backdrop = serverBackdrop || (videos[0] ? getServerStillUrl(videos[0], 'w1280') : '')
   const genres = getGenres(item).length ? getGenres(item) : getGenres(credits?.meta)
   const rating = getRating(item) || getRating(credits?.meta)
   const releaseYear = getReleaseYear(item) || getReleaseYear(credits?.meta)
@@ -57,9 +54,18 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
   const canShowLessEpisodes = visibleEpisodeCount > EPISODES_PER_PAGE
 
   useEffect(() => {
-    visibleVideos
+    const urls = visibleVideos
       .slice(visibleEpisodeCount, visibleEpisodeCount + EPISODES_PER_PAGE)
-      .forEach((video) => preloadImage(getStillUrl(video)))
+      .map((video) => getServerStillUrl(video))
+      .filter(Boolean)
+    if (!urls.length) return undefined
+
+    const scheduleIdle = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 800))
+    const idleId = scheduleIdle(() => preloadImages(urls, { concurrency: 2 }))
+    return () => {
+      if (window.cancelIdleCallback) window.cancelIdleCallback(idleId)
+      else window.clearTimeout(idleId)
+    }
   }, [visibleEpisodeCount, visibleVideos])
 
   return (
@@ -70,7 +76,7 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
       </button>
 
       <section className="detail-hero">
-        <LoadableImage className="detail-backdrop" fallbackSrc={backdropFallback} fetchPriority="high" key={`${backdrop}-${backdropFallback}`} loading="eager" src={backdrop} />
+        <LoadableImage className="detail-backdrop" fetchPriority="high" key={backdrop} loading="eager" src={backdrop} />
         <div className="detail-shade" />
         <div className="detail-copy">
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>
@@ -149,10 +155,9 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
               <div className="episode-list">
                 {renderedVideos.map((video, index) => {
                   const episodeNumber = video.episode || index + 1
-                  const thumbnail = getStillUrl(video) || backdrop
-                  const thumbnailFallback = getPosterFallbackUrl({
-                    name: video.name || `${getTitle(item)} episode ${episodeNumber}`,
-                  })
+                  const episodeStill = getServerStillUrl(video)
+                  const thumbnail = episodeStill || serverBackdrop
+                  const thumbnailFallback = episodeStill && serverBackdrop !== episodeStill ? serverBackdrop : ''
                   const duration = formatDuration(video)
                   const watchEntry = findWatchEntry(video) || {}
                   const watchProgress = getWatchProgress(watchEntry)
@@ -175,7 +180,14 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
                     >
                       <span className="episode-number">{episodeNumber}</span>
                       <div className={`episode-thumbnail${isCompleted ? ' episode-thumbnail-completed' : ''}`}>
-                        <LoadableImage fallbackSrc={thumbnailFallback} key={thumbnail} loading="eager" src={thumbnail} />
+                        <LoadableImage
+                          fallbackSrc={thumbnailFallback}
+                          fetchPriority={index < 4 ? 'high' : 'auto'}
+                          key={`${thumbnail}-${thumbnailFallback}`}
+                          loading={index < 4 ? 'eager' : 'lazy'}
+                          showFallbackWhileLoading
+                          src={thumbnail}
+                        />
                         {isCompleted && (
                           <span aria-label="Episode selesai" className="completion-badge episode-completion-badge">
                             <Check size={18} strokeWidth={3.4} />

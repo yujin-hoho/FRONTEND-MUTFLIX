@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import LoadableImage from '../LoadableImage'
-import { getGenres, getPersonFallbackUrl, getPosterUrl, getReleaseYear, getStillUrl } from '../../utils/media'
+import { getGenres, getPersonFallbackUrl, getReleaseYear, getServerTmdbImageUrl } from '../../utils/media'
 
 const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'series', onOpenPerson }) {
   const cast = credits?.cast || []
@@ -111,7 +111,7 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
                 type={onOpenPerson ? 'button' : undefined}
               >
                 <div className="cast-avatar">
-                  <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
+                  <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getServerTmdbImageUrl(person.profile_path, 'w185')} />
                 </div>
                 <div>
                   <h3>{person.name}</h3>
@@ -137,7 +137,7 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
                 type={onOpenPerson ? 'button' : undefined}
               >
                 <div className="cast-avatar">
-                  <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getStillUrl(person)} />
+                  <LoadableImage alt={person.name} fallbackSrc={getPersonFallbackUrl(person)} key={person.profile_path} src={getServerTmdbImageUrl(person.profile_path, 'w185')} />
                 </div>
                 <div>
                   <h3>{person.name}</h3>
@@ -156,7 +156,7 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
             {(isMovie ? recommendations.slice(0, 10) : recommendations).map((recommendation) => (
               <article key={recommendation.id}>
                 <div className="recommendation-poster">
-                  <LoadableImage alt={recommendation.name || recommendation.title} key={recommendation.poster_path} src={getPosterUrl(recommendation)} />
+                  <LoadableImage alt={recommendation.name || recommendation.title} key={recommendation.poster_path} src={getServerTmdbImageUrl(recommendation.poster_path, 'w342')} />
                 </div>
                 <h3>{recommendation.name || recommendation.title}</h3>
               </article>

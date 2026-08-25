@@ -14,9 +14,14 @@ export function prepareSearchCatalog(items) {
   return items.map((item, index) => ({
     aliases: [...new Set([
       item.tmdb_title,
+      item.tmdb_query,
       item.title,
       item.name,
       item.folder_name,
+      item.original_title,
+      item.original_name,
+      item.series_title,
+      item.media_title,
     ].map(normalizeSearchQuery).filter(Boolean))],
     genres: getGenres(item).map(normalizeSearchQuery),
     index,
@@ -77,41 +82,94 @@ export function searchCatalog(entries, query, { limit = Infinity } = {}) {
   const normalizedQuery = normalizeSearchQuery(query)
   if (!normalizedQuery) return []
 
-  return entries
+  const strictMatches = entries
     .map((entry) => ({ entry, score: getSearchScore(entry, normalizedQuery) }))
     .filter(({ score }) => score > 0)
+
+  const matches = strictMatches.length > 0
+    ? strictMatches
+    : entries
+      .map((entry) => ({ entry, score: getSearchScore(entry, normalizedQuery, { allowFuzzy: true }) }))
+      .filter(({ score }) => score > 0)
+
+  return matches
     .sort((a, b) => b.score - a.score || b.entry.rating - a.entry.rating || a.entry.index - b.entry.index)
     .slice(0, limit)
     .map(({ entry }) => entry.item)
 }
 
-export function mergeSearchResults(primaryItems, fallbackItems) {
-  const seen = new Set()
-  return [...primaryItems, ...fallbackItems].filter((item) => {
+export function mergeSearchResults(primaryItems, fallbackItems, query = '') {
+  const itemIndexes = new Map()
+  const mergedItems = []
+  const allItems = [...primaryItems, ...fallbackItems]
+  allItems.forEach((item) => {
     const key = getCatalogIdentityKey(item)
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
+    const existingIndex = itemIndexes.get(key)
+    if (existingIndex !== undefined) {
+      mergedItems[existingIndex] = mergeCatalogMetadata(mergedItems[existingIndex], item)
+      return
+    }
+    itemIndexes.set(key, mergedItems.length)
+    mergedItems.push(item)
   })
+
+  if (!normalizeSearchQuery(query)) return mergedItems
+  return searchCatalog(prepareSearchCatalog(mergedItems), query)
 }
 
-function getSearchScore({ aliases, genres }, query) {
-  if (aliases.some((alias) => alias === query)) return 100
-  if (aliases.some((alias) => alias.startsWith(query))) return 80
-  if (aliases.some((alias) => alias.includes(query))) return 60
+function mergeCatalogMetadata(primaryItem, fallbackItem) {
+  const meaningfulPrimaryFields = Object.fromEntries(
+    Object.entries(primaryItem).filter(([, value]) => (
+      value !== undefined
+      && value !== null
+      && value !== ''
+      && (!Array.isArray(value) || value.length > 0)
+    )),
+  )
+  return { ...fallbackItem, ...meaningfulPrimaryFields }
+}
 
+function getSearchScore({ aliases, genres }, query, { allowFuzzy = false } = {}) {
   const queryWords = query.split(' ')
-  const aliasWords = aliases.flatMap((alias) => alias.split(' '))
-  if (queryWords.every((word) => aliasWords.some((aliasWord) => aliasWord.startsWith(word)))) return 50
-  if (queryWords.every((word) => aliasWords.some((aliasWord) => isFuzzyWordMatch(aliasWord, word)))) return 40
-  if (genres.some((genre) => genre === query)) return 25
-  if (genres.some((genre) => genre.includes(query))) return 15
+  const aliasScore = aliases.reduce((bestScore, alias) => {
+    const aliasWords = alias.split(' ')
+    if (alias === query) return Math.max(bestScore, 1000)
+    if (alias.startsWith(`${query} `)) return Math.max(bestScore, 900)
+    if (containsWordSequence(aliasWords, queryWords)) return Math.max(bestScore, 800)
+
+    if (queryWords.every((word) => aliasWords.includes(word))) {
+      const coverageBonus = Math.round((queryWords.length / aliasWords.length) * 50)
+      return Math.max(bestScore, 700 + coverageBonus)
+    }
+
+    if (
+      queryWords.every((word) => word.length >= 2)
+      && queryWords.every((word) => aliasWords.some((aliasWord) => aliasWord.startsWith(word)))
+    ) return Math.max(bestScore, 550)
+
+    if (allowFuzzy && (
+      queryWords.every((word) => word.length >= 3)
+      && queryWords.every((word) => aliasWords.some((aliasWord) => isFuzzyWordMatch(aliasWord, word)))
+    )) return Math.max(bestScore, 400)
+
+    return bestScore
+  }, 0)
+
+  if (aliasScore) return aliasScore
+  if (genres.some((genre) => genre === query)) return 100
   return 0
 }
 
+function containsWordSequence(candidateWords, queryWords) {
+  if (queryWords.length > candidateWords.length) return false
+  return candidateWords.some((_, startIndex) => (
+    queryWords.every((word, queryIndex) => candidateWords[startIndex + queryIndex] === word)
+  ))
+}
+
 function isFuzzyWordMatch(candidate, query) {
-  if (candidate.includes(query) || query.includes(candidate)) return true
-  if (query.length < 3 || Math.abs(candidate.length - query.length) > 1) return false
+  if (candidate === query) return true
+  if (query.length < 3 || candidate.length < 3 || Math.abs(candidate.length - query.length) > 1) return false
 
   let candidateIndex = 0
   let queryIndex = 0

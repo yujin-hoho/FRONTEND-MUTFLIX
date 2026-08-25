@@ -131,7 +131,11 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 GDRIVE_TOKEN_B64 = os.environ.get('GDRIVE_TOKEN_B64')
 GDRIVE_SUBTITLE_TOKEN_B64 = os.environ.get('GDRIVE_SUBTITLE_TOKEN_B64')
 GDRIVE_SUBTITLE_FOLDER_ID = os.environ.get('GDRIVE_SUBTITLE_FOLDER_ID')
-GDRIVE_POSTER_TOKEN_B64 = os.environ.get('GDRIVE_POSTER_TOKEN_B64')
+# Poster memakai akun/credential yang sama dengan subtitle. Token poster lama
+# hanya menjadi fallback untuk deployment lama yang belum punya token subtitle.
+GDRIVE_POSTER_TOKEN_B64 = (
+    GDRIVE_SUBTITLE_TOKEN_B64 or os.environ.get('GDRIVE_POSTER_TOKEN_B64')
+)
 GDRIVE_POSTER_FOLDER_ID = os.environ.get('GDRIVE_POSTER_FOLDER_ID')
 SUPABASE_URL = os.environ.get('SUPABASE_URL')
 SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
@@ -385,6 +389,9 @@ _response_cache = {}       # {cache_key: orjson_bytes}
 _response_cache_ts = {}    # {cache_key: timestamp}
 _response_lock = threading.Lock()
 FOLDERS_MERGED_RESPONSE_CACHE_KEY = 'resp_folders_merged_v3'
+_folders_build_lock = threading.Lock()
+_tmdb_folder_meta_prefetch_lock = threading.Lock()
+_tmdb_folder_meta_prefetch_running = False
 
 # === TMDB OVERRIDE RAM CACHE ===
 # Avoids DB reads + deepcopy/merge work on every /api/folders request.
@@ -1835,7 +1842,7 @@ def proxy_tmdb(current_user, tmdb_path):
     params['api_key'] = TMDB_API_KEY
 
     try:
-        response = requests.get(
+        response = _get_tmdb_http_session().get(
             f'https://api.themoviedb.org/3/{tmdb_path}',
             params=params,
             timeout=10,
@@ -2206,33 +2213,51 @@ def _merge_tmdb_ratings_into_folders(all_c):
                             item['genres'] = cached['genres']
                             item['genre'] = cached['genres']
                     else:
-                        items_to_fetch.append((item, t_id, prefix))
+                        items_to_fetch.append((t_id, prefix))
 
+        # Never block /api/folders on live TMDB. Missing meta is filled in
+        # the background so catalog requests stay under the app timeout.
         if items_to_fetch:
-            def _worker(entry):
-                it, tid, pfx = entry
-                meta_info = _get_tmdb_meta_by_id(tid, pfx)
-                if meta_info:
-                    if meta_info.get('rating') is not None:
-                        it['rating'] = meta_info['rating']
-                        it['tmdb_rating'] = meta_info['rating']
-                    if meta_info.get('description'):
-                        it['description'] = meta_info['description']
-                        it['overview'] = meta_info['description']
-                        it['tmdb_overview'] = meta_info['description']
-                    if meta_info.get('genres'):
-                        it['genres'] = meta_info['genres']
-                        it['genre'] = meta_info['genres']
-                    if meta_info.get('tmdb_title') and not it.get('tmdb_title'):
-                        it['tmdb_title'] = meta_info['tmdb_title']
-
-            max_workers = min(16, len(items_to_fetch))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                list(executor.map(_worker, items_to_fetch))
+            _schedule_tmdb_folder_meta_prefetch(items_to_fetch)
 
     except Exception as e:
         print(f"[TMDB-METADATA] merge into folders failed: {e}", flush=True)
     return all_c
+
+
+def _schedule_tmdb_folder_meta_prefetch(entries):
+    """Warm TMDB rating/overview cache without delaying /api/folders."""
+    global _tmdb_folder_meta_prefetch_running
+    unique = []
+    seen = set()
+    for tmdb_id, prefix in entries:
+        key = (str(tmdb_id), prefix)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((tmdb_id, prefix))
+    if not unique:
+        return
+    with _tmdb_folder_meta_prefetch_lock:
+        if _tmdb_folder_meta_prefetch_running:
+            return
+        _tmdb_folder_meta_prefetch_running = True
+
+    def _run():
+        global _tmdb_folder_meta_prefetch_running
+        try:
+            for tmdb_id, prefix in unique:
+                try:
+                    _get_tmdb_meta_by_id(tmdb_id, prefix)
+                except Exception:
+                    pass
+            _invalidate_response_cache(FOLDERS_MERGED_RESPONSE_CACHE_KEY)
+        finally:
+            with _tmdb_folder_meta_prefetch_lock:
+                _tmdb_folder_meta_prefetch_running = False
+
+    threading.Thread(target=_run, name='tmdb-folder-meta-prefetch', daemon=True).start()
+
 
 def _assign_ids_to_folders(all_c):
     """
@@ -2246,27 +2271,11 @@ def _assign_ids_to_folders(all_c):
     3. Prioritas 3: Untuk item baru yang belum punya ID, gunakan (max_known_id + 1).
     4. DILARANG KERAS menggunakan urutan indeks/enumerate (1..N) sebagai fallback,
        karena akan membuat seluruh poster Google Drive (movies_<id> / series_<id>) bergeser kacau.
+    5. Urutkan berdasarkan ID (bukan abjad/name), sehingga item baru berada di bawah ID terakhir.
     """
     if not all_c:
         return all_c
-    list_map = {'series': {}, 'movies': {}}
-    known_max_id = {'series': 0, 'movies': 0}
-    
-    list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
-    if os.path.exists(list_path):
-        try:
-            with open(list_path, 'r', encoding='utf-8') as f:
-                ld = json.load(f)
-                for cat in ('series', 'movies'):
-                    for entry in ld.get(cat, []):
-                        if isinstance(entry, dict) and 'name' in entry:
-                            e_id = entry.get('id')
-                            if isinstance(e_id, int):
-                                list_map[cat][entry['name']] = e_id
-                                if e_id > known_max_id[cat]:
-                                    known_max_id[cat] = e_id
-        except Exception:
-            pass
+    list_map, known_max_id = _get_list_json_folder_ids()
 
     for cat in ('series', 'movies'):
         items = all_c.get(cat) or []
@@ -2302,6 +2311,12 @@ def _assign_ids_to_folders(all_c):
                 if k != 'id':
                     reordered[k] = v
             new_items.append(reordered)
+
+        # Urutkan berdasarkan ID (bukan abjad) agar item baru selalu berada di bawah ID terakhir
+        new_items.sort(key=lambda x: (
+            0 if isinstance(x.get('id'), int) else 1,
+            x.get('id') if isinstance(x.get('id'), int) else 99999999
+        ))
         all_c[cat] = new_items
     return all_c
 
@@ -3337,6 +3352,40 @@ def _history_row_value(row, index, key):
     return row[index]
 
 
+def _history_legacy_profile_candidates(user_id, username, profile_id_str):
+    candidates = []
+    for candidate in (str(user_id), username, 'default', ''):
+        if candidate and candidate != profile_id_str and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _migrate_legacy_history(conn, cur, ph, db_type, user_id, profile_id_str, username):
+    """Move watch history from legacy profile_ids (web/old app) to the active profile."""
+    if not profile_id_str:
+        return 0
+    fallback_candidates = _history_legacy_profile_candidates(user_id, username, profile_id_str)
+    if not fallback_candidates:
+        return 0
+    fb_ph = ', '.join([ph] * len(fallback_candidates))
+    migrate_sql = f'''UPDATE watch_history SET profile_id = {ph}
+                     WHERE user_id = {ph} AND (profile_id IN ({fb_ph}) OR profile_id IS NULL)'''
+    try:
+        cur.execute(migrate_sql, (profile_id_str, user_id, *fallback_candidates))
+        migrated = cur.rowcount if hasattr(cur, 'rowcount') else 0
+        conn.commit()
+        if migrated:
+            print(f"[HISTORY-MIGRATE] Migrated {migrated} legacy rows to profile {profile_id_str}", flush=True)
+        return migrated
+    except Exception as mig_err:
+        print(f"[HISTORY-MIGRATE] Warning: failed to migrate legacy history: {mig_err}", flush=True)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return 0
+
+
 def _supersede_other_series_episodes(cur, ph, user_id, profile_id, media_path, series_path, series_title):
     series_path = str(series_path or '').strip()
     series_title = str(series_title or '').strip()
@@ -3398,56 +3447,142 @@ def _newest_series_sibling(cur, ph, user_id, profile_id, media_path, series_path
     }
 
 
+_list_json_folder_ids = None
+_list_json_folder_ids_mtime = None
+_list_json_folder_ids_lock = threading.Lock()
+
+
+def _get_list_json_folder_ids():
+    """Cached list.json name->id maps used by /api/folders."""
+    global _list_json_folder_ids, _list_json_folder_ids_mtime
+    list_map = {'series': {}, 'movies': {}}
+    known_max_id = {'series': 0, 'movies': 0}
+    list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+    try:
+        mtime = os.path.getmtime(list_path)
+    except OSError:
+        return list_map, known_max_id
+    with _list_json_folder_ids_lock:
+        if _list_json_folder_ids is not None and _list_json_folder_ids_mtime == mtime:
+            cached_map, cached_max = _list_json_folder_ids
+            return (
+                {'series': dict(cached_map['series']), 'movies': dict(cached_map['movies'])},
+                dict(cached_max),
+            )
+        try:
+            with open(list_path, 'r', encoding='utf-8') as f:
+                ld = json.load(f)
+            for cat in ('series', 'movies'):
+                for entry in ld.get(cat, []):
+                    if isinstance(entry, dict) and 'name' in entry:
+                        e_id = entry.get('id')
+                        if isinstance(e_id, int):
+                            list_map[cat][entry['name']] = e_id
+                            if e_id > known_max_id[cat]:
+                                known_max_id[cat] = e_id
+        except Exception:
+            pass
+        _list_json_folder_ids = (list_map, known_max_id)
+        _list_json_folder_ids_mtime = mtime
+        return (
+            {'series': dict(list_map['series']), 'movies': dict(list_map['movies'])},
+            dict(known_max_id),
+        )
+
+
+_list_json_media_index = None
+_list_json_media_index_mtime = None
+_list_json_media_index_lock = threading.Lock()
+
+
+def _extract_list_json_image_fids(entry, url_key, all_urls_key, file_id_key):
+    urls = entry.get(all_urls_key) or ([entry.get(url_key)] if entry.get(url_key) else [])
+    fids = []
+    for url in urls:
+        if url:
+            match = re.search(r'/api/gdrive-poster/([a-zA-Z0-9_-]+)', str(url))
+            if match:
+                fids.append(match.group(1))
+    file_id = entry.get(file_id_key)
+    if file_id and file_id not in fids:
+        fids.append(file_id)
+    return fids
+
+
+def _get_list_json_media_index():
+    """Build a name-keyed index of list.json once per file change."""
+    global _list_json_media_index, _list_json_media_index_mtime
+    list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+    try:
+        mtime = os.path.getmtime(list_path)
+    except OSError:
+        return {}
+    with _list_json_media_index_lock:
+        if _list_json_media_index is not None and _list_json_media_index_mtime == mtime:
+            return _list_json_media_index
+        index = {}
+        try:
+            with open(list_path, 'r', encoding='utf-8') as f:
+                ld = json.load(f)
+            for cat in ('movies', 'series', 'tv'):
+                media_type = 'movie' if cat == 'movies' else 'series'
+                for entry in ld.get(cat, []):
+                    if not isinstance(entry, dict):
+                        continue
+                    info = (
+                        media_type,
+                        str(entry.get('id') or ''),
+                        _extract_list_json_image_fids(
+                            entry, 'backdrop_url', 'all_backdrop_urls', 'backdrop_file_id',
+                        ),
+                        _extract_list_json_image_fids(
+                            entry, 'poster_url', 'all_poster_urls', 'poster_file_id',
+                        ),
+                    )
+                    for raw_name in (entry.get('name'), entry.get('tmdb_title')):
+                        name = str(raw_name or '').strip()
+                        if not name:
+                            continue
+                        index[name.lower()] = info
+                        index[_normalize_key(name)] = info
+        except Exception:
+            pass
+        _list_json_media_index = index
+        _list_json_media_index_mtime = mtime
+        return index
+
+
 def _get_media_info_from_list_json(name):
     """Resolve (media_type, id, backdrop_fids, poster_fids) from list.json by name."""
     if not name:
         return None, None, [], []
-    list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
-    if os.path.exists(list_path):
-        try:
-            with open(list_path, 'r', encoding='utf-8') as f:
-                ld = json.load(f)
-                name_clean = name.lower().strip()
-                norm_name = _normalize_key(name)
-                for cat in ('movies', 'series', 'tv'):
-                    m_type = 'movie' if cat == 'movies' else 'series'
-                    for entry in ld.get(cat, []):
-                        if not isinstance(entry, dict):
-                            continue
-                        en_name = entry.get('name', '')
-                        en_tmdb = entry.get('tmdb_title', '')
-                        if (
-                            en_name.lower().strip() == name_clean
-                            or (en_tmdb and en_tmdb.lower().strip() == name_clean)
-                            or _normalize_key(en_name) == norm_name
-                            or (en_tmdb and _normalize_key(en_tmdb) == norm_name)
-                        ):
-                            # extract backdrop fids
-                            b_urls = entry.get('all_backdrop_urls') or ([entry.get('backdrop_url')] if entry.get('backdrop_url') else [])
-                            b_fids = []
-                            for u in b_urls:
-                                if u:
-                                    m = re.search(r'/api/gdrive-poster/([a-zA-Z0-9_-]+)', str(u))
-                                    if m:
-                                        b_fids.append(m.group(1))
-                            if entry.get('backdrop_file_id') and entry.get('backdrop_file_id') not in b_fids:
-                                b_fids.append(entry.get('backdrop_file_id'))
-
-                            # extract poster fids
-                            p_urls = entry.get('all_poster_urls') or ([entry.get('poster_url')] if entry.get('poster_url') else [])
-                            p_fids = []
-                            for u in p_urls:
-                                if u:
-                                    m = re.search(r'/api/gdrive-poster/([a-zA-Z0-9_-]+)', str(u))
-                                    if m:
-                                        p_fids.append(m.group(1))
-                            if entry.get('poster_file_id') and entry.get('poster_file_id') not in p_fids:
-                                p_fids.append(entry.get('poster_file_id'))
-
-                            return m_type, str(entry.get('id') or ''), b_fids, p_fids
-        except Exception:
-            pass
+    index = _get_list_json_media_index()
+    info = index.get(str(name).lower().strip()) or index.get(_normalize_key(name))
+    if info:
+        return info
     return None, None, [], []
+
+
+def _history_series_match_clause(ph, series_path, series_title):
+    """Match all rows for one series/movie, including hidden/completed progress."""
+    match_parts = []
+    match_params = []
+    seen = set()
+    for value in (series_path, series_title):
+        text = str(value or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        match_parts.extend((
+            f'series_path = {ph}',
+            f'series_title = {ph}',
+            f'media_path = {ph}',
+            f'media_path LIKE {ph}',
+        ))
+        match_params.extend((text, text, text, text + '/%'))
+    if not match_parts:
+        return '', []
+    return ' AND (' + ' OR '.join(match_parts) + ')', match_params
 
 
 def _get_series_id_from_list_json(name):
@@ -3458,15 +3593,11 @@ def _get_series_id_from_list_json(name):
 
 def _enrich_history_item_still(item):
     """Ensure history item has valid still_path:
-       - For Movies: strictly uses the Movie's Backdrop (or Poster fallback).
+       - For Movies: strictly uses the Movie's Backdrop.
        - For Series: uses the Episode Still path (or Series Backdrop fallback)."""
     if not item or not isinstance(item, dict):
         return
     try:
-        current_still = item.get('still_path')
-        if current_still and str(current_still).startswith('/api/gdrive-poster/'):
-            return
-
         series_title = (item.get('series_title') or item.get('series_path') or '').strip()
         media_title = (item.get('media_title') or '').strip()
         media_path = str(item.get('media_path') or '').strip()
@@ -3480,7 +3611,7 @@ def _enrich_history_item_still(item):
             is_movie = True
 
         lookup_title = media_title if is_movie else (series_title or media_title)
-        list_type, list_id, list_b_fids, list_p_fids = _get_media_info_from_list_json(lookup_title)
+        list_type, list_id, list_b_fids, _ = _get_media_info_from_list_json(lookup_title)
         if list_type:
             is_movie = (list_type == 'movie')
             item_id = list_id
@@ -3489,7 +3620,6 @@ def _enrich_history_item_still(item):
 
         gmaps = fetch_gdrive_poster_map()
         episode_still_map = gmaps[2] if len(gmaps) > 2 and isinstance(gmaps[2], dict) else {}
-        poster_map = gmaps[0] if len(gmaps) > 0 and isinstance(gmaps[0], dict) else {}
         backdrop_map = gmaps[1] if len(gmaps) > 1 and isinstance(gmaps[1], dict) else {}
 
         # ==========================================
@@ -3515,18 +3645,6 @@ def _enrich_history_item_still(item):
             if list_b_fids:
                 item['still_path'] = f"/api/gdrive-poster/{list_b_fids[0]}"
                 item['still_url'] = f"/api/gdrive-poster/{list_b_fids[0]}"
-                return
-            # c. Poster fallback untuk film
-            if item_id:
-                p_ids = poster_map.get(f"movies_{item_id}") or poster_map.get(str(item_id))
-                if p_ids:
-                    fid = p_ids[0] if isinstance(p_ids, list) else p_ids
-                    item['still_path'] = f"/api/gdrive-poster/{fid}"
-                    item['still_url'] = f"/api/gdrive-poster/{fid}"
-                    return
-            if list_p_fids:
-                item['still_path'] = f"/api/gdrive-poster/{list_p_fids[0]}"
-                item['still_url'] = f"/api/gdrive-poster/{list_p_fids[0]}"
                 return
             return
 
@@ -3570,21 +3688,6 @@ def _enrich_history_item_still(item):
             item['still_url'] = f"/api/gdrive-poster/{list_b_fids[0]}"
             return
 
-        # c. Fallback: Poster serial
-        if item_id:
-            p_ids = poster_map.get(f"series_{item_id}") or poster_map.get(str(item_id))
-            if p_ids:
-                fid = p_ids[0] if isinstance(p_ids, list) else p_ids
-                item['still_path'] = f"/api/gdrive-poster/{fid}"
-                item['still_url'] = f"/api/gdrive-poster/{fid}"
-                return
-        if lookup_title:
-            p_ids = poster_map.get(lookup_title.lower().strip()) or poster_map.get(_normalize_key(lookup_title))
-            if p_ids:
-                fid = p_ids[0] if isinstance(p_ids, list) else p_ids
-                item['still_path'] = f"/api/gdrive-poster/{fid}"
-                item['still_url'] = f"/api/gdrive-poster/{fid}"
-                return
     except Exception as e:
         print(f"[HISTORY-STILL] Enrich history still failed: {e}", flush=True)
 
@@ -3594,11 +3697,24 @@ def _enrich_history_item_still(item):
 def get_history(current_user, profile_id):
     active_only = request.args.get('active_only', 'false').lower() == 'true'
     include_hidden = request.args.get('include_hidden', 'false').lower() == 'true'
+    enrich_stills_requested = request.args.get('enrich_stills', 'false').lower() == 'true'
+    series_path = (request.args.get('series_path') or '').strip()
+    series_title = (request.args.get('series_title') or '').strip()
+    scoped_to_series = bool(series_path or series_title)
+    if scoped_to_series:
+        # Detail pages need completed + dashboard-hidden progress after an app wipe.
+        include_hidden = True
+        active_only = False
     try:
         limit = int(request.args.get('limit', '0') or 0)
     except (TypeError, ValueError):
         limit = 0
-    limit = max(0, min(limit, 100))
+    limit = max(0, min(limit, 500))
+    try:
+        offset = int(request.args.get('offset', '0') or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
     conn, db_type = get_db_connection()
     ph = '%s' if db_type == 'postgres' else '?'
 
@@ -3606,20 +3722,18 @@ def get_history(current_user, profile_id):
     username = str(current_user.get('username') or '').strip()
     profile_id_str = str(profile_id or '').strip()
 
-    # Search for this profile AND any web/unassigned legacy history for this user
-    profile_candidates = [profile_id_str] if profile_id_str else []
-    for candidate in (str(user_id), username, 'default', ''):
-        if candidate and candidate not in profile_candidates:
-            profile_candidates.append(candidate)
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor) if db_type == 'postgres' else conn.cursor()
+        _migrate_legacy_history(conn, cur, ph, db_type, user_id, profile_id_str, username)
+    except Exception:
+        pass
 
-    if profile_candidates:
-        cand_ph = ', '.join([ph] * len(profile_candidates))
-        where = f'user_id = {ph} AND (profile_id IN ({cand_ph}) OR profile_id IS NULL)'
-        params = [user_id, *profile_candidates]
-    else:
-        where = f'user_id = {ph}'
-        params = [user_id]
-
+    where = f'user_id = {ph} AND profile_id = {ph}'
+    params = [user_id, profile_id_str]
+    series_clause, series_params = _history_series_match_clause(ph, series_path, series_title)
+    if series_clause:
+        where += series_clause
+        params.extend(series_params)
     if not include_hidden:
         where += ' AND (is_hidden = 0 OR is_hidden IS NULL)'
     if active_only:
@@ -3632,6 +3746,9 @@ def get_history(current_user, profile_id):
     if fetch_limit:
         sql += f' LIMIT {ph}'
         params.append(fetch_limit)
+    if offset:
+        sql += f' OFFSET {ph}'
+        params.append(offset)
     try:
         if db_type == 'postgres':
             cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -3641,26 +3758,18 @@ def get_history(current_user, profile_id):
             cur = conn.cursor()
             res = [dict(r) for r in conn.execute(sql, tuple(params)).fetchall()]
 
-        # Auto-migrasikan riwayat web/unassigned ke profil aktif saat ini
-        if res and profile_id_str:
-            other_candidates = [c for c in profile_candidates if c != profile_id_str]
-            if other_candidates:
-                try:
-                    mig_ph = ', '.join([ph] * len(other_candidates))
-                    migrate_sql = f'''UPDATE watch_history SET profile_id = {ph}
-                                     WHERE user_id = {ph} AND (profile_id IN ({mig_ph}) OR profile_id IS NULL)'''
-                    if db_type == 'postgres':
-                        cur.execute(migrate_sql, (profile_id_str, user_id, *other_candidates))
-                    else:
-                        conn.execute(migrate_sql, (profile_id_str, user_id, *other_candidates))
-                    conn.commit()
-                except Exception as mig_err:
-                    pass
-
+        # Still enrichment is only needed for dashboard Continue Watching cards.
+        # Bulk/hidden/series restores exist for playback progress; skipping this
+        # keeps /api/history/get from stalling /api/videos.
+        enrich_stills = (active_only or enrich_stills_requested) and not scoped_to_series
         for item in res:
             item['media_path'] = _normalize_history_media_path(item.get('media_path'))
             item['media_title'] = _history_display_media_title(item)
-            _enrich_history_item_still(item)
+            duration_ms = max(0, int(item.get('duration_ms') or 0))
+            position_ms = max(0, int(item.get('position_ms') or 0))
+            is_active = duration_ms <= 0 or position_ms < duration_ms * WATCH_HISTORY_ACTIVE_CUTOFF
+            if enrich_stills and not int(item.get('is_hidden') or 0) and is_active:
+                _enrich_history_item_still(item)
 
         if active_only:
             res = _collapse_history_by_series(res)
@@ -3699,6 +3808,11 @@ def save_history(current_user):
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
+        profile_id_str = str(data.get('profile_id') or '').strip()
+        username = str(current_user.get('username') or '').strip()
+        _migrate_legacy_history(
+            conn, cur, ph, db_type, current_user['id'], profile_id_str, username,
+        )
         lookup_paths = _history_lookup_paths(raw_media_path)
         path_placeholders = ', '.join([ph] * len(lookup_paths))
         cur.execute(
@@ -3838,6 +3952,11 @@ def hide_history(current_user):
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
+        profile_id_str = str(data.get('profile_id') or '').strip()
+        username = str(current_user.get('username') or '').strip()
+        _migrate_legacy_history(
+            conn, cur, ph, db_type, current_user['id'], profile_id_str, username,
+        )
         path_placeholders = ', '.join([ph] * len(lookup_paths))
         query = f"""
             UPDATE watch_history
@@ -3851,7 +3970,7 @@ def hide_history(current_user):
             ),
         )
         conn.commit()
-        return orjson_jsonify({"message": "Hidden"})
+        return orjson_jsonify({"message": "Hidden", "updated": cur.rowcount if hasattr(cur, 'rowcount') else None})
     except Exception as e:
         return orjson_jsonify({"message": "Error hiding", "error": str(e)}, 500)
     finally: release_db_connection(conn, db_type)
@@ -3867,6 +3986,11 @@ def delete_history(current_user):
     ph = '%s' if db_type == 'postgres' else '?'
     try:
         cur = conn.cursor()
+        profile_id_str = str(data.get('profile_id') or '').strip()
+        username = str(current_user.get('username') or '').strip()
+        _migrate_legacy_history(
+            conn, cur, ph, db_type, current_user['id'], profile_id_str, username,
+        )
         path_placeholders = ', '.join([ph] * len(lookup_paths))
         query = f"""
             DELETE FROM watch_history
@@ -3878,8 +4002,9 @@ def delete_history(current_user):
                 current_user['id'], data['profile_id'], *lookup_paths,
             ),
         )
+        deleted_count = cur.rowcount if hasattr(cur, 'rowcount') else None
         conn.commit()
-        return orjson_jsonify({"message": "Deleted"})
+        return orjson_jsonify({"message": "Deleted", "deleted": deleted_count})
     except Exception as e:
         return orjson_jsonify({"message": "Error deleting", "error": str(e)}, 500)
     finally: release_db_connection(conn, db_type)
@@ -4246,12 +4371,14 @@ def _bg_fetch_gdrive_poster_map():
                 if not p_token:
                     break
 
-            # 2. Fetch all non-folder files (posters + backdrops + episode stills)
+            # 2. Fetch image files only (posters + backdrops + episode stills).
+            # A non-folder query also returned JSON/DB/HTML files, which later
+            # reached Pillow and were incorrectly served as JPEG.
             image_files = []
             p_token = None
             while True:
                 res = svc.files().list(
-                    q="mimeType != 'application/vnd.google-apps.folder' and trashed = false",
+                    q="mimeType contains 'image/' and trashed = false",
                     pageSize=1000,
                     fields="nextPageToken, files(id, name, parents)",
                     supportsAllDrives=True,
@@ -4364,12 +4491,30 @@ def _bg_fetch_gdrive_poster_map():
                 _poster_map_cache = res_tuple
                 _poster_map_ts = now
             try:
-                disk_cache.set("gdrive_poster_map_all_v4", res_tuple)
-                disk_cache.set("gdrive_poster_map_all_v4__ts", now)
+                disk_cache.set("gdrive_poster_map_all_v5", res_tuple)
+                disk_cache.set("gdrive_poster_map_all_v5__ts", now)
             except Exception:
                 pass
             print(f"[POSTER-GDRIVE] Loaded {len(poster_map)} posters, {len(backdrop_map)} backdrops, and {len(episode_still_map)} episode stills from GDrive", flush=True)
             _invalidate_response_cache('resp_folders', FOLDERS_MERGED_RESPONSE_CACHE_KEY)
+            _invalidate_response_cache_prefix('resp_videos_')
+
+            # Video lists may have been served while the still map was warming.
+            # Let only entries that are still missing artwork resolve again.
+            with _mem_lock:
+                video_cache_entries = [
+                    (key, copy.deepcopy(value))
+                    for key, value in _mem_cache.items()
+                    if isinstance(key, str) and key.startswith('videos_') and isinstance(value, dict)
+                ]
+            for cache_key, payload in video_cache_entries:
+                changed = False
+                for video in payload.get('videos') or []:
+                    if isinstance(video, dict) and not video.get('still_path'):
+                        changed = video.pop('still_metadata_resolved', None) is not None or changed
+                if changed:
+                    mem_set(cache_key, payload)
+            _invalidate_response_cache_prefix('resp_videos_')
             return  # Success, exit retry loop
         except Exception as e:
             print(f"[POSTER-GDRIVE] fetch_gdrive_poster_map attempt {_attempt + 1} failed: {e}", flush=True)
@@ -4467,23 +4612,29 @@ def _load_base_poster_map_from_list_json():
 def fetch_gdrive_poster_map(force=False, sync=False):
     """List actual image files from dedicated GDrive poster account and map to poster_map, backdrop_map & episode_still_map."""
     global _poster_map_cache, _poster_map_ts, _poster_map_is_fetching
-    base_maps = _load_base_poster_map_from_list_json()
-    if not GDRIVE_POSTER_FOLDER_ID or not GDRIVE_POSTER_TOKEN_B64:
-        return base_maps
     now = time.time()
+    stale_maps = None
     with _poster_map_lock:
-        if not force and _poster_map_cache and _poster_map_cache[0] and (now - _poster_map_ts) < _POSTER_MAP_TTL:
-            return _poster_map_cache
+        has_ram_maps = _poster_map_cache and any(_poster_map_cache)
+        if not force and has_ram_maps:
+            if (now - _poster_map_ts) < _POSTER_MAP_TTL:
+                return _poster_map_cache
+            stale_maps = _poster_map_cache
+
+    if not GDRIVE_POSTER_FOLDER_ID or not GDRIVE_POSTER_TOKEN_B64:
+        return stale_maps or _load_base_poster_map_from_list_json()
 
     if not force:
         try:
-            cached_disk = disk_cache.get("gdrive_poster_map_all_v4")
-            ts_disk = disk_cache.get("gdrive_poster_map_all_v4__ts")
-            if cached_disk and ts_disk and (now - ts_disk) < _POSTER_MAP_TTL:
+            cached_disk = disk_cache.get("gdrive_poster_map_all_v5")
+            ts_disk = disk_cache.get("gdrive_poster_map_all_v5__ts")
+            if cached_disk and any(cached_disk):
                 with _poster_map_lock:
                     _poster_map_cache = cached_disk
-                    _poster_map_ts = ts_disk
-                return _poster_map_cache
+                    _poster_map_ts = ts_disk or 0
+                stale_maps = cached_disk
+                if ts_disk and (now - ts_disk) < _POSTER_MAP_TTL:
+                    return cached_disk
         except Exception:
             pass
 
@@ -4495,7 +4646,7 @@ def fetch_gdrive_poster_map(force=False, sync=False):
         else:
             threading.Thread(target=_bg_fetch_gdrive_poster_map, daemon=True).start()
 
-    return _poster_map_cache if (_poster_map_cache and _poster_map_cache[0]) else base_maps
+    return stale_maps or _load_base_poster_map_from_list_json()
 
 def _lookup_episode_still_fid(episode_still_map, series_id, series_name, tmdb_title, season, episode):
     """Find matching GDrive file ID for a series episode."""
@@ -4659,6 +4810,8 @@ def _merge_episode_metadata_into_videos(videos, catalog_item=None, folder_name=N
     """Enrich each video item in /api/videos with title (episode title), description/overview, and air_date/air_on."""
     if not videos:
         return videos
+    if all(video.get('episode_metadata_resolved') for video in videos if isinstance(video, dict)):
+        return videos
     try:
         t_id = None
         media_type = 'tv'
@@ -4715,6 +4868,7 @@ def _merge_episode_metadata_into_videos(videos, catalog_item=None, folder_name=N
                 if not video.get('description'):
                     video['description'] = fallback_overview
                     video['overview'] = fallback_overview
+                video['episode_metadata_resolved'] = True
             return videos
 
         # For TV series, resolve distinct seasons in the video list
@@ -4729,8 +4883,16 @@ def _merge_episode_metadata_into_videos(videos, catalog_item=None, folder_name=N
 
         season_maps = {}
         if t_id:
-            for s in seasons_present:
-                season_maps[s] = _get_tmdb_season_episodes_map(t_id, s)
+            futures = {
+                _tmdb_meta_executor.submit(_get_tmdb_season_episodes_map, t_id, season): season
+                for season in seasons_present
+            }
+            for future in as_completed(futures):
+                season = futures[future]
+                try:
+                    season_maps[season] = future.result()
+                except Exception:
+                    season_maps[season] = {}
 
         for video in videos:
             if not isinstance(video, dict):
@@ -4768,27 +4930,28 @@ def _merge_episode_metadata_into_videos(videos, catalog_item=None, folder_name=N
                 if ep_air:
                     video['air_date'] = ep_air
                     video['air_on'] = ep_air
-                if ep_info.get('still_path') and not video.get('still_path'):
-                    still_url = f"/api/tmdb-image/w342{ep_info['still_path']}"
-                    video['still_path'] = still_url
-                    video['still_url'] = still_url
             else:
                 if not video.get('title'):
                     video['title'] = f"Episode {episode}" if episode is not None else video.get('name')
                 if not video.get('description'):
                     video['description'] = fallback_overview
                     video['overview'] = fallback_overview
+            video['episode_metadata_resolved'] = True
 
     except Exception as e:
         print(f"[EPISODE-META] Enrich episode metadata failed: {e}", flush=True)
     return videos
 
-def _merge_episode_stills_into_videos(videos, catalog_item=None, folder_name=None, resolved_name=None):
+def _merge_episode_stills_into_videos(videos, catalog_item=None, folder_name=None, resolved_name=None, enrich_metadata=True):
     """Attach still_path and still_url from GDrive episode still map to each video, and enrich with TMDB metadata."""
     if not videos:
         return videos
+    videos_needing_stills = [
+        video for video in videos
+        if isinstance(video, dict) and not video.get('still_metadata_resolved')
+    ]
     try:
-        gmaps = fetch_gdrive_poster_map()
+        gmaps = fetch_gdrive_poster_map() if videos_needing_stills else ()
         episode_still_map = gmaps[2] if len(gmaps) > 2 and isinstance(gmaps[2], dict) else {}
         if episode_still_map:
             series_id = None
@@ -4805,9 +4968,7 @@ def _merge_episode_stills_into_videos(videos, catalog_item=None, folder_name=Non
             if not series_id and series_name:
                 series_id = _get_series_id_from_list_json(series_name)
 
-            for video in videos:
-                if not isinstance(video, dict):
-                    continue
+            for video in videos_needing_stills:
                 season = video.get('season') or 1
                 episode = video.get('episode')
                 if episode is None:
@@ -4824,11 +4985,12 @@ def _merge_episode_stills_into_videos(videos, catalog_item=None, folder_name=Non
                         video['still_path'] = still_url
                         video['still_url'] = still_url
                         video['still_file_id'] = fid
+                video['still_metadata_resolved'] = True
     except Exception as e:
         print(f"[EPISODE-STILL] Merge stills failed: {e}", flush=True)
 
-    # Enrich with episode title & description from TMDB
-    _merge_episode_metadata_into_videos(videos, catalog_item, folder_name, resolved_name)
+    if enrich_metadata:
+        _merge_episode_metadata_into_videos(videos, catalog_item, folder_name, resolved_name)
     return videos
 
 # === CACHE HELPERS (diskcache-based, HuggingFace Optimized) ===
@@ -5068,6 +5230,47 @@ def _normalize_text(text):
 def _normalize_search_string(text):
     return ' '.join(_normalize_text(text or ''))
 
+def _search_item_aliases(item):
+    """Return normalized title aliases without blending their word boundaries."""
+    aliases = []
+    for field in ('tmdb_title', 'tmdb_query', 'title', 'name', 'folder_name'):
+        alias = _normalize_search_string(item.get(field, ''))
+        if alias and alias not in aliases:
+            aliases.append(alias)
+    return aliases
+
+def _search_relevance_score(item, normalized_query):
+    """Rank strict title matches and reject incidental inside-word matches."""
+    query_words = normalized_query.split()
+    if not query_words:
+        return 0
+
+    best_score = 0
+    for alias in _search_item_aliases(item):
+        alias_words = alias.split()
+        if alias == normalized_query:
+            best_score = max(best_score, 1000)
+            continue
+        if alias.startswith(normalized_query + ' '):
+            best_score = max(best_score, 900)
+            continue
+        if any(
+            alias_words[start:start + len(query_words)] == query_words
+            for start in range(len(alias_words) - len(query_words) + 1)
+        ):
+            best_score = max(best_score, 800)
+            continue
+        if all(word in alias_words for word in query_words):
+            coverage_bonus = round((len(query_words) / len(alias_words)) * 50)
+            best_score = max(best_score, 700 + coverage_bonus)
+            continue
+        if (
+            all(len(word) >= 2 for word in query_words)
+            and all(any(alias_word.startswith(word) for alias_word in alias_words) for word in query_words)
+        ):
+            best_score = max(best_score, 550)
+    return best_score
+
 def build_search_index():
     """Build inverted search index from folders data in RAM or Disk Cache.
     Called during warmup and after each BG worker refresh."""
@@ -5096,7 +5299,8 @@ def build_search_index():
                 'name': name,
                 'folder_name': name,
                 'type': item.get('type', media_type.rstrip('s')),
-                'source': item.get('source', '')
+                'source': item.get('source', ''),
+                'tmdb_query': item.get('tmdb_query', ''),
             }
             # Enrich with TMDB data from content releases if available
             rel = tmdb_by_folder.get(name.lower())
@@ -5105,11 +5309,10 @@ def build_search_index():
                 if rel.get('tmdb_poster_path'): entry['tmdb_poster_path'] = rel['tmdb_poster_path']
                 if rel.get('tmdb_rating'): entry['tmdb_rating'] = rel['tmdb_rating']
                 if rel.get('tmdb_overview'): entry['tmdb_overview'] = rel['tmdb_overview']
+                if rel.get('tmdb_query'): entry['tmdb_query'] = rel['tmdb_query']
             
             # Index folder name plus visible TMDB title, so search follows what users see.
-            searchable_text = name
-            if entry.get('tmdb_title'):
-                searchable_text = f"{searchable_text} {entry['tmdb_title']}"
+            searchable_text = ' '.join(_search_item_aliases(entry))
 
             words = _normalize_text(searchable_text)
             indexed_words = set()
@@ -5126,7 +5329,7 @@ def build_search_index():
         _search_index.clear()
         _search_index.update(new_index)
         _search_index_built = True
-    _invalidate_response_cache_prefix('resp_search_v2_')
+    _invalidate_response_cache_prefix('resp_search_v3_')
     
 
 
@@ -5605,9 +5808,18 @@ def _bg_refresh_one(service_ignored, args):
             v_res = fetch_gdrive_videos(svc, target)
             if v_res:
                 if v_res.get("videos"): v_res["videos"].sort(key=lambda x: (x.get("season", 999), x.get("episode", 999), x["name"]))
+                catalog_item = _catalog_item_for_folder(target)
+                _merge_episode_stills_into_videos(
+                    v_res.get("videos") or [],
+                    catalog_item,
+                    target,
+                    enrich_metadata=False,
+                )
+                if catalog_item:
+                    v_res['catalog_item'] = catalog_item
                 mem_set(cache_key, v_res)
                 # Invalidate pre-serialized response cache
-                _response_cache.pop(f'resp_{cache_key}', None)
+                _invalidate_response_cache(f'resp_{cache_key}_core', f'resp_{cache_key}_full')
                 return True
         except: pass
         finally: release_lock(cache_key)
@@ -5636,10 +5848,9 @@ def background_cache_worker():
                         folders_data = fetch_gdrive_categorized_content(service)
                         if folders_data:
                             series_dedup, movies_dedup = _deduplicate_all_content(folders_data.get("series", []), folders_data.get("movies", []))
-                            series_dedup.sort(key=lambda x: x['name'])
-                            movies_dedup.sort(key=lambda x: x['name'])
                             folders_data["series"] = series_dedup
                             folders_data["movies"] = movies_dedup
+                            _assign_ids_to_folders(folders_data)
                             for category in folders_data:
                                 for item in folders_data[category]:
                                     k = item.get('source') if item.get('source','').startswith(('gdrive/', 'gdrive_folder/', 'telegram/')) else item['name']
@@ -5746,39 +5957,45 @@ def get_folders(current_user):
         if cached_bytes:
             return add_no_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200))
 
-        # RAM first; first request after invalidation merges overrides, later requests
-        # reuse pre-serialized merged bytes.
-        cached = mem_get(key)
-        if cached:
-            payload = copy.deepcopy(cached)
-            _assign_ids_to_folders(payload)
-            _merge_content_release_tmdb_into_folders(payload)
-            _merge_tmdb_overrides_into_folders(payload)
-            _merge_tmdb_ratings_into_folders(payload)
-            _merge_gdrive_posters_into_folders(payload)
-            _merge_local_posters_into_folders(payload)
-            _merge_backdrops_into_folders(payload)
-            return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
+        with _folders_build_lock:
+            cached_bytes = _response_cache.get(FOLDERS_MERGED_RESPONSE_CACHE_KEY)
+            if cached_bytes:
+                return add_no_cache_headers(app.response_class(cached_bytes, mimetype='application/json', status=200))
 
-        # [OFFLINE-FIRST] Cek list.json lokal jika ada dan berisi item
-        list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
-        if os.path.exists(list_path):
-            try:
-                with open(list_path, 'r', encoding='utf-8') as f:
-                    local_list = json.load(f)
-                if local_list.get('series') or local_list.get('movies'):
-                    payload = copy.deepcopy(local_list)
-                    _assign_ids_to_folders(payload)
-                    _merge_content_release_tmdb_into_folders(payload)
-                    _merge_tmdb_overrides_into_folders(payload)
-                    _merge_tmdb_ratings_into_folders(payload)
-                    _merge_gdrive_posters_into_folders(payload, force=False)
-                    _merge_local_posters_into_folders(payload)
-                    _merge_backdrops_into_folders(payload)
-                    mem_set(key, local_list)
-                    return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
-            except Exception as e:
-                print(f"[CATALOG-OFFLINE] Fallback ke GDrive karena list.json error: {e}", flush=True)
+            # RAM first; first request after invalidation merges overrides, later requests
+            # reuse pre-serialized merged bytes.
+            cached = mem_get(key)
+            if cached:
+                payload = copy.deepcopy(cached)
+                _assign_ids_to_folders(payload)
+                _merge_content_release_tmdb_into_folders(payload)
+                _merge_tmdb_overrides_into_folders(payload)
+                _merge_tmdb_ratings_into_folders(payload)
+                _merge_gdrive_posters_into_folders(payload)
+                _merge_local_posters_into_folders(payload)
+                _merge_backdrops_into_folders(payload)
+                return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
+
+            # [OFFLINE-FIRST] Cek list.json lokal jika ada dan berisi item
+            list_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'list.json')
+            if os.path.exists(list_path):
+                try:
+                    with open(list_path, 'r', encoding='utf-8') as f:
+                        local_list = json.load(f)
+                    if local_list.get('series') or local_list.get('movies'):
+                        payload = copy.deepcopy(local_list)
+                        _assign_ids_to_folders(payload)
+                        _merge_content_release_tmdb_into_folders(payload)
+                        _merge_tmdb_overrides_into_folders(payload)
+                        _merge_tmdb_ratings_into_folders(payload)
+                        _merge_gdrive_posters_into_folders(payload, force=False)
+                        _merge_local_posters_into_folders(payload)
+                        _merge_backdrops_into_folders(payload)
+                        _assign_ids_to_folders(local_list)
+                        mem_set(key, local_list)
+                        return add_no_cache_headers(orjson_jsonify(payload, cache_key=FOLDERS_MERGED_RESPONSE_CACHE_KEY))
+                except Exception as e:
+                    print(f"[CATALOG-OFFLINE] Fallback ke GDrive karena list.json error: {e}", flush=True)
 
     # Fallback / Live Scan ke Google Drive API
     res = fetch_gdrive_categorized_content(get_gdrive_service())
@@ -5821,8 +6038,6 @@ def get_folders(current_user):
 
         # Deduplicate again after merge (by name across both categories)
         series_dedup, movies_dedup = _deduplicate_all_content(all_c["series"], all_c["movies"])
-        series_dedup.sort(key=lambda x: x['name'])
-        movies_dedup.sort(key=lambda x: x['name'])
         all_c["series"] = series_dedup
         all_c["movies"] = movies_dedup
 
@@ -5908,7 +6123,9 @@ def get_videos_in_folder(current_user, folder_name):
             return orjson_jsonify({"error": "Telegram handler error"}, 500)
 
     force = request.args.get('refresh', 'false').lower() == 'true'; key = f"videos_{folder_name}"
-    resp_key = f"resp_{key}"
+    enrich_episode_metadata = request.args.get('defer_metadata', 'false').lower() != 'true'
+    resp_key_base = f"resp_{key}"
+    resp_key = f"{resp_key_base}_{'full' if enrich_episode_metadata else 'core'}"
     if not force:
         # RAM first → pre-serialized response (~0.01ms)
         cached = mem_get(key)
@@ -5918,8 +6135,8 @@ def get_videos_in_folder(current_user, folder_name):
                 if not cached.get('catalog_item'):
                     cached = copy.deepcopy(cached)
                     cached['catalog_item'] = _catalog_item_for_folder(folder_name)
-                    _response_cache.pop(resp_key, None)
-                _merge_episode_stills_into_videos(cached.get('videos') or [], cached.get('catalog_item'), folder_name)
+                    _invalidate_response_cache(f"{resp_key_base}_core", f"{resp_key_base}_full")
+                _merge_episode_stills_into_videos(cached.get('videos') or [], cached.get('catalog_item'), folder_name, enrich_metadata=enrich_episode_metadata)
                 return add_cache_headers(orjson_jsonify(cached, cache_key=resp_key), max_age=dur)
             # Stale cache refreshes on this request; fallback below serves stale if GDrive fails.
 
@@ -6000,14 +6217,14 @@ def get_videos_in_folder(current_user, folder_name):
                             
                             result_vids.append({"name": video_base_name, "path": f"gdrive/{video['id']}", "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": video['name']})
                         
-                        _merge_episode_stills_into_videos(result_vids, catalog_item, folder_name, resolved_name)
+                        _merge_episode_stills_into_videos(result_vids, catalog_item, folder_name, resolved_name, enrich_metadata=enrich_episode_metadata)
                         final = {"videos": result_vids, "has_season_folders": False, "catalog_item": catalog_item}
-                        mem_set(key, final); _response_cache.pop(resp_key, None)
+                        mem_set(key, final); _invalidate_response_cache(f"{resp_key_base}_core", f"{resp_key_base}_full")
                         return orjson_jsonify(final, cache_key=resp_key)
                     else:
                         # Folder exists but has no video files
                         final = {"videos": [], "has_season_folders": False, "catalog_item": catalog_item}
-                        mem_set(key, final); _response_cache.pop(resp_key, None)
+                        mem_set(key, final); _invalidate_response_cache(f"{resp_key_base}_core", f"{resp_key_base}_full")
                         return orjson_jsonify(final, cache_key=resp_key)
                 else:
                     # Handle gdrive/ — standalone video file
@@ -6033,17 +6250,17 @@ def get_videos_in_folder(current_user, folder_name):
                             if _is_supported_subtitle(s['name']) and s['name'].lower().startswith(name.lower()):
                                 sub_path = _subtitle_source_path("gdrive", s); break
                     single_vids = [{"name": name, "path": folder_name, "subtitle_path": sub_path, "season": 1, "episode": 1, "source": "Google Drive", "original_name": meta.get('name', 'Unknown')}]
-                    _merge_episode_stills_into_videos(single_vids, catalog_item, folder_name, resolved_name)
+                    _merge_episode_stills_into_videos(single_vids, catalog_item, folder_name, resolved_name, enrich_metadata=enrich_episode_metadata)
                     final = {"videos": single_vids, "has_season_folders": False, "catalog_item": catalog_item}
-                    mem_set(key, final); _response_cache.pop(resp_key, None)
+                    mem_set(key, final); _invalidate_response_cache(f"{resp_key_base}_core", f"{resp_key_base}_full")
                     return orjson_jsonify(final, cache_key=resp_key)
              except Exception as e:
                 print(f"[VIDEOS] Error handling '{folder_name}': {e}", flush=True)
                 return orjson_jsonify({"error": "File not found"}, 404)
         vids.sort(key=lambda x: (x.get("season", 999), x.get("episode", 999), x["name"]))
-        _merge_episode_stills_into_videos(vids, catalog_item, folder_name, resolved_name)
+        _merge_episode_stills_into_videos(vids, catalog_item, folder_name, resolved_name, enrich_metadata=enrich_episode_metadata)
         final = {"videos": vids, "has_season_folders": has_s, "catalog_item": catalog_item}
-        mem_set(key, final); _response_cache.pop(resp_key, None)
+        mem_set(key, final); _invalidate_response_cache(f"{resp_key_base}_core", f"{resp_key_base}_full")
         return add_cache_headers(orjson_jsonify(final, cache_key=resp_key), max_age=_videos_cache_duration(final))
     
     stale = mem_get(key)
@@ -6051,8 +6268,8 @@ def get_videos_in_folder(current_user, folder_name):
         if not stale.get('catalog_item'):
             stale = copy.deepcopy(stale)
             stale['catalog_item'] = _catalog_item_for_folder(folder_name, resolved_name)
-            _response_cache.pop(resp_key, None)
-        _merge_episode_stills_into_videos(stale.get('videos') or [], stale.get('catalog_item'), folder_name, resolved_name)
+            _invalidate_response_cache(f"{resp_key_base}_core", f"{resp_key_base}_full")
+        _merge_episode_stills_into_videos(stale.get('videos') or [], stale.get('catalog_item'), folder_name, resolved_name, enrich_metadata=enrich_episode_metadata)
         return add_cache_headers(orjson_jsonify(stale, cache_key=resp_key), max_age=60)
     return add_no_cache_headers(orjson_jsonify({"error": "API Error"}, 500))
 
@@ -7047,7 +7264,7 @@ def search_content(current_user):
         return orjson_jsonify([])
 
     normalized_query = _normalize_search_string(query)
-    resp_key = "resp_search_v2_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
+    resp_key = "resp_search_v3_" + hashlib.md5(normalized_query.encode("utf-8")).hexdigest()
     cached_bytes = _response_cache.get(resp_key)
     cached_at = _response_cache_ts.get(resp_key, 0)
     if cached_bytes and (time.time() - cached_at) < SEARCH_RESPONSE_CACHE_TTL_SECONDS:
@@ -7062,11 +7279,6 @@ def search_content(current_user):
     results = []
     seen = set()
 
-    def _item_search_text(item):
-        return _normalize_search_string(
-            f"{item.get('name', '')} {item.get('tmdb_title', '')}"
-        )
-    
     # Strategy 1: Inverted index intersection (fast, exact word matching)
     if words:
         result_sets = []
@@ -7081,11 +7293,10 @@ def search_content(current_user):
             
             first_matches = _search_index.get(words[0], [])
             for item in first_matches:
-                item_text = _item_search_text(item)
                 if (
                     item['name'] in common_names and
                     item['name'] not in seen and
-                    all(word in item_text for word in words)
+                    _search_relevance_score(item, normalized_query) > 0
                 ):
                     seen.add(item['name'])
                     results.append(item)
@@ -7103,17 +7314,20 @@ def search_content(current_user):
                     if name in seen:
                         continue
                     rel = tmdb_by_folder.get(name.lower()) or {}
-                    item_text = _normalize_search_string(
-                        f"{name} {rel.get('tmdb_title', '')}"
-                    )
-                    # Match the full normalized query, or every query word for spaced titles.
-                    if query_lower in item_text or all(word in item_text for word in words):
+                    search_candidate = {
+                        **item,
+                        'folder_name': name,
+                        'tmdb_title': rel.get('tmdb_title', ''),
+                        'tmdb_query': rel.get('tmdb_query') or item.get('tmdb_query', ''),
+                    }
+                    if _search_relevance_score(search_candidate, query_lower) > 0:
                         seen.add(name)
                         result = {
                             'name': name,
                             'folder_name': name,
                             'type': item.get('type', media_type.rstrip('s')),
-                            'source': item.get('source', '')
+                            'source': item.get('source', ''),
+                            'tmdb_query': search_candidate.get('tmdb_query', ''),
                         }
                         if rel.get('tmdb_title'): result['tmdb_title'] = rel['tmdb_title']
                         if rel.get('tmdb_poster_path'): result['tmdb_poster_path'] = rel['tmdb_poster_path']
@@ -7125,12 +7339,11 @@ def search_content(current_user):
                                 result['first_air_date'] = rel['release_date']
                         results.append(result)
     
-    # Sort by relevance: exact prefix match first, then alphabetical
+    # Sort every source with the same relevance rules used for filtering.
     query_lower = normalized_query
     results.sort(key=lambda x: (
-        0 if _item_search_text(x).startswith(query_lower) else 1,
-        0 if query_lower in _item_search_text(x) else 1,
-        x['name']
+        -_search_relevance_score(x, query_lower),
+        _normalize_search_string(x.get('tmdb_title') or x.get('name', '')),
     ))
     
     # Final TMDB enrichment for fallback results (Strategy 1 already has it, but it's safe to overwrite/ensure)
@@ -7441,7 +7654,7 @@ def get_all_posters(current_user, media_type, item_id):
         "posters": posters
     })
 
-def optimize_image_bytes(raw_bytes, target_width=None, quality=75, output_format="WEBP"):
+def optimize_image_bytes(raw_bytes, target_width=None, quality=75, output_format="WEBP", log_errors=True):
     """
     Downscale and convert image to WebP (or specified format) using high-speed encoding
     to minimize CPU time and bandwidth while maximizing frontend load speed.
@@ -7485,8 +7698,11 @@ def optimize_image_bytes(raw_bytes, target_width=None, quality=75, output_format
 
             return buf.getvalue(), mimetype
     except Exception as e:
-        print(f"[IMAGE-OPT] Error optimizing image: {e}", flush=True)
-        return raw_bytes, "image/jpeg"
+        if log_errors:
+            print(f"[IMAGE-OPT] Error optimizing image: {e}", flush=True)
+        # Never disguise arbitrary/corrupt bytes as JPEG. Callers can reject
+        # the source or fall back to serving a known local file directly.
+        return None, None
 
 
 def parse_requested_width(default=None, max_limit=2560):
@@ -7543,12 +7759,9 @@ def _fetch_gdrive_raw_poster_bytes(file_id):
     """Direct fast token-based fetch from Google Drive with service fallback."""
     # 1. Fast direct Bearer token request via connection pool
     token_sources = []
-    if GDRIVE_POSTER_TOKEN_B64:
-        token_sources.append(GDRIVE_POSTER_TOKEN_B64)
-    if GDRIVE_TOKEN_B64:
-        token_sources.append(GDRIVE_TOKEN_B64)
-    if GDRIVE_SUBTITLE_TOKEN_B64:
-        token_sources.append(GDRIVE_SUBTITLE_TOKEN_B64)
+    for token_source in (GDRIVE_POSTER_TOKEN_B64, GDRIVE_TOKEN_B64, GDRIVE_SUBTITLE_TOKEN_B64):
+        if token_source and token_source not in token_sources:
+            token_sources.append(token_source)
 
     for b64 in token_sources:
         try:
@@ -7683,8 +7896,18 @@ def serve_gdrive_poster(file_id):
     fmt = "WEBP" if "image/webp" in accept or "*/*" in accept or not accept else "JPEG"
     mimetype = "image/webp" if fmt == "WEBP" else "image/jpeg"
 
+    # Do not repeatedly download known corrupt/non-image Drive objects.
+    invalid_cache_key = f"gdrive_poster_invalid_v1_{file_id}"
+    try:
+        if disk_cache.get(invalid_cache_key):
+            return jsonify({"error": "Invalid poster image"}), 404
+    except Exception:
+        pass
+
     # Fast path: Resized/Optimized cache key
-    cache_key_opt = f"gdrive_poster_opt_{file_id}_w{target_width or 'orig'}_{fmt.lower()}"
+    # v2 ignores legacy cache entries that may contain non-image payloads
+    # previously mislabeled and cached as JPEG.
+    cache_key_opt = f"gdrive_poster_opt_v2_{file_id}_w{target_width or 'orig'}_{fmt.lower()}"
     etag = f'"{hashlib.md5(cache_key_opt.encode()).hexdigest()}"'
 
     if request.headers.get('If-None-Match') == etag:
@@ -7743,7 +7966,13 @@ def serve_gdrive_poster(file_id):
             return jsonify({"error": "Poster not found"}), 404
 
         # Optimize and resize image
-        opt_bytes, out_mime = optimize_image_bytes(raw_img, target_width=target_width, quality=75, output_format=fmt)
+        opt_bytes, out_mime = optimize_image_bytes(
+            raw_img,
+            target_width=target_width,
+            quality=75,
+            output_format=fmt,
+            log_errors=False,
+        )
         if opt_bytes:
             disk_cache.set(cache_key_opt, opt_bytes, expire=86400 * 60)
             _set_img_mem(cache_key_opt, opt_bytes)
@@ -7753,10 +7982,28 @@ def serve_gdrive_poster(file_id):
             resp.headers['X-Image-Cache'] = 'MISS-OPT'
             return resp
 
-        resp = Response(raw_img, mimetype="image/jpeg")
-        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
-        resp.headers['ETag'] = etag
-        return resp
+        # Remove a previously cached API/error payload or corrupt Drive file;
+        # otherwise every request would retry the same invalid bytes for 60 days.
+        try:
+            disk_cache.delete(raw_cache_key)
+        except Exception:
+            pass
+        payload_size = len(raw_img)
+        payload_signature = raw_img[:12].hex()
+        try:
+            disk_cache.set(
+                invalid_cache_key,
+                {"size": payload_size, "signature": payload_signature},
+                expire=86400 * 7,
+            )
+        except Exception:
+            pass
+        print(
+            f"[POSTER-GDRIVE] Skipping invalid image file={file_id} "
+            f"bytes={payload_size} signature={payload_signature}",
+            flush=True,
+        )
+        return jsonify({"error": "Invalid poster image"}), 422
 
 # Frontend Serve
 @app.route("/", defaults={"path": ""})

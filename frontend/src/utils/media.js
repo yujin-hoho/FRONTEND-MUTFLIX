@@ -215,6 +215,36 @@ export function getStillUrl(item) {
   return resolveServerMediaUrl(stillPath, 'w500')
 }
 
+export function getServerStillUrl(item, size = 'w500') {
+  if (!item) return ''
+  const stillPath = [
+    item.still_path,
+    item.still_url,
+    item.still_file_id ? `/api/gdrive-poster/${item.still_file_id}` : '',
+    item.thumbnail_url,
+  ].find(isServerManagedArtworkPath)
+  return resolveServerMediaUrl(stillPath, size)
+}
+
+export function getServerBackdropUrl(item, size = 'w500') {
+  if (!item) return ''
+  const backdropPath = [
+    ...(Array.isArray(item.all_backdrop_urls) ? item.all_backdrop_urls : []),
+    item.backdrop_url,
+    item.backdrop_file_id ? `/api/gdrive-poster/${item.backdrop_file_id}` : '',
+    item.primary_backdrop_url,
+    item.backdrop,
+  ].find(isServerManagedArtworkPath)
+  return resolveServerMediaUrl(backdropPath, size)
+}
+
+function isServerManagedArtworkPath(path) {
+  const value = String(path || '').trim()
+  if (!value || value.includes('/api/tmdb-image/')) return false
+  if (/^https?:/i.test(value)) return value === API_BASE_URL || value.startsWith(`${API_BASE_URL}/`)
+  return /^(?:\/?(?:api\/gdrive-poster|posters|backdrops|storage)\/|[a-zA-Z0-9_-]{20,100}$)/i.test(value)
+}
+
 export function getItemKey(item) {
   if (!item) return 'item-null'
   return `${item.type || item.media_type || 'item'}-${item.source || ''}-${item.folder_name || item.name || getTitle(item)}`
@@ -496,6 +526,16 @@ export function getTmdbImageUrl(path, size = 'w342') {
   return `https://image.tmdb.org/t/p/${size}/${trimmed.replace(/^\//, '')}`
 }
 
+export function getServerTmdbImageUrl(path, size = 'w342') {
+  const value = String(path || '').trim()
+  if (!value) return ''
+
+  const proxiedMatch = value.match(/\/api\/tmdb-image\/(?:original|[wh]\d+)\/(.+)$/i)
+  const imagePath = proxiedMatch ? proxiedMatch[1] : value.replace(/^\//, '')
+  if (!imagePath || /^https?:/i.test(imagePath)) return ''
+  return `${API_BASE_URL}/api/tmdb-image/${size}/${imagePath}`
+}
+
 function getRotationItemKey(item, index) {
   if (!item || typeof item !== 'object') return `${typeof item}:${String(item)}`
   if (item.genre) return `genre:${item.genre}`
@@ -509,4 +549,3 @@ function getRotationItemKey(item, index) {
 function getUnsignedHash(value) {
   return hashString(value) >>> 0
 }
-

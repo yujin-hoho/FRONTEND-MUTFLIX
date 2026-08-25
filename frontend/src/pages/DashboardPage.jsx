@@ -145,7 +145,7 @@ function DashboardPage({
 
         {!catalogData.error && (
           <>
-            <HistoryRow items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onOpenContextMenu={onOpenContextMenu} onPlay={onPlayHistory} />
+            <HistoryRow catalogItems={dashboardView.catalogItems} items={getVisibleHistory(profileData.watchHistory)} onHide={onHideHistory} onOpenContextMenu={onOpenContextMenu} onPlay={onPlayHistory} />
             {[...displayView.curatedRows, ...displayView.catalogRows].map((row, index) => (
               <CatalogRow
                 items={row.items}

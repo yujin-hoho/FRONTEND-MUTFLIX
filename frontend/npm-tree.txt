@@ -1,0 +1,274 @@
+frontend@0.0.0 D:\Project\backup\MUTFLIX\frontend
++-- @eslint/js@10.0.1
+| `-- eslint@10.4.1 deduped
++-- @tailwindcss/vite@4.3.0
+| +-- @tailwindcss/node@4.3.0
+| | +-- @jridgewell/remapping@2.3.5
+| | | +-- @jridgewell/gen-mapping@0.3.13
+| | | | +-- @jridgewell/sourcemap-codec@1.5.5 deduped
+| | | | `-- @jridgewell/trace-mapping@0.3.31 deduped
+| | | `-- @jridgewell/trace-mapping@0.3.31
+| | |   +-- @jridgewell/resolve-uri@3.1.2
+| | |   `-- @jridgewell/sourcemap-codec@1.5.5 deduped
+| | +-- enhanced-resolve@5.22.1
+| | | +-- graceful-fs@4.2.11
+| | | `-- tapable@2.3.3
+| | +-- jiti@2.7.0 deduped
+| | +-- lightningcss@1.32.0 deduped
+| | +-- magic-string@0.30.21
+| | | `-- @jridgewell/sourcemap-codec@1.5.5
+| | +-- source-map-js@1.2.1
+| | `-- tailwindcss@4.3.0 deduped
+| +-- @tailwindcss/oxide@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-android-arm64@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-darwin-arm64@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-darwin-x64@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-freebsd-x64@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-linux-arm-gnueabihf@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-linux-arm64-gnu@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-linux-arm64-musl@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-linux-x64-gnu@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-linux-x64-musl@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-wasm32-wasi@4.3.0
+| | +-- UNMET OPTIONAL DEPENDENCY @tailwindcss/oxide-win32-arm64-msvc@4.3.0
+| | `-- @tailwindcss/oxide-win32-x64-msvc@4.3.0
+| +-- tailwindcss@4.3.0 deduped
+| `-- vite@8.1.5 deduped
++-- @types/react-dom@19.2.3
+| `-- @types/react@19.2.15 deduped
++-- @types/react@19.2.15
+| `-- csstype@3.2.3
++-- @vitejs/plugin-react@6.0.2
+| +-- UNMET OPTIONAL DEPENDENCY @rolldown/plugin-babel@^0.1.7 || ^0.2.0
+| +-- @rolldown/pluginutils@1.0.1
+| +-- UNMET OPTIONAL DEPENDENCY babel-plugin-react-compiler@^1.0.0
+| `-- vite@8.1.5 deduped
++-- eslint-plugin-react-hooks@7.1.1
+| +-- @babel/core@7.29.7
+| | +-- @babel/code-frame@7.29.7
+| | | +-- @babel/helper-validator-identifier@7.29.7
+| | | +-- js-tokens@4.0.0
+| | | `-- picocolors@1.1.1 deduped
+| | +-- @babel/generator@7.29.7
+| | | +-- @babel/parser@7.29.7 deduped
+| | | +-- @babel/types@7.29.7 deduped
+| | | +-- @jridgewell/gen-mapping@0.3.13 deduped
+| | | +-- @jridgewell/trace-mapping@0.3.31 deduped
+| | | `-- jsesc@3.1.0
+| | +-- @babel/helper-compilation-targets@7.29.7
+| | | +-- @babel/compat-data@7.29.7
+| | | +-- @babel/helper-validator-option@7.29.7
+| | | +-- browserslist@4.28.2
+| | | | +-- baseline-browser-mapping@2.10.33
+| | | | +-- caniuse-lite@1.0.30001793
+| | | | +-- electron-to-chromium@1.5.364
+| | | | +-- node-releases@2.0.46
+| | | | `-- update-browserslist-db@1.2.3
+| | | |   +-- browserslist@4.28.2 deduped
+| | | |   +-- escalade@3.2.0
+| | | |   `-- picocolors@1.1.1 deduped
+| | | +-- lru-cache@5.1.1
+| | | | `-- yallist@3.1.1
+| | | `-- semver@6.3.1 deduped
+| | +-- @babel/helper-module-transforms@7.29.7
+| | | +-- @babel/core@7.29.7 deduped
+| | | +-- @babel/helper-module-imports@7.29.7
+| | | | +-- @babel/traverse@7.29.7 deduped
+| | | | `-- @babel/types@7.29.7 deduped
+| | | +-- @babel/helper-validator-identifier@7.29.7 deduped
+| | | `-- @babel/traverse@7.29.7 deduped
+| | +-- @babel/helpers@7.29.7
+| | | +-- @babel/template@7.29.7 deduped
+| | | `-- @babel/types@7.29.7 deduped
+| | +-- @babel/parser@7.29.7 deduped
+| | +-- @babel/template@7.29.7
+| | | +-- @babel/code-frame@7.29.7 deduped
+| | | +-- @babel/parser@7.29.7 deduped
+| | | `-- @babel/types@7.29.7 deduped
+| | +-- @babel/traverse@7.29.7
+| | | +-- @babel/code-frame@7.29.7 deduped
+| | | +-- @babel/generator@7.29.7 deduped
+| | | +-- @babel/helper-globals@7.29.7
+| | | +-- @babel/parser@7.29.7 deduped
+| | | +-- @babel/template@7.29.7 deduped
+| | | +-- @babel/types@7.29.7 deduped
+| | | `-- debug@4.4.3 deduped
+| | +-- @babel/types@7.29.7
+| | | +-- @babel/helper-string-parser@7.29.7
+| | | `-- @babel/helper-validator-identifier@7.29.7 deduped
+| | +-- @jridgewell/remapping@2.3.5 deduped
+| | +-- convert-source-map@2.0.0
+| | +-- debug@4.4.3 deduped
+| | +-- gensync@1.0.0-beta.2
+| | +-- json5@2.2.3
+| | `-- semver@6.3.1
+| +-- @babel/parser@7.29.7
+| | `-- @babel/types@7.29.7 deduped
+| +-- eslint@10.4.1 deduped
+| +-- hermes-parser@0.25.1
+| | `-- hermes-estree@0.25.1
+| +-- zod-validation-error@4.0.2
+| | `-- zod@4.4.3 deduped
+| `-- zod@4.4.3
++-- eslint-plugin-react-refresh@0.5.2
+| `-- eslint@10.4.1 deduped
++-- eslint@10.4.1
+| +-- @eslint-community/eslint-utils@4.9.1
+| | +-- eslint-visitor-keys@3.4.3
+| | `-- eslint@10.4.1 deduped
+| +-- @eslint-community/regexpp@4.12.2
+| +-- @eslint/config-array@0.23.5
+| | +-- @eslint/object-schema@3.0.5
+| | +-- debug@4.4.3 deduped
+| | `-- minimatch@10.2.5 deduped
+| +-- @eslint/config-helpers@0.6.0
+| | `-- @eslint/core@1.2.1 deduped
+| +-- @eslint/core@1.2.1
+| | `-- @types/json-schema@7.0.15
+| +-- @eslint/plugin-kit@0.7.2
+| | +-- @eslint/core@1.2.1 deduped
+| | `-- levn@0.4.1
+| |   +-- prelude-ls@1.2.1 deduped
+| |   `-- type-check@0.4.0 deduped
+| +-- @humanfs/node@0.16.8
+| | +-- @humanfs/core@0.19.2
+| | | `-- @humanfs/types@0.15.0 deduped
+| | +-- @humanfs/types@0.15.0
+| | `-- @humanwhocodes/retry@0.4.3 deduped
+| +-- @humanwhocodes/module-importer@1.0.1
+| +-- @humanwhocodes/retry@0.4.3
+| +-- @types/estree@1.0.9
+| +-- ajv@6.15.0
+| | +-- fast-deep-equal@3.1.3 deduped
+| | +-- fast-json-stable-stringify@2.1.0
+| | +-- json-schema-traverse@0.4.1
+| | `-- uri-js@4.4.1
+| |   `-- punycode@2.3.1
+| +-- cross-spawn@7.0.6
+| | +-- path-key@3.1.1
+| | +-- shebang-command@2.0.0
+| | | `-- shebang-regex@3.0.0
+| | `-- which@2.0.2
+| |   `-- isexe@2.0.0
+| +-- debug@4.4.3
+| | `-- ms@2.1.3
+| +-- escape-string-regexp@4.0.0
+| +-- eslint-scope@9.1.2
+| | +-- @types/esrecurse@4.3.1
+| | +-- @types/estree@1.0.9 deduped
+| | +-- esrecurse@4.3.0
+| | | `-- estraverse@5.3.0 deduped
+| | `-- estraverse@5.3.0
+| +-- eslint-visitor-keys@5.0.1
+| +-- espree@11.2.0
+| | +-- acorn-jsx@5.3.2
+| | | `-- acorn@8.16.0 deduped
+| | +-- acorn@8.16.0
+| | `-- eslint-visitor-keys@5.0.1 deduped
+| +-- esquery@1.7.0
+| | `-- estraverse@5.3.0 deduped
+| +-- esutils@2.0.3
+| +-- fast-deep-equal@3.1.3
+| +-- file-entry-cache@8.0.0
+| | `-- flat-cache@4.0.1
+| |   +-- flatted@3.4.2
+| |   `-- keyv@4.5.4
+| |     `-- json-buffer@3.0.1
+| +-- find-up@5.0.0
+| | +-- locate-path@6.0.0
+| | | `-- p-locate@5.0.0
+| | |   `-- p-limit@3.1.0
+| | |     `-- yocto-queue@0.1.0
+| | `-- path-exists@4.0.0
+| +-- glob-parent@6.0.2
+| | `-- is-glob@4.0.3 deduped
+| +-- ignore@5.3.2
+| +-- imurmurhash@0.1.4
+| +-- is-glob@4.0.3
+| | `-- is-extglob@2.1.1
+| +-- jiti@2.7.0
+| +-- json-stable-stringify-without-jsonify@1.0.1
+| +-- minimatch@10.2.5
+| | `-- brace-expansion@5.0.9
+| |   `-- balanced-match@4.0.4
+| +-- natural-compare@1.4.0
+| `-- optionator@0.9.4
+|   +-- deep-is@0.1.4
+|   +-- fast-levenshtein@2.0.6
+|   +-- levn@0.4.1 deduped
+|   +-- prelude-ls@1.2.1
+|   +-- type-check@0.4.0
+|   | `-- prelude-ls@1.2.1 deduped
+|   `-- word-wrap@1.2.5
++-- globals@17.6.0
++-- hls.js@1.6.16
++-- lucide-react@1.17.0
+| `-- react@19.2.6 deduped
++-- react-dom@19.2.6
+| +-- react@19.2.6 deduped
+| `-- scheduler@0.27.0
++-- react-router-dom@7.18.2
+| +-- react-dom@19.2.6 deduped
+| +-- react-router@7.18.2
+| | +-- cookie@1.1.1
+| | +-- react-dom@19.2.6 deduped
+| | +-- react@19.2.6 deduped
+| | `-- set-cookie-parser@2.7.2
+| `-- react@19.2.6 deduped
++-- react@19.2.6
++-- tailwindcss@4.3.0
+`-- vite@8.1.5
+  +-- UNMET OPTIONAL DEPENDENCY @types/node@^20.19.0 || >=22.12.0
+  +-- UNMET OPTIONAL DEPENDENCY @vitejs/devtools@^0.3.0
+  +-- UNMET OPTIONAL DEPENDENCY esbuild@^0.27.0 || ^0.28.0
+  +-- UNMET OPTIONAL DEPENDENCY fsevents@~2.3.3
+  +-- jiti@2.7.0 deduped
+  +-- UNMET OPTIONAL DEPENDENCY less@^4.0.0
+  +-- lightningcss@1.32.0
+  | +-- detect-libc@2.1.2
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-android-arm64@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-darwin-arm64@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-darwin-x64@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-freebsd-x64@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-linux-arm-gnueabihf@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-linux-arm64-gnu@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-linux-arm64-musl@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-linux-x64-gnu@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-linux-x64-musl@1.32.0
+  | +-- UNMET OPTIONAL DEPENDENCY lightningcss-win32-arm64-msvc@1.32.0
+  | `-- lightningcss-win32-x64-msvc@1.32.0
+  +-- picomatch@4.0.5
+  +-- postcss@8.5.26
+  | +-- nanoid@3.3.18
+  | +-- picocolors@1.1.1
+  | `-- source-map-js@1.2.1 deduped
+  +-- rolldown@1.1.5
+  | +-- @oxc-project/types@0.139.0
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-android-arm64@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-darwin-arm64@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-darwin-x64@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-freebsd-x64@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-arm-gnueabihf@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-arm64-gnu@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-arm64-musl@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-ppc64-gnu@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-s390x-gnu@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-x64-gnu@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-linux-x64-musl@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-openharmony-arm64@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-wasm32-wasi@1.1.5
+  | +-- UNMET OPTIONAL DEPENDENCY @rolldown/binding-win32-arm64-msvc@1.1.5
+  | +-- @rolldown/binding-win32-x64-msvc@1.1.5
+  | `-- @rolldown/pluginutils@1.0.1 deduped
+  +-- UNMET OPTIONAL DEPENDENCY sass-embedded@^1.70.0
+  +-- UNMET OPTIONAL DEPENDENCY sass@^1.70.0
+  +-- UNMET OPTIONAL DEPENDENCY stylus@>=0.54.8
+  +-- UNMET OPTIONAL DEPENDENCY sugarss@^5.0.0
+  +-- UNMET OPTIONAL DEPENDENCY terser@^5.16.0
+  +-- tinyglobby@0.2.17
+  | +-- fdir@6.5.0
+  | | `-- picomatch@4.0.5 deduped
+  | `-- picomatch@4.0.5 deduped
+  +-- UNMET OPTIONAL DEPENDENCY tsx@^4.8.1
+  `-- UNMET OPTIONAL DEPENDENCY yaml@^2.4.2
+

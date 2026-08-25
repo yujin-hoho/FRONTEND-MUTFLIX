@@ -46,8 +46,9 @@ function SearchBox({
     () => mergeSearchResults(
       localPreviewResults,
       serverSearch.query === normalizedQuery ? serverSearch.results : [],
+      deferredQuery,
     ).slice(0, PREVIEW_RESULT_LIMIT),
-    [localPreviewResults, normalizedQuery, serverSearch],
+    [deferredQuery, localPreviewResults, normalizedQuery, serverSearch],
   )
   const shouldShowPreview = showPreview && isFocused && normalizedQuery
   const isServerSearchPending = normalizedQuery.length >= 2

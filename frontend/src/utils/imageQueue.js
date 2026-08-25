@@ -12,6 +12,7 @@
 
 const MAX_CONCURRENT = 8 // Browser per-host limit is ~6-8; match it
 const GDRIVE_PROXY_PATH = '/api/gdrive-poster'
+const IMAGE_LOAD_TIMEOUT_MS = 15000
 
 let activeCount = 0
 const queue = [] // [{src, resolve, reject}]
@@ -20,19 +21,40 @@ function dispatch() {
   while (queue.length > 0 && activeCount < MAX_CONCURRENT) {
     const { src, resolve, reject } = queue.shift()
     activeCount++
-    const img = new Image()
-    img.onload = () => {
+    loadImage(src).then(resolve, reject).finally(() => {
       activeCount--
-      resolve(src)
       dispatch()
+    })
+  }
+}
+
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    let settled = false
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return
+      settled = true
+      img.onload = null
+      img.onerror = null
+      img.src = ''
+      reject(new Error(`Image load timed out: ${src}`))
+    }, IMAGE_LOAD_TIMEOUT_MS)
+
+    img.onload = () => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeoutId)
+      resolve(src)
     }
     img.onerror = () => {
-      activeCount--
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeoutId)
       reject(new Error(`Failed to load image: ${src}`))
-      dispatch()
     }
     img.src = src
-  }
+  })
 }
 
 /**
@@ -46,12 +68,7 @@ export function requestImageLoad(src, { priority = false } = {}) {
   // Non-GDrive images or priority images: load immediately without queuing
   const isGdrive = src.includes(GDRIVE_PROXY_PATH)
   if (!isGdrive || priority) {
-    return new Promise((resolve, reject) => {
-      const img = new Image()
-      img.onload = () => resolve(src)
-      img.onerror = () => reject(new Error(`Failed to load: ${src}`))
-      img.src = src
-    })
+    return loadImage(src)
   }
 
   // GDrive images: queue and dispatch via concurrency limiter

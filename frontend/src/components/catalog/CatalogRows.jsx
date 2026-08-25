@@ -8,10 +8,10 @@ import {
   getPosterFallbackUrl,
   getPosterUrl,
   getRating,
-  getStillUrl,
+  getServerBackdropUrl,
+  getServerStillUrl,
   getTitle,
   getWatchProgress,
-  preloadImage,
 } from '../../utils/media'
 
 export const CatalogRow = memo(function CatalogRow({ emptyMessage, isAdmin = false, items, layout = 'vertical', onOpenCatalogAll, onOpenContextMenu, onOpenDetail, onOpenEdit, ranked = false, rowIndex = 0, title }) {
@@ -100,7 +100,7 @@ const CatalogCard = memo(function CatalogCard({ horizontal = false, isAdmin = fa
   )
 })
 
-export const HistoryRow = memo(function HistoryRow({ items, onHide, onOpenContextMenu, onPlay }) {
+export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, onHide, onOpenContextMenu, onPlay }) {
   if (!items.length) return null
   const visibleItems = items.slice(0, 15)
 
@@ -110,38 +110,74 @@ export const HistoryRow = memo(function HistoryRow({ items, onHide, onOpenContex
         <h2>Continue Watching</h2>
       </div>
       <DraggableScroller className="catalog-scroller history-scroller" variant="history">
-        {visibleItems.map((item) => (
-          <article className="catalog-card history-card" key={item.media_path} onContextMenu={(event) => onOpenContextMenu?.(event, { historyEntry: item })}>
-            <button className="history-play-surface" onClick={() => onPlay(item)} type="button">
-              <div className="history-frame">
-                <LoadableImage alt={item.media_title || item.series_title || 'Continue watching'} fallbackSrc={getPosterFallbackUrl(item)} key={getStillUrl(item)} src={getStillUrl(item)} />
-                <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
-                <span className="history-progress-track">
-                  <span style={{ width: `${getWatchProgress(item)}%` }} />
-                </span>
-              </div>
-              <h3>{getEpisodeHistoryLabel(item)}</h3>
-            </button>
-            {onHide && (
-              <button
-                aria-label="Remove from Continue Watching"
-                className="history-hide-button"
-                onClick={(event) => {
-                  event.stopPropagation()
-                  onHide(item)
-                }}
-                title="Remove from Continue Watching"
-                type="button"
-              >
-                <X size={16} strokeWidth={3} />
+        {visibleItems.map((item, index) => {
+          const stillUrl = getServerStillUrl(item)
+          const catalogItem = findCatalogItemForHistory(item, catalogItems)
+          const fallbackUrl = getServerBackdropUrl(catalogItem || item, 'w500')
+          return (
+            <article className="catalog-card history-card" key={item.media_path} onContextMenu={(event) => onOpenContextMenu?.(event, { historyEntry: item })}>
+              <button className="history-play-surface" onClick={() => onPlay(item)} type="button">
+                <div className="history-frame">
+                  <LoadableImage
+                    alt={item.media_title || item.series_title || 'Continue watching'}
+                    fallbackSrc={fallbackUrl === stillUrl ? '' : fallbackUrl}
+                    fetchPriority={index < 6 ? 'high' : 'auto'}
+                    key={`${stillUrl}-${fallbackUrl}`}
+                    loading={index < 6 ? 'eager' : 'lazy'}
+                    showFallbackWhileLoading
+                    shimmerOnError={false}
+                    src={stillUrl}
+                  />
+                  <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
+                  <span className="history-progress-track">
+                    <span style={{ width: `${getWatchProgress(item)}%` }} />
+                  </span>
+                </div>
+                <h3>{getEpisodeHistoryLabel(item)}</h3>
               </button>
-            )}
-          </article>
-        ))}
+              {onHide && (
+                <button
+                  aria-label="Remove from Continue Watching"
+                  className="history-hide-button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onHide(item)
+                  }}
+                  title="Remove from Continue Watching"
+                  type="button"
+                >
+                  <X size={16} strokeWidth={3} />
+                </button>
+              )}
+            </article>
+          )
+        })}
       </DraggableScroller>
     </section>
   )
 })
+
+function findCatalogItemForHistory(historyItem, catalogItems) {
+  const candidates = [historyItem.series_path, historyItem.series_title, historyItem.media_title, historyItem.source]
+    .map(normalizeHistoryTitle)
+    .filter(Boolean)
+  if (!candidates.length) return null
+
+  return catalogItems.find((item) => {
+    const aliases = [item.folder_name, item.name, getTitle(item), item.source].map(normalizeHistoryTitle)
+    return candidates.some((candidate) => aliases.includes(candidate))
+  }) || null
+}
+
+function normalizeHistoryTitle(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+}
 
 function DraggableScroller({ children, className, variant = '' }) {
   const scrollerRef = useRef(null)
