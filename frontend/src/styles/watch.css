@@ -343,6 +343,22 @@
   margin: 0;
 }
 
+.watch-recovery-status {
+  max-width: min(520px, calc(100vw - 40px));
+  margin: 14px 0 0;
+  color: #e2e8f0;
+  font-size: 0.9rem;
+  font-weight: 650;
+  text-align: center;
+}
+
+.watch-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
 .watch-error button,
 .watch-floating-actions button {
   display: inline-flex;
