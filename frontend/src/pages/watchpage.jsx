@@ -50,6 +50,8 @@ const STREAM_STALL_FALLBACK_DELAY_MS = 10000
 const SEEK_STALL_FALLBACK_DELAY_MS = 16000
 const STREAM_RECOVERY_RETRY_DELAYS_MS = [800, 2200, 5000]
 const STREAM_RECOVERY_STABLE_RESET_MS = 15000
+const SLOW_BUFFERING_STATUS_DELAY_MS = 3500
+const BUFFER_PROGRESS_THRESHOLD_SECONDS = 0.25
 const AUDIO_TRANSCODE_SEEK_DEBOUNCE_MS = 120
 const SUBTITLE_DELAY_LIMIT_SECONDS = 50
 const SUBTITLE_DELAY_STEP_SECONDS = 0.5
@@ -98,6 +100,8 @@ function WatchPage({
   const streamRecoveryAttemptRef = useRef(0)
   const isStreamRecoveryInFlightRef = useRef(false)
   const recoverPlaybackRef = useRef(() => false)
+  const bufferingStatusTimeoutRef = useRef(null)
+  const lastBufferedEndRef = useRef(0)
   const activeVideoPathRef = useRef('')
   const fallbackStreamUrlRef = useRef('')
   const fallbackPositionRef = useRef(null)
@@ -577,8 +581,10 @@ function WatchPage({
   const clearStreamRecoveryTimeouts = useCallback(() => {
     window.clearTimeout(streamRecoveryTimeoutRef.current)
     window.clearTimeout(streamRecoveryStableTimeoutRef.current)
+    window.clearTimeout(bufferingStatusTimeoutRef.current)
     streamRecoveryTimeoutRef.current = null
     streamRecoveryStableTimeoutRef.current = null
+    bufferingStatusTimeoutRef.current = null
   }, [])
 
   const recoverPlayback = useCallback(({ immediate = false, mediaError = null, reason = 'error' } = {}) => {
@@ -604,6 +610,8 @@ function WatchPage({
     const delayMs = immediate ? 0 : STREAM_RECOVERY_RETRY_DELAYS_MS[attempt]
     streamRecoveryAttemptRef.current = attempt + 1
     holdCurrentFrame()
+    window.clearTimeout(bufferingStatusTimeoutRef.current)
+    bufferingStatusTimeoutRef.current = null
     setPlayerError('')
     setIsBuffering(true)
     setRecoveryStatus(navigator.onLine
@@ -642,6 +650,26 @@ function WatchPage({
     window.clearTimeout(streamRecoveryStableTimeoutRef.current)
     streamRecoveryStableTimeoutRef.current = null
     setIsBuffering(true)
+    if (!bufferingStatusTimeoutRef.current) {
+      bufferingStatusTimeoutRef.current = window.setTimeout(() => {
+        bufferingStatusTimeoutRef.current = null
+        setRecoveryStatus((currentStatus) => currentStatus
+          || 'Buffer belum cukup. Jika internet lambat, pemutaran akan mulai setelah beberapa saat…')
+      }, SLOW_BUFFERING_STATUS_DELAY_MS)
+    }
+    armStreamStallFallback(isSeekingRef.current ? SEEK_STALL_FALLBACK_DELAY_MS : STREAM_STALL_FALLBACK_DELAY_MS)
+  }, [armStreamStallFallback])
+
+  const handleBufferProgress = useCallback(() => {
+    const player = playerRef.current
+    if (!player) return
+
+    const bufferedEnd = getBufferedEndAt(player, player.currentTime)
+    if (bufferedEnd <= lastBufferedEndRef.current + BUFFER_PROGRESS_THRESHOLD_SECONDS) return
+
+    lastBufferedEndRef.current = bufferedEnd
+    // Data is still arriving, even if slowly. Give the active connection more
+    // time instead of misclassifying it as a dead or unsupported stream.
     armStreamStallFallback(isSeekingRef.current ? SEEK_STALL_FALLBACK_DELAY_MS : STREAM_STALL_FALLBACK_DELAY_MS)
   }, [armStreamStallFallback])
 
@@ -678,6 +706,8 @@ function WatchPage({
     pendingAudioTranscodeAutoplayRef.current = null
     clearSeekPreview()
     clearHeldFrame()
+    window.clearTimeout(bufferingStatusTimeoutRef.current)
+    bufferingStatusTimeoutRef.current = null
     setRecoveryStatus('')
     setIsBuffering(false)
     window.clearTimeout(streamRecoveryStableTimeoutRef.current)
@@ -749,6 +779,7 @@ function WatchPage({
     clearStreamRecoveryTimeouts()
     streamRecoveryAttemptRef.current = 0
     isStreamRecoveryInFlightRef.current = false
+    lastBufferedEndRef.current = 0
     fallbackStreamUrlRef.current = ''
     fallbackPositionRef.current = null
     playbackSourceRef.current = null
@@ -1265,7 +1296,10 @@ function WatchPage({
         }}
         onLoadedData={() => {
           if (Number.isFinite(pendingAudioTranscodeTargetRef.current)) return
+          window.clearTimeout(bufferingStatusTimeoutRef.current)
+          bufferingStatusTimeoutRef.current = null
           clearHeldFrame()
+          setRecoveryStatus('')
           setIsBuffering(false)
         }}
         onLoadedMetadata={handleLoadedMetadata}
@@ -1281,6 +1315,7 @@ function WatchPage({
           }
         }}
         onPlaying={handlePlaying}
+        onProgress={handleBufferProgress}
         onSeeked={handleSeeked}
         onSeeking={handleSeeking}
         onTimeUpdate={handleTimeUpdate}
@@ -1410,9 +1445,10 @@ function WatchPage({
       </div>
 
       {isBuffering && !playerError && (
-        <div className="watch-center-state" aria-label="Loading video">
+        <div className={`watch-center-state ${recoveryStatus ? 'watch-recovery-state' : ''}`} aria-label="Loading video">
           <Loader2 className="spinner" size={44} />
           {recoveryStatus && <p className="watch-recovery-status">{recoveryStatus}</p>}
+          {recoveryStatus && <button className="watch-recovery-button" onClick={retryPlayback} type="button">Coba sambungkan ulang</button>}
         </div>
       )}
       {playerError && (
@@ -2524,6 +2560,18 @@ function getPlaybackErrorMessage(errorCode, isOnline) {
     return 'Sumber video tidak dapat dimuat. Format mungkin tidak didukung atau server sedang bermasalah.'
   }
   return 'Video belum berhasil dimuat setelah beberapa percobaan. Periksa koneksi lalu coba lagi.'
+}
+
+function getBufferedEndAt(player, currentTime) {
+  const ranges = player?.buffered
+  if (!ranges?.length) return 0
+
+  for (let index = 0; index < ranges.length; index += 1) {
+    if (currentTime >= ranges.start(index) - 0.1 && currentTime <= ranges.end(index) + 0.1) {
+      return ranges.end(index)
+    }
+  }
+  return ranges.end(ranges.length - 1)
 }
 
 export default WatchPage
