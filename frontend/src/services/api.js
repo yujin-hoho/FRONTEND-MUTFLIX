@@ -11,9 +11,15 @@ import {
   getPosterUrl,
 } from '../utils/media'
 
-const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v4'
+const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v5'
 const AUDIO_TRANSCODE_START_RETRY_DELAYS_MS = [900]
 const PLAYBACK_SOURCE_PROBE_RETRY_DELAYS_MS = [650, 1400]
+const VIDEO_QUEUE_CACHE_TTL_MS = 10 * 60 * 1000
+const MAX_VIDEO_QUEUE_CACHE_ITEMS = 20
+const videoQueueCache = new Map()
+const DETAIL_CREDITS_CACHE_TTL_MS = 30 * 60 * 1000
+const MAX_DETAIL_CREDITS_CACHE_ITEMS = 40
+const detailCreditsCache = new Map()
 
 export function createEmptyCredits() {
   return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
@@ -426,6 +432,7 @@ export async function fetchPlaybackSource(authToken, mediaPath, video = {}, opti
     defaultAudioStreamIndex,
     directUrl: directStreamPath ? resolvePublicPath(directStreamPath) : '',
     durationMs: Number(data.duration_ms || 0),
+    embeddedSubtitleTracks: normalizeEmbeddedSubtitleTracks(data.embedded_subtitle_tracks),
     embeddedSubtitlesUrl: data.embedded_subtitles_url ? resolveApiPath(data.embedded_subtitles_url) : '',
     fallbackUrl: fallbackPath ? resolvePublicPath(fallbackPath) : '',
     isHlsStream,
@@ -922,6 +929,16 @@ export async function enrichCatalogMetadata(authToken, catalog, maxItemsPerType 
   return { ...catalog, movies, series }
 }
 
+function normalizeEmbeddedSubtitleTracks(tracks) {
+  return (Array.isArray(tracks) ? tracks : [])
+    .filter((track) => track?.url && Number.isInteger(Number(track.stream_index)))
+    .map((track) => ({
+      ...track,
+      stream_index: Number(track.stream_index),
+      url: resolveApiPath(track.url),
+    }))
+}
+
 export function mergeCatalogMetadataUpdates(catalog, updates) {
   return {
     ...catalog,
@@ -930,7 +947,7 @@ export function mergeCatalogMetadataUpdates(catalog, updates) {
   }
 }
 
-export async function fetchDetailData(authToken, item, { onCoreReady } = {}) {
+export async function fetchDetailData(authToken, item, { onCoreReady, onCreditsReady } = {}) {
   const detailItem = { ...item, media_type: getMediaType(item) }
   const itemPath = getItemPath(detailItem)
   if (!itemPath || !navigator.onLine) {
@@ -954,14 +971,18 @@ export async function fetchDetailData(authToken, item, { onCoreReady } = {}) {
     { media_type: detailItem.media_type },
   )
   const coreVideos = Array.isArray(data.videos) ? data.videos : []
+  rememberVideoQueue(itemPath, { item: mergedItem, videos: coreVideos })
   onCoreReady?.({ item: mergedItem, videos: coreVideos, credits: createEmptyCredits() })
 
-  const [videos, credits] = await Promise.all([
-    enrichEpisodesFromServer(mergedItem, coreVideos, headers),
-    creditsPromise && getTmdbId(mergedItem) === initialTmdbId
-      ? creditsPromise
-      : getCreditsFromServer(mergedItem, headers),
-  ])
+  const enrichedVideosPromise = enrichEpisodesFromServer(mergedItem, coreVideos, headers)
+  const resolvedCreditsPromise = creditsPromise && getTmdbId(mergedItem) === initialTmdbId
+    ? creditsPromise
+    : getCreditsFromServer(mergedItem, headers)
+  if (onCreditsReady) {
+    resolvedCreditsPromise.then((resolvedCredits) => onCreditsReady(resolvedCredits)).catch(() => {})
+  }
+  const [videos, credits] = await Promise.all([enrichedVideosPromise, resolvedCreditsPromise])
+  rememberVideoQueue(itemPath, { item: mergedItem, videos })
 
   const serverDesc = serverCatalogItem.description || serverCatalogItem.overview || detailItem.description || detailItem.overview || ''
   const serverGenres = getGenres(serverCatalogItem).length ? getGenres(serverCatalogItem) : getGenres(detailItem)
@@ -993,13 +1014,24 @@ export async function fetchDetailData(authToken, item, { onCoreReady } = {}) {
   }
 }
 
-export async function fetchVideoQueue(authToken, item) {
+export async function fetchVideoQueue(authToken, item, { onCoreReady } = {}) {
   const detailItem = { ...item, media_type: getMediaType(item) }
   const itemPath = getItemPath(detailItem)
-  if (!itemPath || !navigator.onLine) return { item: detailItem, videos: [] }
+  if (!itemPath) return { item: detailItem, videos: [] }
+
+  const cachedQueue = readVideoQueue(itemPath)
+  if (cachedQueue) {
+    const cachedResult = {
+      item: mergeMeaningfulValues(detailItem, cachedQueue.item, { media_type: detailItem.media_type }),
+      videos: cachedQueue.videos,
+    }
+    onCoreReady?.(cachedResult)
+    return cachedResult
+  }
+  if (!navigator.onLine) return { item: detailItem, videos: [] }
 
   const headers = { 'x-access-token': authToken }
-  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}`, {
+  const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}?defer_metadata=true`, {
     cache: 'no-store',
     headers,
   })
@@ -1010,10 +1042,38 @@ export async function fetchVideoQueue(authToken, item) {
     data.catalog_item || {},
     { media_type: detailItem.media_type },
   )
+  const coreVideos = Array.isArray(data.videos) ? data.videos : []
 
-  return {
+  rememberVideoQueue(itemPath, { item: mergedItem, videos: coreVideos })
+  onCoreReady?.({ item: mergedItem, videos: coreVideos })
+
+  const result = {
     item: mergedItem,
-    videos: await enrichEpisodesFromServer(mergedItem, Array.isArray(data.videos) ? data.videos : [], headers),
+    videos: await enrichEpisodesFromServer(mergedItem, coreVideos, headers),
+  }
+  rememberVideoQueue(itemPath, result)
+  return result
+}
+
+function readVideoQueue(itemPath) {
+  const key = String(itemPath || '').trim().toLowerCase()
+  const cached = videoQueueCache.get(key)
+  if (!cached) return null
+  if (Date.now() - cached.cachedAt > VIDEO_QUEUE_CACHE_TTL_MS) {
+    videoQueueCache.delete(key)
+    return null
+  }
+  return cached
+}
+
+function rememberVideoQueue(itemPath, queue) {
+  if (!queue?.videos?.length) return
+  const key = String(itemPath || '').trim().toLowerCase()
+  if (!key) return
+  videoQueueCache.delete(key)
+  videoQueueCache.set(key, { ...queue, cachedAt: Date.now() })
+  while (videoQueueCache.size > MAX_VIDEO_QUEUE_CACHE_ITEMS) {
+    videoQueueCache.delete(videoQueueCache.keys().next().value)
   }
 }
 
@@ -1102,6 +1162,54 @@ async function enrichEpisodesFromServer(item, videos, headers) {
 }
 
 async function getCreditsFromServer(item, headers) {
+  const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
+  const tmdbId = getTmdbId(item)
+  const folderName = item.folder_name || item.name || getItemPath(item)
+  const cacheIdentity = tmdbId || String(folderName || '').trim().toLowerCase()
+  const cacheKey = cacheIdentity ? `${mediaType}:${cacheIdentity}` : ''
+  const cached = cacheKey ? detailCreditsCache.get(cacheKey) : null
+
+  if (cached && Date.now() - cached.cachedAt <= DETAIL_CREDITS_CACHE_TTL_MS) {
+    return cached.promise
+  }
+  if (cached) detailCreditsCache.delete(cacheKey)
+
+  const promise = loadCreditsFromServer(item, headers)
+    .then((credits) => {
+      const hasCredits = Boolean(
+        credits?.meta
+        || credits?.trailerId
+        || credits?.cast?.length
+        || credits?.crew?.length
+        || credits?.recommendations?.length,
+      )
+      if (cacheKey && hasCredits) {
+        detailCreditsCache.set(cacheKey, { cachedAt: Date.now(), promise: Promise.resolve(credits) })
+        trimDetailCreditsCache()
+      } else if (cacheKey) {
+        detailCreditsCache.delete(cacheKey)
+      }
+      return credits
+    })
+    .catch((error) => {
+      if (cacheKey) detailCreditsCache.delete(cacheKey)
+      throw error
+    })
+
+  if (cacheKey) {
+    detailCreditsCache.set(cacheKey, { cachedAt: Date.now(), promise })
+    trimDetailCreditsCache()
+  }
+  return promise
+}
+
+function trimDetailCreditsCache() {
+  while (detailCreditsCache.size > MAX_DETAIL_CREDITS_CACHE_ITEMS) {
+    detailCreditsCache.delete(detailCreditsCache.keys().next().value)
+  }
+}
+
+async function loadCreditsFromServer(item, headers) {
   const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
   const folderName = item.folder_name || item.name || getItemPath(item)
   let tmdbId = getTmdbId(item)

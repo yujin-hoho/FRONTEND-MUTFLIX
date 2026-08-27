@@ -23,7 +23,6 @@ import {
   fetchDetailData,
   fetchMyList,
   fetchProfiles,
-  fetchVideoQueue,
   hideWatchHistory,
   mergeCatalogMetadataUpdates,
   removeMyListItem,
@@ -65,6 +64,7 @@ const EMPTY_DETAIL_DATA = {
   videos: [],
   credits: createEmptyCredits(),
   isLoading: false,
+  isMetadataLoading: false,
   error: null,
 }
 
@@ -151,7 +151,7 @@ function App() {
   const [detailData, setDetailData] = useState(EMPTY_DETAIL_DATA)
   const [contextMenu, setContextMenu] = useState(null)
   const featuredItemKeys = useRef(new Map())
-  const historyQueueRequestId = useRef(0)
+  const historyRevision = useRef(0)
   const pendingMetadataKeys = useRef(new Set())
   const pendingMyListPromotionKeys = useRef(new Set())
   const catalogDataRef = useRef(catalogData)
@@ -228,6 +228,7 @@ function App() {
     let ignore = false
 
     async function loadDashboard() {
+      const startingHistoryRevision = historyRevision.current
       const cachedDashboard = readDashboardCache(selectedProfile.id)
       const dashboardRequest = fetchDashboardData(authToken, selectedProfile.id)
         .then((dashboard) => ({ dashboard }))
@@ -241,7 +242,14 @@ function App() {
 
       if (cachedDashboard) {
         if (!ignore) {
-          setProfileData({ myList: [], watchHistory: cachedDashboard.history || [], isLoading: false, error: null })
+          setProfileData((currentData) => ({
+            myList: [],
+            watchHistory: historyRevision.current === startingHistoryRevision
+              ? cachedDashboard.history || []
+              : currentData.watchHistory,
+            isLoading: false,
+            error: null,
+          }))
           setCatalogData({
             movies: cachedDashboard.movies,
             rows: cachedDashboard.rows,
@@ -263,7 +271,14 @@ function App() {
 
         // Show data immediately — merge with current state to preserve cached metadata & rows
         if (!ignore) {
-          setProfileData({ myList, watchHistory: refreshedDashboard.history, isLoading: false, error: null })
+          setProfileData((currentData) => ({
+            myList,
+            watchHistory: historyRevision.current === startingHistoryRevision
+              ? refreshedDashboard.history
+              : currentData.watchHistory,
+            isLoading: false,
+            error: null,
+          }))
           setCatalogData((current) => {
             const merged = mergeCatalogMetadataUpdates(
               { movies: refreshedDashboard.movies, series: refreshedDashboard.series },
@@ -289,7 +304,9 @@ function App() {
             setCatalogData((current) => {
               const merged = mergeCatalogMetadataUpdates(current, enrichedSoFar)
               writeDashboardCache(profileId, {
-                history: refreshedDashboard.history,
+                history: historyRevision.current === startingHistoryRevision
+                  ? refreshedDashboard.history
+                  : profileDataRef.current.watchHistory,
                 movies: merged.movies,
                 series: merged.series,
                 rows: current.rows,
@@ -311,7 +328,9 @@ function App() {
           setCatalogData((current) => {
             const merged = mergeCatalogMetadataUpdates(current, enrichedCatalog)
             writeDashboardCache(profileId, {
-              history: refreshedDashboard.history,
+              history: historyRevision.current === startingHistoryRevision
+                ? refreshedDashboard.history
+                : profileDataRef.current.watchHistory,
               movies: merged.movies,
               series: merged.series,
               rows: current.rows,
@@ -328,7 +347,12 @@ function App() {
         }
       } catch (error) {
         if (!ignore && !cachedDashboard) {
-          setProfileData({ myList: [], watchHistory: [], isLoading: false, error: error.message })
+          setProfileData((currentData) => ({
+            myList: [],
+            watchHistory: historyRevision.current === startingHistoryRevision ? [] : currentData.watchHistory,
+            isLoading: false,
+            error: error.message,
+          }))
           setCatalogData({ movies: [], rows: null, series: [], totals: { movies: 0, series: 0 }, isLoading: false, isFromCache: false, error: error.message })
         } else if (!ignore) {
           setProfileData((currentData) => ({ ...currentData, isLoading: false, error: error.message }))
@@ -351,18 +375,34 @@ function App() {
       videos: [],
       credits: createEmptyCredits(),
       isLoading: true,
+      isMetadataLoading: true,
       error: null,
     })
 
     try {
       const nextDetail = await fetchDetailData(authToken, detailItem, {
         onCoreReady: (coreDetail) => {
-          setDetailData({ ...coreDetail, isLoading: false, error: null })
+          setDetailData((currentData) => (
+            getItemPath(currentData.item) === getItemPath(detailItem)
+              ? { ...coreDetail, isLoading: false, isMetadataLoading: true, error: null }
+              : currentData
+          ))
+        },
+        onCreditsReady: (credits) => {
+          setDetailData((currentData) => (
+            getItemPath(currentData.item) === getItemPath(detailItem)
+              ? { ...currentData, credits, isMetadataLoading: false }
+              : currentData
+          ))
         },
       })
-      setDetailData({ ...nextDetail, isLoading: false, error: null })
+      setDetailData((currentData) => (
+        getItemPath(currentData.item) === getItemPath(detailItem)
+          ? { ...nextDetail, isLoading: false, isMetadataLoading: false, error: null }
+          : currentData
+      ))
     } catch (error) {
-      setDetailData((currentData) => ({ ...currentData, isLoading: false, error: error.message }))
+      setDetailData((currentData) => ({ ...currentData, isLoading: false, isMetadataLoading: false, error: error.message }))
     }
   }, [authToken])
 
@@ -421,6 +461,7 @@ function App() {
   }, [profileData.watchHistory, selectedProfile])
 
   const handleSaveProgress = useCallback(async (payload, playbackContext = {}) => {
+    historyRevision.current += 1
     const previousProfileData = profileDataRef.current
     const nextWatchHistory = mergeWatchHistory(previousProfileData.watchHistory, payload)
     const currentMyList = previousProfileData.myList
@@ -448,6 +489,7 @@ function App() {
 
   const handleHideHistory = useCallback(async (historyEntry) => {
     if (!selectedProfile || !historyEntry?.media_path) return
+    historyRevision.current += 1
 
     const payload = {
       media_path: historyEntry.media_path,
@@ -505,6 +547,7 @@ function App() {
     if (!menu || !selectedProfile) return
 
     if (menu.historyEntry) {
+      historyRevision.current += 1
       const durationMs = Math.max(1, Number(menu.historyEntry.duration_ms || 0))
       const payload = {
         ...menu.historyEntry,
@@ -536,6 +579,7 @@ function App() {
     }
 
     if (menu.video && menu.item) {
+      historyRevision.current += 1
       const durationMs = Math.max(1, Number(menu.video.duration_ms || 0))
       const payload = createCompletedHistoryPayload({
         item: menu.item,
@@ -792,37 +836,7 @@ function App() {
     }
 
     const catalogItem = findCatalogItemForHistory(historyEntry, catalogData.series) || historyItem
-    const requestId = ++historyQueueRequestId.current
-    const from = getCurrentRoute(location)
-    const fromState = location.state
     handleOpenWatch(catalogItem, historyVideo, [historyVideo])
-
-    window.setTimeout(() => {
-      fetchVideoQueue(authToken, catalogItem).then((detail) => {
-        if (requestId !== historyQueueRequestId.current) return
-        const activePath = decodeRouteValue(window.location.pathname.slice('/watch/'.length))
-        if (normalizeMediaPath(activePath) !== normalizeMediaPath(historyVideo.path)) return
-
-        const matchedVideo = findHistoryVideo(historyEntry, detail.videos)
-        const video = historyVideo
-        const videos = matchedVideo
-          ? detail.videos.map((entry) => (entry === matchedVideo ? video : entry))
-          : [video]
-        const resolvedItem = detail.item || catalogItem
-        navigate(getWatchUrl(video.path), {
-          replace: true,
-          state: {
-            from,
-            fromState,
-            item: resolvedItem,
-            video,
-            videos,
-          },
-        })
-      }).catch(() => {
-        // The local history entry is enough to keep playback usable.
-      })
-    }, 0)
   }
 
   function handleWatchBack() {
@@ -1017,15 +1031,16 @@ function App() {
         <WatchPage
           authToken={authToken}
           item={item}
+          key={getItemPath(item) || mediaPath}
           onBack={handleWatchBack}
-          onOpenVideo={(nextVideo) => {
+          onOpenVideo={(nextVideo, nextVideos) => {
             navigate(getWatchUrl(nextVideo.path), {
               replace: true,
               state: {
                 ...location.state,
                 item,
                 video: nextVideo,
-                videos,
+                videos: nextVideos?.length ? nextVideos : videos,
               },
             })
           }}
@@ -1057,6 +1072,7 @@ function App() {
       return renderWithContextMenu(
         <DetailPage
           detailData={detailData}
+          key={getItemPath(detailData.item) || getTitle(detailData.item)}
           onBack={handleDetailBack}
           onOpenContextMenu={openCompletedContextMenu}
           onOpenPerson={handleOpenPersonSearch}
@@ -1419,14 +1435,6 @@ function normalizeHistoryLookupValue(value) {
     .replace(/[._-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-}
-
-function findHistoryVideo(historyEntry, videos) {
-  return videos.find((video) => normalizeMediaPath(video.path) === normalizeMediaPath(historyEntry.media_path))
-    || videos.find((video) => (
-      Number(video.season || 1) === Number(historyEntry.season || 1)
-      && Number(video.episode || 1) === Number(historyEntry.episode || 1)
-    ))
 }
 
 function mergeWatchHistory(history, payload) {

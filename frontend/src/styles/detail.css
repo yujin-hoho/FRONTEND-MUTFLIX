@@ -166,6 +166,36 @@
   overflow: hidden;
 }
 
+.detail-overview-skeleton {
+  display: grid;
+  width: min(100%, 560px);
+  gap: 9px;
+  margin: 3px 0 27px;
+}
+
+.detail-overview-skeleton span {
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  animation: detail-overview-pulse 1.2s ease-in-out infinite;
+}
+
+.detail-overview-skeleton span:nth-child(2) {
+  width: 91%;
+  animation-delay: 100ms;
+}
+
+.detail-overview-skeleton span:nth-child(3) {
+  width: 68%;
+  animation-delay: 200ms;
+}
+
+@keyframes detail-overview-pulse {
+  0%, 100% { opacity: 0.42; }
+  50% { opacity: 0.9; }
+}
+
 .detail-watch-progress {
   width: min(100%, 360px);
   margin-top: 14px;
@@ -393,13 +423,21 @@
   max-width: 720px;
 }
 
+.movie-detail-content-grid .trailer-section > h2,
+.movie-detail-content-grid .recommendations > h2 {
+  margin-bottom: 0;
+}
+
 .movie-detail-content-grid .recommendations {
   grid-area: recommendations;
 }
 
 .movie-detail-content-grid .recommendations > div {
-  grid-template-columns: repeat(auto-fill, var(--catalog-poster-width));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
+  align-content: start;
+  margin-top: 14px;
+  padding-right: 16px;
 }
 
 .episode-card {

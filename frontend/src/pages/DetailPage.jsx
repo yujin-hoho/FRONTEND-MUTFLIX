@@ -21,21 +21,30 @@ import {
 } from '../utils/media'
 
 function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPlayVideo, watchHistory = [] }) {
-  const { credits, error, isLoading, item, videos } = detailData
+  const { credits, error, isLoading, isMetadataLoading, item, videos } = detailData
   const seasons = useMemo(
     () => [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b),
     [videos],
   )
-  const [activeSeason, setActiveSeason] = useState(seasons[0] || 1)
+  const rememberedSeason = useMemo(
+    () => getLatestWatchedSeason(item, videos, watchHistory),
+    [item, videos, watchHistory],
+  )
+  const [activeSeason, setActiveSeason] = useState(null)
   const [visibleEpisodeCount, setVisibleEpisodeCount] = useState(EPISODES_PER_PAGE)
-  const selectedSeason = seasons.includes(activeSeason) ? activeSeason : seasons[0] || 1
+  const selectedSeason = seasons.includes(activeSeason)
+    ? activeSeason
+    : seasons.includes(rememberedSeason)
+      ? rememberedSeason
+      : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
   const serverBackdrop = getServerBackdropUrl(item, 'w1280')
   const backdrop = serverBackdrop || (videos[0] ? getServerStillUrl(videos[0], 'w1280') : '')
   const genres = getGenres(item).length ? getGenres(item) : getGenres(credits?.meta)
   const rating = getRating(item) || getRating(credits?.meta)
   const releaseYear = getReleaseYear(item) || getReleaseYear(credits?.meta)
-  const overview = item?.description || item?.overview || item?.tmdb_overview || credits?.meta?.overview || 'No description is available for this title yet.'
+  const overview = item?.description || item?.overview || item?.tmdb_overview || credits?.meta?.overview || ''
+  const isOverviewLoading = !overview && isMetadataLoading
   const firstVideo = videos[0]
   const findWatchEntry = (video) => watchHistory.find((entry) => (
     normalizeMediaPath(entry.media_path) === normalizeMediaPath(video?.path)
@@ -86,7 +95,15 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
             {rating > 0 && <span className="detail-rating">TMDB {rating.toFixed(1)}</span>}
             {genres.slice(0, 3).map((genre) => <span key={genre}>{genre}</span>)}
           </div>
-          <p className="detail-overview">{overview}</p>
+          {isOverviewLoading ? (
+            <div aria-label="Loading description" className="detail-overview-skeleton" role="status">
+              <span />
+              <span />
+              <span />
+            </div>
+          ) : (
+            <p className="detail-overview">{overview || 'No description is available for this title yet.'}</p>
+          )}
           <button className="play-button" disabled={!firstVideo || isLoading} onClick={() => onPlayVideo(firstVideo)} type="button">
             <Play fill="currentColor" size={20} />
             <span>{isLoading ? 'Loading...' : firstVideo ? 'Play' : 'Unavailable offline'}</span>
@@ -248,6 +265,24 @@ function isSameSeriesHistoryEntry(entry, item) {
   if (itemPath && entryPath) return itemPath === entryPath
   if (itemTitle && entryTitle) return itemTitle === entryTitle
   return false
+}
+
+function getLatestWatchedSeason(item, videos, watchHistory) {
+  if (!item || getMediaType(item) === 'movie') return null
+  const videoPaths = new Set(videos.map((video) => normalizeMediaPath(video.path)).filter(Boolean))
+  const matchingEntries = (Array.isArray(watchHistory) ? watchHistory : [])
+    .filter((entry) => (
+      isSameSeriesHistoryEntry(entry, item)
+      || videoPaths.has(normalizeMediaPath(entry.media_path))
+    ))
+    .sort((a, b) => getHistoryTimestamp(b) - getHistoryTimestamp(a))
+  const season = Number(matchingEntries[0]?.season)
+  return Number.isFinite(season) && season > 0 ? season : null
+}
+
+function getHistoryTimestamp(entry) {
+  const timestamp = Date.parse(entry?.last_watched || '')
+  return Number.isFinite(timestamp) ? timestamp : 0
 }
 
 function normalizeLookupValue(value) {

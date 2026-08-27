@@ -90,7 +90,7 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
             <iframe
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
-              loading="lazy"
+              loading="eager"
               src={`https://www.youtube.com/embed/${encodeURIComponent(trailerId)}?autoplay=1&mute=1&controls=1&playsinline=1&rel=0`}
               title="Trailer"
             />

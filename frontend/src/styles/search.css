@@ -8,7 +8,8 @@
   align-items: center;
   gap: 8px;
   border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 8px;
+  border-radius: 999px;
+  overflow: hidden;
   background: rgba(15, 23, 42, 0.48);
   color: #cbd5e1;
   transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
@@ -35,7 +36,7 @@
 }
 
 .search-box-compact {
-  width: clamp(152px, 20vw, 260px);
+  width: clamp(240px, 25vw, 360px);
 }
 
 .search-box-compact .search-box-form {
@@ -44,7 +45,7 @@
 }
 
 .search-box-page {
-  width: min(100%, 720px);
+  width: min(100%, 820px);
 }
 
 .search-box-page .search-box-form {
@@ -94,9 +95,10 @@
 .search-filter-menu {
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
+  right: auto;
+  left: 0;
   z-index: 40;
-  width: min(430px, calc(100vw - 32px));
+  width: 100%;
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: 16px;
@@ -295,9 +297,10 @@
 .search-preview {
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
+  right: auto;
+  left: 0;
   z-index: 30;
-  width: min(420px, calc(100vw - 32px));
+  width: 100%;
   overflow: hidden;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 10px;
@@ -419,9 +422,7 @@
   height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
-  background:
-    radial-gradient(circle at 50% 0%, rgba(0, 220, 100, 0.14), transparent 30%),
-    #020617;
+  background: #020617;
   color: #f8fafc;
   scrollbar-width: none;
 }
@@ -434,7 +435,7 @@
   position: sticky;
   top: 0;
   z-index: 50;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 0;
   background: rgba(2, 6, 23, 0.9);
   backdrop-filter: blur(18px);
 }
@@ -768,7 +769,7 @@
 
 @media (max-width: 640px) {
   .search-box-compact {
-    width: min(42vw, 156px);
+    width: min(58vw, 220px);
   }
 
   .search-box-compact .search-box-form {
@@ -776,19 +777,19 @@
   }
 
   .search-preview {
-    position: fixed;
-    top: 62px;
-    right: 12px;
-    left: 12px;
-    width: auto;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: auto;
+    left: 0;
+    width: 100%;
   }
 
   .search-filter-menu {
-    position: fixed;
-    top: 62px;
-    right: 12px;
-    left: 12px;
-    width: auto;
+    position: absolute;
+    top: calc(100% + 8px);
+    right: auto;
+    left: 0;
+    width: 100%;
   }
 
   .search-results-shell {

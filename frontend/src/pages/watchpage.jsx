@@ -5,7 +5,6 @@ import {
   AudioLines,
   Captions,
   Loader2,
-  List,
   Maximize,
   Minimize,
   Pause,
@@ -25,6 +24,7 @@ import {
   fetchPlaybackMarkers,
   fetchPlaybackSource,
   fetchSubtitleTrack,
+  fetchVideoQueue,
   getTimestampedAudioTranscodeUrl,
 } from '../services/api'
 import LoadableImage from '../components/LoadableImage'
@@ -126,6 +126,8 @@ function WatchPage({
   const latestResumePositionRef = useRef(mountedResumePositionSeconds)
   const initialResumePositionRef = useRef(mountedResumePositionSeconds)
   const appliedResumePositionRef = useRef(mountedResumePositionSeconds)
+  const pendingResumeTargetRef = useRef(mountedResumePositionSeconds)
+  const resumeSeekAttemptsRef = useRef(0)
   const progressContextRef = useRef(null)
   const [streamUrl, setStreamUrl] = useState('')
   const [subtitleUrl, setSubtitleUrl] = useState('')
@@ -150,17 +152,18 @@ function WatchPage({
   const [embeddedSubtitleTrackUrl, setEmbeddedSubtitleTrackUrl] = useState('')
   const [selectedSubtitleId, setSelectedSubtitleId] = useState('')
   const [isSubtitlePanelOpen, setIsSubtitlePanelOpen] = useState(false)
-  const [isEpisodeListOpen, setIsEpisodeListOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
   const [seekPreviewTime, setSeekPreviewTime] = useState(null)
   const [heldFrameUrl, setHeldFrameUrl] = useState('')
   const [playerError, setPlayerError] = useState('')
 
-  const queue = useMemo(() => videos?.length ? videos : [video], [video, videos])
+  const incomingQueue = useMemo(() => videos?.length ? videos : [video], [video, videos])
+  const [fetchedQueue, setFetchedQueue] = useState([])
+  const [queueLoadState, setQueueLoadState] = useState(incomingQueue.length > 1 ? 'done' : 'loading')
+  const queue = fetchedQueue.length > incomingQueue.length ? fetchedQueue : incomingQueue
   const currentIndex = queue.findIndex((entry) => entry.path === video.path)
   const previousVideo = currentIndex > 0 ? queue[currentIndex - 1] : null
   const nextVideo = currentIndex >= 0 ? queue[currentIndex + 1] : null
-  const hasEpisodeList = queue.length > 1
   const markerFolderName = item.folder_name || item.name || getItemPath(item)
   const videoName = video.name || ''
   const videoOriginalName = video.original_name || ''
@@ -188,6 +191,11 @@ function WatchPage({
     : audioCodecLabel
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
+  const hasEpisodeList = isSeries && queue.length > 0
+  const isEpisodeQueueLoading = isSeries
+    && incomingQueue.length <= 1
+    && fetchedQueue.length <= 1
+    && queueLoadState === 'loading'
   const mediaTitle = getTitle(item)
   const watchTitle = isSeries ? mediaTitle : mediaTitle || videoName
   const episodeLabel = isSeries
@@ -223,7 +231,35 @@ function WatchPage({
     () => ({ top: `${subtitleSettings.positionPercent}%` }),
     [subtitleSettings.positionPercent],
   )
-  const shouldHideCursor = !showControls && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen && !playerError
+  const shouldHideCursor = !showControls && !isSubtitlePanelOpen && !isAudioPanelOpen && !playerError
+
+  useEffect(() => {
+    if (!isSeries || incomingQueue.length > 1) return undefined
+
+    let ignore = false
+    const applyQueue = (detail) => {
+      if (ignore || !detail.videos?.length) return
+      setFetchedQueue(detail.videos.map((episode) => (
+        normalizeMediaPath(episode.path) === normalizeMediaPath(video.path)
+          ? { ...video, ...episode, path: video.path }
+          : episode
+      )))
+      setQueueLoadState('done')
+    }
+
+    fetchVideoQueue(authToken, item, { onCoreReady: applyQueue })
+      .then((detail) => {
+        applyQueue(detail)
+      })
+      .catch(() => {
+        if (!ignore) setQueueLoadState('error')
+        // The active episode remains playable even when the queue cannot be loaded.
+      })
+
+    return () => {
+      ignore = true
+    }
+  }, [authToken, incomingQueue.length, isSeries, item, video])
 
   const persistProgress = useCallback(({ complete = false, force = false } = {}) => {
     const player = playerRef.current
@@ -257,16 +293,15 @@ function WatchPage({
   const revealControls = useCallback(() => {
     setShowControls(true)
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isAudioPanelOpen, isEpisodeListOpen, isPlaying, isSubtitlePanelOpen])
+  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen])
 
   const toggleControls = useCallback(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isSubtitlePanelOpen || isAudioPanelOpen || isEpisodeListOpen) {
+    if (isSubtitlePanelOpen || isAudioPanelOpen) {
       setIsAudioPanelOpen(false)
-      setIsEpisodeListOpen(false)
       setIsSubtitlePanelOpen(false)
       setShowControls(true)
       if (isPlaying) {
@@ -281,10 +316,10 @@ function WatchPage({
     }
 
     setShowControls(true)
-    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
-  }, [isAudioPanelOpen, isEpisodeListOpen, isPlaying, isSubtitlePanelOpen, showControls])
+  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen, showControls])
 
   const togglePlay = useCallback(() => {
     const player = playerRef.current
@@ -463,7 +498,11 @@ function WatchPage({
     setAudioCodecLabel(nextAudioCodecLabel || formatAudioProbeStatus(audioProbeStatus))
     if (sourceDurationSeconds > 0) setDuration(sourceDurationSeconds)
     if (audioTranscodeUrl) {
-      restartAudioTranscodeAt(startSeconds, { autoplay, fastTimeline: fastAudioSwitch, immediate: true })
+      restartAudioTranscodeAt(startSeconds, {
+        autoplay,
+        fastTimeline: fastAudioSwitch || startSeconds > 0,
+        immediate: true,
+      })
       return
     }
 
@@ -526,8 +565,10 @@ function WatchPage({
     if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
 
     const player = playerRef.current
-    fallbackPositionRef.current = Number.isFinite(pendingAudioTranscodeTargetRef.current)
-      ? pendingAudioTranscodeTargetRef.current
+    fallbackPositionRef.current = pendingResumeTargetRef.current > 0
+      ? pendingResumeTargetRef.current
+      : Number.isFinite(pendingAudioTranscodeTargetRef.current)
+        ? pendingAudioTranscodeTargetRef.current
       : Number.isFinite(requestedSeekPositionRef.current)
         ? requestedSeekPositionRef.current
         : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : null
@@ -541,6 +582,7 @@ function WatchPage({
     hasUsedStreamFallbackRef.current = true
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
+    resumeSeekAttemptsRef.current = 0
     restoredPositionRef.current = false
     holdCurrentFrame()
     setPlayerError('')
@@ -566,7 +608,9 @@ function WatchPage({
   const handleSeeking = useCallback(() => {
     const player = playerRef.current
     isSeekingRef.current = true
-    requestedSeekPositionRef.current = player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : null
+    requestedSeekPositionRef.current = pendingResumeTargetRef.current > 0
+      ? pendingResumeTargetRef.current
+      : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : null
     clearStreamStallTimeout()
     setIsBuffering(true)
   }, [clearStreamStallTimeout])
@@ -574,20 +618,67 @@ function WatchPage({
   const handleSeeked = useCallback(() => {
     const player = playerRef.current
     isSeekingRef.current = false
-    requestedSeekPositionRef.current = null
     clearStreamStallTimeout()
     if (!player) return
 
-    setCurrentTime(getPlaybackPosition(player, audioTranscodeOffsetRef.current))
+    const playbackPosition = getPlaybackPosition(player, audioTranscodeOffsetRef.current)
+    const resumeTarget = pendingResumeTargetRef.current
+    if (resumeTarget > 0 && Math.abs(playbackPosition - resumeTarget) > 4) {
+      if (resumeSeekAttemptsRef.current < 3) {
+        resumeSeekAttemptsRef.current += 1
+        isSeekingRef.current = true
+        requestedSeekPositionRef.current = resumeTarget
+        player.currentTime = Math.max(0, resumeTarget - audioTranscodeOffsetRef.current)
+        setCurrentTime(resumeTarget)
+        setIsBuffering(true)
+        return
+      }
+      if (switchToFallbackStream()) return
+      player.pause()
+      setPlayerError('Posisi Continue Watching belum berhasil dipulihkan. Coba buka video ini lagi.')
+      setIsBuffering(false)
+      return
+    }
+    if (resumeTarget > 0 && Math.abs(playbackPosition - resumeTarget) <= 4) {
+      pendingResumeTargetRef.current = 0
+      resumeSeekAttemptsRef.current = 0
+    }
+    requestedSeekPositionRef.current = null
+    setCurrentTime(playbackPosition)
     setIsBuffering(!player.paused && player.readyState < HTMLMediaElement.HAVE_FUTURE_DATA)
     if (!Number.isFinite(pendingAudioTranscodeTargetRef.current)) clearSeekPreview()
     if (pendingInitialSeekRef.current) {
       pendingInitialSeekRef.current = false
       player.play().catch(() => setShowControls(true))
     }
-  }, [clearSeekPreview, clearStreamStallTimeout])
+  }, [clearSeekPreview, clearStreamStallTimeout, switchToFallbackStream])
 
   const handlePlaying = useCallback(() => {
+    const player = playerRef.current
+    const resumeTarget = pendingResumeTargetRef.current
+    const playbackPosition = player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : 0
+    if (player && resumeTarget > 0 && playbackPosition < resumeTarget - 4) {
+      if (resumeSeekAttemptsRef.current < 3) {
+        resumeSeekAttemptsRef.current += 1
+        player.pause()
+        isSeekingRef.current = true
+        pendingInitialSeekRef.current = true
+        requestedSeekPositionRef.current = resumeTarget
+        player.currentTime = Math.max(0, resumeTarget - audioTranscodeOffsetRef.current)
+        setCurrentTime(resumeTarget)
+        setIsBuffering(true)
+        return
+      }
+      if (switchToFallbackStream()) return
+      player.pause()
+      setPlayerError('Posisi Continue Watching belum berhasil dipulihkan. Coba buka video ini lagi.')
+      setIsBuffering(false)
+      return
+    }
+    if (resumeTarget > 0 && Math.abs(playbackPosition - resumeTarget) <= 4) {
+      pendingResumeTargetRef.current = 0
+      resumeSeekAttemptsRef.current = 0
+    }
     clearStreamStallTimeout()
     isSeekingRef.current = false
     pendingInitialSeekRef.current = false
@@ -597,7 +688,7 @@ function WatchPage({
     clearSeekPreview()
     clearHeldFrame()
     setIsBuffering(false)
-  }, [clearHeldFrame, clearSeekPreview, clearStreamStallTimeout])
+  }, [clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, switchToFallbackStream])
 
   useEffect(() => {
     progressContextRef.current = { item, profileId, video }
@@ -605,7 +696,12 @@ function WatchPage({
 
   useEffect(() => {
     latestResumePositionRef.current = mountedResumePositionSeconds
-  }, [mountedResumePositionSeconds])
+    const player = playerRef.current
+    const playbackPosition = player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : 0
+    if (mountedResumePositionSeconds > 0 && (!streamUrl || !player || playbackPosition < 5)) {
+      pendingResumeTargetRef.current = mountedResumePositionSeconds
+    }
+  }, [mountedResumePositionSeconds, streamUrl])
 
   useEffect(() => {
     if (mountedResumePositionSeconds <= 0 || !streamUrl) return
@@ -692,6 +788,8 @@ function WatchPage({
     const initialResumeSeconds = latestResumePositionRef.current
     initialResumePositionRef.current = initialResumeSeconds
     appliedResumePositionRef.current = initialResumeSeconds
+    pendingResumeTargetRef.current = initialResumeSeconds
+    resumeSeekAttemptsRef.current = 0
 
     const playbackSourcePromise = loadPlaybackSource(null, {
       autoplay: true,
@@ -720,12 +818,13 @@ function WatchPage({
       }
     }
 
-    const externalSubtitlePromise = loadExternalSubtitleTrack()
+    loadExternalSubtitleTrack()
 
     async function loadEmbeddedSubtitleTracks() {
       const playbackSource = await playbackSourcePromise
-      const tracks = await fetchEmbeddedSubtitleTracks(playbackSource?.embeddedSubtitlesUrl)
-      await externalSubtitlePromise
+      const tracks = playbackSource?.embeddedSubtitleTracks?.length
+        ? playbackSource.embeddedSubtitleTracks
+        : await fetchEmbeddedSubtitleTracks(playbackSource?.embeddedSubtitlesUrl)
       if (ignore) return
 
       embeddedSubtitleTracksRef.current = tracks
@@ -868,11 +967,11 @@ function WatchPage({
 
   useEffect(() => {
     window.clearTimeout(controlsTimeoutRef.current)
-    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen && !isEpisodeListOpen) {
+    if (isPlaying && !isSubtitlePanelOpen && !isAudioPanelOpen) {
       controlsTimeoutRef.current = window.setTimeout(() => setShowControls(false), CONTROLS_HIDE_DELAY_MS)
     }
     return () => window.clearTimeout(controlsTimeoutRef.current)
-  }, [isAudioPanelOpen, isEpisodeListOpen, isPlaying, isSubtitlePanelOpen])
+  }, [isAudioPanelOpen, isPlaying, isSubtitlePanelOpen])
 
   useEffect(() => {
     if (playerRef.current) playerRef.current.playbackRate = playbackRate
@@ -906,10 +1005,12 @@ function WatchPage({
     }
     if (!restoredPositionRef.current) {
       const fallbackSeconds = fallbackPositionRef.current
-      const targetSeconds = Number.isFinite(fallbackSeconds)
-        ? fallbackSeconds
-        : latestResumePositionRef.current
-      if (targetSeconds > 0 && targetSeconds < playbackDuration - 2) {
+      const targetSeconds = pendingResumeTargetRef.current > 0
+        ? pendingResumeTargetRef.current
+        : Number.isFinite(fallbackSeconds)
+          ? fallbackSeconds
+          : latestResumePositionRef.current
+      if (targetSeconds > 0 && (playbackDuration <= 0 || targetSeconds < playbackDuration - 2)) {
         appliedResumePositionRef.current = targetSeconds
         if (restartAudioTranscodeAt(targetSeconds, { autoplay: true, immediate: true })) return
         isSeekingRef.current = true
@@ -943,11 +1044,17 @@ function WatchPage({
       setCurrentTime(pendingTranscodeTarget)
       return
     }
+    const playbackPosition = getPlaybackPosition(player, audioTranscodeOffsetRef.current)
+    const pendingResumeTarget = pendingResumeTargetRef.current
+    if (pendingResumeTarget > 0 && playbackPosition < pendingResumeTarget - 4) {
+      setCurrentTime(pendingResumeTarget)
+      return
+    }
     if (isSeekBarActiveRef.current || Number.isFinite(seekPreviewTime)) {
       return
     }
 
-    setCurrentTime(getPlaybackPosition(player, audioTranscodeOffsetRef.current))
+    setCurrentTime(playbackPosition)
     persistProgress()
   }
 
@@ -956,6 +1063,8 @@ function WatchPage({
     window.clearTimeout(seekPreviewTimeoutRef.current)
     setSeekPreviewTime(targetSeconds)
     setCurrentTime(targetSeconds)
+    pendingResumeTargetRef.current = 0
+    resumeSeekAttemptsRef.current = 0
   }
 
   function handleSeek(event) {
@@ -1126,9 +1235,8 @@ function WatchPage({
 
   function handleOpenEpisode(nextEpisode, { complete = false } = {}) {
     if (!nextEpisode) return
-    setIsEpisodeListOpen(false)
     persistProgress({ complete, force: true })
-    onOpenVideo(nextEpisode)
+    onOpenVideo(nextEpisode, queue)
   }
 
   function handleBack() {
@@ -1143,6 +1251,7 @@ function WatchPage({
       onMouseMove={revealControls}
       ref={shellRef}
     >
+      <div className="watch-player-stage">
       <video
         className="watch-video"
         crossOrigin={isAudioTranscodeStream ? 'anonymous' : undefined}
@@ -1235,74 +1344,6 @@ function WatchPage({
           </div>
           {isSeries && <span>{video.title || video.episode_title || video.name}</span>}
         </div>
-        {hasEpisodeList && (
-          <div className="watch-episode-menu">
-            <button
-              aria-controls="episode-list"
-              aria-expanded={isEpisodeListOpen}
-              aria-label="Episode list"
-              className={`watch-icon-button ${isEpisodeListOpen ? 'active' : ''}`}
-              onClick={() => {
-                setIsEpisodeListOpen((isOpen) => !isOpen)
-                setIsAudioPanelOpen(false)
-                setIsSubtitlePanelOpen(false)
-              }}
-              type="button"
-            >
-              <List size={23} />
-            </button>
-            {isEpisodeListOpen && (
-              <section aria-label="Episode list" className="watch-episode-list-panel" id="episode-list">
-                <div className="watch-episode-list-header">
-                  <h2>Episodes</h2>
-                  <button aria-label="Close episode list" className="watch-subtitle-close" onClick={() => setIsEpisodeListOpen(false)} type="button">
-                    <X size={18} />
-                  </button>
-                </div>
-                <div className="watch-episode-list">
-                  {queue.map((episode, index) => {
-                    const isCurrentEpisode = episode.path === video.path
-                    const episodeTitle = getEpisodeListTitle(episode, index)
-                    const episodeArtworkUrl = getEpisodeArtworkUrl(episode, item)
-                    const episodeProgress = isCurrentEpisode
-                      ? getLiveWatchProgress(visiblePlaybackTime, duration)
-                      : getEpisodeWatchProgress(episode, watchHistory)
-                    return (
-                      <button
-                        aria-current={isCurrentEpisode ? 'true' : undefined}
-                        className={`watch-episode-list-item ${isCurrentEpisode ? 'active' : ''}`}
-                        key={episode.path || `${episode.name}-${index}`}
-                        onClick={() => handleOpenEpisode(episode, { complete: false })}
-                        type="button"
-                      >
-                        <span className="watch-episode-list-artwork" aria-hidden="true">
-                          <LoadableImage
-                            alt=""
-                            className="watch-episode-list-poster"
-                            fallbackSrc={getPosterFallbackUrl({ ...item, ...episode, name: episodeTitle })}
-                            src={episodeArtworkUrl}
-                          />
-                          {episodeProgress > 0 && (
-                            <span aria-label={`Progress ${Math.round(episodeProgress)}%`} className="watch-episode-progress-track">
-                              <span style={{ width: `${episodeProgress}%` }} />
-                            </span>
-                          )}
-                        </span>
-                        <span className="watch-episode-list-copy">
-                          <span className="watch-episode-list-index">E{episode.episode || index + 1}</span>
-                          <span className="watch-episode-list-title">{episodeTitle}</span>
-                          {episodeProgress > 0 && (
-                            <span className="watch-episode-list-progress">{Math.round(episodeProgress)}% watched</span>
-                          )}
-                        </span>
-                      </button>
-                    )
-                  })}
-                </div>
-              </section>
-            )}
-          </div>
-        )}
       </div>
 
       {isBuffering && !playerError && (
@@ -1636,6 +1677,73 @@ function WatchPage({
           </div>
         </div>
       </div>
+      </div>
+      {hasEpisodeList && (
+        <aside aria-label="Episode list" className="watch-episode-sidebar" id="episode-list">
+          <div className="watch-episode-sidebar-header">
+            <p>Now watching</p>
+            <h2>{watchTitle}</h2>
+            <span>{isEpisodeQueueLoading ? 'Loading episodes…' : `${queue.length} episodes`}</span>
+          </div>
+          <div className="watch-episode-list">
+            {isEpisodeQueueLoading
+              ? Array.from({ length: 4 }, (_, index) => (
+                  <div aria-hidden="true" className="watch-episode-list-item watch-episode-loading" key={index}>
+                    <span className="watch-episode-list-artwork image-shimmer" />
+                    <span className="watch-episode-loading-copy">
+                      <span />
+                      <span />
+                    </span>
+                  </div>
+                ))
+              : queue.map((episode, index) => {
+              const isCurrentEpisode = episode.path === video.path
+              const episodeTitle = getEpisodeListTitle(episode, index)
+              const episodeSynopsis = getEpisodeListSynopsis(episode)
+              const episodeArtworkUrl = getEpisodeArtworkUrl(episode, item)
+              const episodeProgress = isCurrentEpisode
+                ? getLiveWatchProgress(visiblePlaybackTime, duration)
+                : getEpisodeWatchProgress(episode, watchHistory)
+              const episodeProgressPercent = Math.round(episodeProgress)
+              return (
+                <button
+                  aria-current={isCurrentEpisode ? 'true' : undefined}
+                  className={`watch-episode-list-item ${isCurrentEpisode ? 'active' : ''}`}
+                  key={episode.path || `${episode.name}-${index}`}
+                  onClick={() => handleOpenEpisode(episode, { complete: false })}
+                  type="button"
+                >
+                  <span className="watch-episode-list-artwork" aria-hidden="true">
+                    <LoadableImage
+                      alt=""
+                      className="watch-episode-list-poster"
+                      fallbackSrc={getPosterFallbackUrl({ ...item, ...episode, name: episodeTitle })}
+                      fetchPriority={index < 6 ? 'high' : 'auto'}
+                      loading={index < 6 ? 'eager' : 'lazy'}
+                      showFallbackWhileLoading
+                      src={episodeArtworkUrl}
+                    />
+                    {episodeProgressPercent > 0 && (
+                      <span aria-label={`Progress ${episodeProgressPercent}%`} className="watch-episode-progress-track">
+                        <span style={{ width: `${episodeProgress}%` }} />
+                      </span>
+                    )}
+                  </span>
+                  <span className="watch-episode-list-copy">
+                    <span className="watch-episode-list-title">{episodeTitle}</span>
+                    {episodeSynopsis && (
+                      <span className="watch-episode-list-synopsis">{episodeSynopsis}</span>
+                    )}
+                    {episodeProgressPercent > 0 && (
+                      <span className="watch-episode-list-progress">{episodeProgressPercent}% watched</span>
+                    )}
+                  </span>
+                </button>
+              )
+              })}
+          </div>
+        </aside>
+      )}
     </main>
   )
 }
@@ -1716,6 +1824,17 @@ function getEpisodeListTitle(episode = {}, index = 0) {
     || '',
   ).trim()
   return explicitTitle || `Episode ${episode.episode || index + 1}`
+}
+
+function getEpisodeListSynopsis(episode = {}) {
+  return String(
+    episode.description
+    || episode.overview
+    || episode.tmdb_overview
+    || episode.synopsis
+    || episode.plot
+    || '',
+  ).trim()
 }
 
 function getEpisodeArtworkUrl(episode = {}, item = {}) {

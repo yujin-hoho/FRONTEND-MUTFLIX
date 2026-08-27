@@ -122,6 +122,7 @@ const LoadableImage = memo(function LoadableImage({
               }
             }
           }}
+          key={imgSrc}
           src={imgSrc}
         />
       )}
