@@ -89,6 +89,9 @@ function WatchPage({
   const mountedResumePositionSeconds = getResumePositionSeconds(resumeEntry)
   const playerRef = useRef(null)
   const shellRef = useRef(null)
+  const playerStageRef = useRef(null)
+  const episodeListRef = useRef(null)
+  const activeEpisodeRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const streamStallTimeoutRef = useRef(null)
   const activeVideoPathRef = useRef('')
@@ -344,7 +347,7 @@ function WatchPage({
       if (document.fullscreenElement) {
         await document.exitFullscreen()
       } else {
-        await shellRef.current?.requestFullscreen()
+        await playerStageRef.current?.requestFullscreen()
       }
     } catch {
       setShowControls(true)
@@ -936,6 +939,27 @@ function WatchPage({
   }, [])
 
   useEffect(() => {
+    if (isEpisodeQueueLoading || currentIndex < 0) return undefined
+
+    const frameId = window.requestAnimationFrame(() => {
+      const list = episodeListRef.current
+      const activeEpisode = activeEpisodeRef.current
+      if (!list || !activeEpisode) return
+
+      const listRect = list.getBoundingClientRect()
+      const episodeRect = activeEpisode.getBoundingClientRect()
+      const centeredScrollTop = list.scrollTop
+        + episodeRect.top
+        - listRect.top
+        - ((list.clientHeight - episodeRect.height) / 2)
+
+      list.scrollTo({ behavior: 'auto', top: Math.max(0, centeredScrollTop) })
+    })
+
+    return () => window.cancelAnimationFrame(frameId)
+  }, [currentIndex, isEpisodeQueueLoading, queue.length, video.path])
+
+  useEffect(() => {
     const flushProgress = () => persistProgress({ force: true })
     window.addEventListener('pagehide', flushProgress)
     return () => {
@@ -1251,7 +1275,7 @@ function WatchPage({
       onMouseMove={revealControls}
       ref={shellRef}
     >
-      <div className="watch-player-stage">
+      <div className="watch-player-stage" ref={playerStageRef}>
       <video
         className="watch-video"
         crossOrigin={isAudioTranscodeStream ? 'anonymous' : undefined}
@@ -1685,7 +1709,7 @@ function WatchPage({
             <h2>{watchTitle}</h2>
             <span>{isEpisodeQueueLoading ? 'Loading episodes…' : `${queue.length} episodes`}</span>
           </div>
-          <div className="watch-episode-list">
+          <div className="watch-episode-list" ref={episodeListRef}>
             {isEpisodeQueueLoading
               ? Array.from({ length: 4 }, (_, index) => (
                   <div aria-hidden="true" className="watch-episode-list-item watch-episode-loading" key={index}>
@@ -1708,9 +1732,10 @@ function WatchPage({
               return (
                 <button
                   aria-current={isCurrentEpisode ? 'true' : undefined}
-                  className={`watch-episode-list-item ${isCurrentEpisode ? 'active' : ''}`}
+                  className={`watch-episode-list-item ${isCurrentEpisode ? 'active' : ''} ${episodeSynopsis ? '' : 'without-synopsis'}`}
                   key={episode.path || `${episode.name}-${index}`}
                   onClick={() => handleOpenEpisode(episode, { complete: false })}
+                  ref={isCurrentEpisode ? activeEpisodeRef : undefined}
                   type="button"
                 >
                   <span className="watch-episode-list-artwork" aria-hidden="true">
