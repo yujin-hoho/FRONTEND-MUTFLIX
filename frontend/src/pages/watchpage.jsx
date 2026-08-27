@@ -164,6 +164,11 @@ function WatchPage({
   const [fetchedQueue, setFetchedQueue] = useState([])
   const [queueLoadState, setQueueLoadState] = useState(incomingQueue.length > 1 ? 'done' : 'loading')
   const queue = fetchedQueue.length > incomingQueue.length ? fetchedQueue : incomingQueue
+  const activeSeason = getEpisodeSeason(video)
+  const seasonQueue = useMemo(
+    () => queue.filter((episode) => getEpisodeSeason(episode) === activeSeason),
+    [activeSeason, queue],
+  )
   const currentIndex = queue.findIndex((entry) => entry.path === video.path)
   const previousVideo = currentIndex > 0 ? queue[currentIndex - 1] : null
   const nextVideo = currentIndex >= 0 ? queue[currentIndex + 1] : null
@@ -194,7 +199,7 @@ function WatchPage({
     : audioCodecLabel
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
-  const hasEpisodeList = isSeries && queue.length > 0
+  const hasEpisodeList = isSeries && seasonQueue.length > 0
   const isEpisodeQueueLoading = isSeries
     && incomingQueue.length <= 1
     && fetchedQueue.length <= 1
@@ -957,7 +962,7 @@ function WatchPage({
     })
 
     return () => window.cancelAnimationFrame(frameId)
-  }, [currentIndex, isEpisodeQueueLoading, queue.length, video.path])
+  }, [activeSeason, currentIndex, isEpisodeQueueLoading, seasonQueue.length, video.path])
 
   useEffect(() => {
     const flushProgress = () => persistProgress({ force: true })
@@ -1707,7 +1712,11 @@ function WatchPage({
           <div className="watch-episode-sidebar-header">
             <p>Now watching</p>
             <h2>{watchTitle}</h2>
-            <span>{isEpisodeQueueLoading ? 'Loading episodes…' : `${queue.length} episodes`}</span>
+            <span>
+              {isEpisodeQueueLoading
+                ? 'Loading episodes…'
+                : `Season ${activeSeason} · ${seasonQueue.length} episodes`}
+            </span>
           </div>
           <div className="watch-episode-list" ref={episodeListRef}>
             {isEpisodeQueueLoading
@@ -1720,7 +1729,7 @@ function WatchPage({
                     </span>
                   </div>
                 ))
-              : queue.map((episode, index) => {
+              : seasonQueue.map((episode, index) => {
               const isCurrentEpisode = episode.path === video.path
               const episodeTitle = getEpisodeListTitle(episode, index)
               const episodeSynopsis = getEpisodeListSynopsis(episode)
@@ -1849,6 +1858,11 @@ function getEpisodeListTitle(episode = {}, index = 0) {
     || '',
   ).trim()
   return explicitTitle || `Episode ${episode.episode || index + 1}`
+}
+
+function getEpisodeSeason(episode = {}) {
+  const season = episode.season
+  return String(season ?? '').trim() || '1'
 }
 
 function getEpisodeListSynopsis(episode = {}) {
