@@ -27,19 +27,13 @@ import {
   fetchVideoQueue,
   getTimestampedAudioTranscodeUrl,
 } from '../services/api'
-import LoadableImage from '../components/LoadableImage'
 import {
   getEpisodeHistoryLabel,
   getItemPath,
   getMediaType,
-  getPosterFallbackUrl,
-  getPosterUrl,
   getServerBackdropUrl,
   getServerStillUrl,
-  getStillUrl,
   getTitle,
-  getWatchProgress,
-  isTechnicalEpisodeTitle,
   normalizeMediaPath,
 } from '../utils/media'
 
@@ -84,14 +78,11 @@ function WatchPage({
   resumeEntry,
   video,
   videos,
-  watchHistory = [],
 }) {
   const mountedResumePositionSeconds = getResumePositionSeconds(resumeEntry)
   const playerRef = useRef(null)
   const shellRef = useRef(null)
   const playerStageRef = useRef(null)
-  const episodeListRef = useRef(null)
-  const activeEpisodeRef = useRef(null)
   const controlsTimeoutRef = useRef(null)
   const streamStallTimeoutRef = useRef(null)
   const activeVideoPathRef = useRef('')
@@ -162,13 +153,7 @@ function WatchPage({
 
   const incomingQueue = useMemo(() => videos?.length ? videos : [video], [video, videos])
   const [fetchedQueue, setFetchedQueue] = useState([])
-  const [queueLoadState, setQueueLoadState] = useState(incomingQueue.length > 1 ? 'done' : 'loading')
   const queue = fetchedQueue.length > incomingQueue.length ? fetchedQueue : incomingQueue
-  const activeSeason = getEpisodeSeason(video)
-  const seasonQueue = useMemo(
-    () => queue.filter((episode) => getEpisodeSeason(episode) === activeSeason),
-    [activeSeason, queue],
-  )
   const currentIndex = queue.findIndex((entry) => entry.path === video.path)
   const previousVideo = currentIndex > 0 ? queue[currentIndex - 1] : null
   const nextVideo = currentIndex >= 0 ? queue[currentIndex + 1] : null
@@ -199,11 +184,6 @@ function WatchPage({
     : audioCodecLabel
   const isHlsVideo = /\.m3u8(?:$|\?)/i.test(videoOriginalName || videoName || videoPath)
   const isSeries = getMediaType(item) !== 'movie'
-  const hasEpisodeList = isSeries && seasonQueue.length > 0
-  const isEpisodeQueueLoading = isSeries
-    && incomingQueue.length <= 1
-    && fetchedQueue.length <= 1
-    && queueLoadState === 'loading'
   const mediaTitle = getTitle(item)
   const watchTitle = isSeries ? mediaTitle : mediaTitle || videoName
   const episodeLabel = isSeries
@@ -252,7 +232,6 @@ function WatchPage({
           ? { ...video, ...episode, path: video.path }
           : episode
       )))
-      setQueueLoadState('done')
     }
 
     fetchVideoQueue(authToken, item, { onCoreReady: applyQueue })
@@ -260,7 +239,6 @@ function WatchPage({
         applyQueue(detail)
       })
       .catch(() => {
-        if (!ignore) setQueueLoadState('error')
         // The active episode remains playable even when the queue cannot be loaded.
       })
 
@@ -942,27 +920,6 @@ function WatchPage({
     document.addEventListener('fullscreenchange', handleFullscreenChange)
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
   }, [])
-
-  useEffect(() => {
-    if (isEpisodeQueueLoading || currentIndex < 0) return undefined
-
-    const frameId = window.requestAnimationFrame(() => {
-      const list = episodeListRef.current
-      const activeEpisode = activeEpisodeRef.current
-      if (!list || !activeEpisode) return
-
-      const listRect = list.getBoundingClientRect()
-      const episodeRect = activeEpisode.getBoundingClientRect()
-      const centeredScrollTop = list.scrollTop
-        + episodeRect.top
-        - listRect.top
-        - ((list.clientHeight - episodeRect.height) / 2)
-
-      list.scrollTo({ behavior: 'auto', top: Math.max(0, centeredScrollTop) })
-    })
-
-    return () => window.cancelAnimationFrame(frameId)
-  }, [activeSeason, currentIndex, isEpisodeQueueLoading, seasonQueue.length, video.path])
 
   useEffect(() => {
     const flushProgress = () => persistProgress({ force: true })
@@ -1707,77 +1664,6 @@ function WatchPage({
         </div>
       </div>
       </div>
-      {hasEpisodeList && (
-        <aside aria-label="Episode list" className="watch-episode-sidebar" id="episode-list">
-          <div className="watch-episode-sidebar-header">
-            <p>Now watching</p>
-            <h2>{watchTitle}</h2>
-            <span>
-              {isEpisodeQueueLoading
-                ? 'Loading episodes…'
-                : `Season ${activeSeason} · ${seasonQueue.length} episodes`}
-            </span>
-          </div>
-          <div className="watch-episode-list" ref={episodeListRef}>
-            {isEpisodeQueueLoading
-              ? Array.from({ length: 4 }, (_, index) => (
-                  <div aria-hidden="true" className="watch-episode-list-item watch-episode-loading" key={index}>
-                    <span className="watch-episode-list-artwork image-shimmer" />
-                    <span className="watch-episode-loading-copy">
-                      <span />
-                      <span />
-                    </span>
-                  </div>
-                ))
-              : seasonQueue.map((episode, index) => {
-              const isCurrentEpisode = episode.path === video.path
-              const episodeTitle = getEpisodeListTitle(episode, index)
-              const episodeSynopsis = getEpisodeListSynopsis(episode)
-              const episodeArtworkUrl = getEpisodeArtworkUrl(episode, item)
-              const episodeProgress = isCurrentEpisode
-                ? getLiveWatchProgress(visiblePlaybackTime, duration)
-                : getEpisodeWatchProgress(episode, watchHistory)
-              const episodeProgressPercent = Math.round(episodeProgress)
-              return (
-                <button
-                  aria-current={isCurrentEpisode ? 'true' : undefined}
-                  className={`watch-episode-list-item ${isCurrentEpisode ? 'active' : ''} ${episodeSynopsis ? '' : 'without-synopsis'}`}
-                  key={episode.path || `${episode.name}-${index}`}
-                  onClick={() => handleOpenEpisode(episode, { complete: false })}
-                  ref={isCurrentEpisode ? activeEpisodeRef : undefined}
-                  type="button"
-                >
-                  <span className="watch-episode-list-artwork" aria-hidden="true">
-                    <LoadableImage
-                      alt=""
-                      className="watch-episode-list-poster"
-                      fallbackSrc={getPosterFallbackUrl({ ...item, ...episode, name: episodeTitle })}
-                      fetchPriority={index < 6 ? 'high' : 'auto'}
-                      loading={index < 6 ? 'eager' : 'lazy'}
-                      showFallbackWhileLoading
-                      src={episodeArtworkUrl}
-                    />
-                    {episodeProgressPercent > 0 && (
-                      <span aria-label={`Progress ${episodeProgressPercent}%`} className="watch-episode-progress-track">
-                        <span style={{ width: `${episodeProgress}%` }} />
-                      </span>
-                    )}
-                  </span>
-                  <span className="watch-episode-list-copy">
-                    <span className="watch-episode-list-title">{episodeTitle}</span>
-                    {episodeSynopsis && (
-                      <span className="watch-episode-list-synopsis">{episodeSynopsis}</span>
-                    )}
-                    {episodeProgressPercent > 0 && (
-                      <span className="watch-episode-list-progress">{episodeProgressPercent}% watched</span>
-                    )}
-                  </span>
-                </button>
-              )
-              })}
-          </div>
-        </aside>
-      )}
     </main>
   )
 }
@@ -1848,58 +1734,6 @@ function clampPlaybackRate(playbackRate) {
   const numericPlaybackRate = Number(playbackRate)
   if (!Number.isFinite(numericPlaybackRate) || numericPlaybackRate <= 0) return 1
   return Math.min(2, Math.max(0.75, numericPlaybackRate))
-}
-
-function getEpisodeListTitle(episode = {}, index = 0) {
-  const explicitTitle = String(
-    episode.title
-    || episode.episode_title
-    || (isTechnicalEpisodeTitle(episode.name, episode.path) ? '' : episode.name)
-    || '',
-  ).trim()
-  return explicitTitle || `Episode ${episode.episode || index + 1}`
-}
-
-function getEpisodeSeason(episode = {}) {
-  const season = episode.season
-  return String(season ?? '').trim() || '1'
-}
-
-function getEpisodeListSynopsis(episode = {}) {
-  return String(
-    episode.description
-    || episode.overview
-    || episode.tmdb_overview
-    || episode.synopsis
-    || episode.plot
-    || '',
-  ).trim()
-}
-
-function getEpisodeArtworkUrl(episode = {}, item = {}) {
-  return getStillUrl(episode)
-    || getPosterUrl(episode, 'w342')
-    || getStillUrl(item)
-    || getPosterUrl(item, 'w342')
-}
-
-function getLiveWatchProgress(currentSeconds, durationSeconds) {
-  const current = Number(currentSeconds)
-  const duration = Number(durationSeconds)
-  if (!Number.isFinite(current) || !Number.isFinite(duration) || duration <= 0) return 0
-  return Math.min(100, Math.max(0, (current / duration) * 100))
-}
-
-function getEpisodeWatchProgress(episode = {}, watchHistory = []) {
-  const historyEntry = findEpisodeWatchEntry(episode, watchHistory)
-  return getWatchProgress(historyEntry || {})
-}
-
-function findEpisodeWatchEntry(episode = {}, watchHistory = []) {
-  const episodePath = normalizeMediaPath(episode.path)
-  return (Array.isArray(watchHistory) ? watchHistory : []).find((entry) => (
-    episodePath && normalizeMediaPath(entry.media_path) === episodePath
-  )) || null
 }
 
 function formatAudioProbeStatus(status) {

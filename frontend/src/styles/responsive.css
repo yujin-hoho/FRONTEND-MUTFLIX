@@ -39,9 +39,87 @@
   }
 }
 
+@media (max-width: 900px) {
+  .dashboard-topbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'brand actions'
+      'navigation navigation';
+    height: auto;
+    min-height: 112px;
+    gap: 6px 12px;
+    padding: 10px 16px 0;
+  }
+
+  .dashboard-brand {
+    grid-area: brand;
+    font-size: clamp(1.45rem, 5vw, 2rem);
+  }
+
+  .dashboard-actions {
+    grid-area: actions;
+    min-width: 0;
+    justify-self: end;
+    gap: 7px;
+    margin-left: 0;
+  }
+
+  .dashboard-actions .search-box-compact {
+    width: clamp(140px, 40vw, 260px);
+  }
+
+  .dashboard-actions .search-preview,
+  .dashboard-actions .search-filter-menu {
+    right: -47px;
+    left: auto;
+    width: min(360px, calc(100vw - 24px));
+  }
+
+  .dashboard-nav {
+    position: static;
+    grid-area: navigation;
+    width: calc(100% + 32px);
+    min-width: 0;
+    height: 46px;
+    gap: 24px;
+    margin: 0 -16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 16px;
+    transform: none;
+    scrollbar-width: none;
+    overscroll-behavior-inline: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dashboard-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dashboard-nav button,
+  .dashboard-nav a {
+    flex: 0 0 auto;
+    padding: 10px 0 11px;
+    white-space: nowrap;
+  }
+
+  .search-topbar,
+  .my-list-topbar {
+    background: rgba(2, 6, 23, 0.96);
+  }
+}
+
 @media (max-width: 640px) {
+  :root {
+    --catalog-poster-width: 132px;
+  }
+
   .login-page {
     grid-template-columns: 1fr;
+    height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .brand-panel {
@@ -53,6 +131,20 @@
     padding: 18px;
   }
 
+  .auth-panel {
+    width: 100%;
+    height: auto;
+    min-height: 100dvh;
+    align-items: center;
+    overflow-y: auto;
+    padding-top: max(24px, env(safe-area-inset-top));
+    padding-bottom: max(24px, env(safe-area-inset-bottom));
+  }
+
+  .login-card {
+    margin: auto;
+  }
+
   .form-options {
     align-items: flex-start;
     flex-direction: column;
@@ -61,18 +153,80 @@
 
   .profile-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px 14px;
   }
 
   .profile-selector h1 {
-    font-size: 2.35rem;
+    margin-bottom: 30px;
+    font-size: clamp(2rem, 10vw, 2.35rem);
+  }
+
+  .profile-page {
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .profile-brand {
+    margin: 20px 0 0 16px;
+    font-size: 1.9rem;
+  }
+
+  .profile-selector {
+    align-self: start;
+    padding: 44px 16px 40px;
+    transform: none;
+  }
+
+  .profile-card,
+  .add-profile-card {
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+  }
+
+  .profile-edit-button {
+    top: 6px;
+    right: 6px;
+    opacity: 1;
+    transform: none;
+  }
+
+  .profile-modal-backdrop {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .profile-modal {
+    max-height: calc(100dvh - 20px);
+    gap: 14px;
+    padding: 20px 16px;
+  }
+
+  .profile-modal h2 {
+    font-size: 1.6rem;
+  }
+
+  .profile-avatar-options {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .search-filter-featured {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dashboard-topbar {
-    height: 68px;
+    min-height: 106px;
+    gap: 4px 8px;
+    padding: 8px 12px 0;
   }
 
   .dashboard-nav {
-    gap: 12px;
+    width: calc(100% + 24px);
+    height: 44px;
+    gap: 20px;
+    margin: 0 -12px;
+    padding: 0 12px;
   }
 
   .dashboard-nav button {
@@ -80,7 +234,8 @@
   }
 
   .profile-menu-trigger {
-    max-width: 84px;
+    max-width: none;
+    padding-right: 3px;
   }
 
   .profile-menu-trigger span {
@@ -90,9 +245,8 @@
   }
 
   .dashboard-hero {
-    min-height: 62vh;
-    padding-top: 92px;
-    padding-bottom: 76px;
+    min-height: min(68dvh, 620px);
+    padding: 72px 16px 72px;
   }
 
   .dashboard-hero-poster,
@@ -112,11 +266,83 @@
 
   .dashboard-hero-content h1,
   .detail-copy h1 {
-    font-size: 2.35rem;
+    overflow-wrap: anywhere;
+    font-size: clamp(2rem, 11vw, 2.8rem);
+    line-height: 1.02;
+  }
+
+  .dashboard-hero-content {
+    transform: none;
+  }
+
+  .dashboard-hero-content p:not(.eyebrow) {
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+
+  .dashboard-shell,
+  .dashboard-skeleton-shell {
+    gap: 28px;
+    margin-top: -34px;
+    padding-left: 16px;
+  }
+
+  .catalog-row-heading,
+  .catalog-scroller,
+  .dashboard-skeleton-row > div {
+    padding-right: 16px;
+  }
+
+  .horizontal-scroller,
+  .history-scroller {
+    grid-auto-columns: min(78vw, 290px);
+  }
+
+  .catalog-scroll-button {
+    display: none;
+  }
+
+  .catalog-edit-button,
+  .search-result-edit-button {
+    opacity: 1;
+    transform: none;
   }
 
   .detail-body {
-    margin-top: -42px;
+    margin-top: -34px;
+    padding: 0 16px 56px;
+  }
+
+  .detail-back {
+    top: max(12px, env(safe-area-inset-top));
+    left: 12px;
+    padding: 9px 12px;
+  }
+
+  .detail-hero {
+    min-height: min(72dvh, 640px);
+    padding: 88px 16px 70px;
+  }
+
+  .detail-copy {
+    transform: none;
+  }
+
+  .detail-overview {
+    font-size: 0.92rem;
+    line-height: 1.5;
+  }
+
+  .detail-content-grid,
+  .movie-detail-content-grid {
+    gap: 30px;
+    padding-right: 0;
+  }
+
+  .movie-detail-content-grid .recommendations > div,
+  .recommendations > div {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-right: 0;
   }
 
   .history-scroller {
@@ -124,9 +350,9 @@
   }
 
   .episode-card {
-    grid-template-columns: 28px minmax(118px, 36vw) 1fr;
+    grid-template-columns: 24px minmax(104px, 36vw) minmax(0, 1fr);
     gap: 10px;
-    padding: 12px 4px;
+    padding: 12px 0;
   }
 
   .episode-number {
@@ -154,6 +380,7 @@
 
   .credits-panel {
     grid-template-columns: 1fr;
+    gap: 30px;
   }
 
   .movie-detail-content-grid .credits-panel {
@@ -165,6 +392,186 @@
       'info'
       'cast'
       'crew';
+  }
+
+  .cast-card {
+    grid-template-columns: 64px minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .cast-avatar {
+    width: 64px;
+    height: 64px;
+  }
+
+  .search-results-shell,
+  .my-list-shell {
+    padding: 26px 12px 56px;
+  }
+
+  .search-results-grid,
+  .my-list-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 10px;
+  }
+
+  .person-search-card {
+    min-width: min(82vw, 280px);
+    grid-template-columns: 60px minmax(0, 1fr);
+  }
+
+  .person-search-avatar {
+    width: 60px;
+    height: 60px;
+  }
+
+  .my-list-tabs {
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .my-list-tabs button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .my-list-tabs button + button {
+    margin-left: 10px;
+  }
+
+  .admin-edit-topbar {
+    height: 64px;
+    gap: 8px;
+    padding: 0 12px;
+  }
+
+  .admin-edit-actions {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .admin-edit-status {
+    overflow: hidden;
+    max-width: 120px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .admin-edit-hero {
+    min-height: 430px;
+    padding: 92px 16px 60px;
+  }
+
+  .admin-edit-copy h1 {
+    overflow-wrap: anywhere;
+    font-size: clamp(2rem, 11vw, 3rem);
+  }
+
+  .admin-edit-body {
+    padding: 0 12px 44px;
+  }
+
+  .admin-edit-panel {
+    min-width: 0;
+    padding: 16px;
+  }
+
+  .watch-controls-row {
+    display: grid;
+    justify-content: stretch;
+    gap: 4px;
+  }
+
+  .watch-controls-group {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+    gap: 3px;
+  }
+
+  .watch-volume,
+  .watch-finished-at {
+    display: none;
+  }
+
+  .watch-speed select {
+    width: 56px;
+    padding-left: 7px;
+    padding-right: 18px;
+  }
+
+  .watch-subtitle-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .watch-subtitle-range-setting,
+  .watch-subtitle-delay-setting {
+    grid-column: auto;
+  }
+
+}
+
+@media (max-width: 420px) {
+  .dashboard-brand {
+    font-size: 1.35rem;
+  }
+
+  .dashboard-actions .search-box-compact {
+    width: min(44vw, 168px);
+  }
+
+  .profile-avatar-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .modal-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-edit-back,
+  .admin-edit-reset-btn {
+    padding: 9px 10px;
+  }
+
+  .admin-edit-status {
+    display: none;
+  }
+
+  .watch-topbar {
+    gap: 8px;
+    padding: 12px;
+  }
+
+  .watch-topbar h1 {
+    font-size: 1rem;
+  }
+
+  .watch-transcode-notice,
+  .watch-audio-codec {
+    display: none !important;
+  }
+
+  .watch-controls {
+    padding: 36px 6px 8px;
+  }
+
+  .watch-controls .watch-icon-button {
+    width: 34px;
+    height: 34px;
+  }
+
+  .watch-time {
+    font-size: 0.64rem;
+  }
+
+  .watch-subtitle-panel {
+    right: 6px;
+    width: calc(100vw - 12px);
+    max-height: 56dvh;
   }
 }
 

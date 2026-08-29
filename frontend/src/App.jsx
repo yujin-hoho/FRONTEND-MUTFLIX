@@ -536,8 +536,8 @@ function App() {
     event.stopPropagation()
     setContextMenu({
       ...payload,
-      x: Math.min(event.clientX, window.innerWidth - 220),
-      y: Math.min(event.clientY, window.innerHeight - 64),
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 198)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 96)),
     })
   }, [])
 
