@@ -534,8 +534,11 @@ async function searchCatalogPeople({ authToken, catalogItems, query, selectedPer
 
   const people = await fetchTmdbPeopleSearch(authToken, query, { pages: PEOPLE_SEARCH_PAGE_LIMIT, signal })
   const selectedPerson = Number(selectedPersonId || 0)
+  const selectedPersonResult = selectedPerson
+    ? people.find((person) => Number(person.id) === selectedPerson)
+    : null
   const candidatePeople = [
-    selectedPerson ? { id: selectedPerson, name: query.trim() } : null,
+    selectedPerson ? (selectedPersonResult || { id: selectedPerson, name: query.trim() }) : null,
     ...people,
   ]
     .filter((person) => person?.id && person.name)

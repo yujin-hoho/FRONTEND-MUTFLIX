@@ -256,7 +256,7 @@ EMBEDDED_SUBTITLE_EXTRACT_TIMEOUT_SECONDS = max(30, int(os.environ.get('EMBEDDED
 EMBEDDED_SUBTITLE_MAX_CONCURRENT = max(1, int(os.environ.get('EMBEDDED_SUBTITLE_MAX_CONCURRENT', '2')))
 EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS = max(2, int(os.environ.get('EMBEDDED_SUBTITLE_FAST_PROBE_TIMEOUT_SECONDS', '6')))
 EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS = max(10, int(os.environ.get('EMBEDDED_SUBTITLE_DEEP_PROBE_TIMEOUT_SECONDS', '120')))
-EMBEDDED_SUBTITLE_VTT_CACHE_VERSION = 'v5'
+EMBEDDED_SUBTITLE_VTT_CACHE_VERSION = 'v4'
 
 # diskcache: thread-safe, process-safe, persistent backup — 5GB for 16GB RAM machine
 disk_cache = diskcache.Cache(CACHE_DIR, size_limit=5 * 1024 * 1024 * 1024)
@@ -837,6 +837,20 @@ def init_db():
                 conn.commit()
             except Exception:
                 conn.rollback() if db_type == 'postgres' else None
+        conn.commit()
+
+        # Permanent catalog ID registry. Rows are intentionally never deleted:
+        # a removed movie/series must keep its old ID reserved forever.
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS catalog_item_ids (
+                media_type VARCHAR(20) NOT NULL,
+                folder_name TEXT NOT NULL,
+                catalog_id INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT {now_func},
+                PRIMARY KEY (media_type, folder_name),
+                UNIQUE (media_type, catalog_id)
+            );
+        """)
         conn.commit()
 
         # Auto-migrate existing content_releases.json data into DB (only needed on fresh/old installs)
@@ -2259,6 +2273,131 @@ def _schedule_tmdb_folder_meta_prefetch(entries):
     threading.Thread(target=_run, name='tmdb-folder-meta-prefetch', daemon=True).start()
 
 
+_catalog_id_assignment_lock = threading.RLock()
+_catalog_id_fallback_maps = {'series': {}, 'movies': {}}
+_catalog_id_fallback_max = {'series': 0, 'movies': 0}
+_catalog_id_persisted_keys = {'series': set(), 'movies': set()}
+
+
+def _reserve_catalog_ids(category, candidates, minimum_high_water_mark=0):
+    """Return permanent IDs for (folder_name, preferred_id) candidates.
+
+    The database table is an append-only registry. Consequently MAX(catalog_id)
+    includes deleted catalog entries and an old ID can never be issued again.
+    """
+    media_type = 'series' if category == 'series' else 'movie'
+    resolved = {}
+    candidate_keys = [str(name or '').strip() for name, _ in candidates]
+    candidate_keys = [key for key in candidate_keys if key]
+    if not candidate_keys:
+        return resolved
+    if all(key in _catalog_id_persisted_keys[category] for key in candidate_keys):
+        fallback = _catalog_id_fallback_maps[category]
+        return {key: fallback[key] for key in candidate_keys}
+
+    conn, db_type = None, None
+    try:
+        conn, db_type = get_db_connection()
+        cur = conn.cursor()
+
+        # Serialize allocators across gunicorn workers. SQLite's immediate
+        # transaction provides the equivalent write lock.
+        if db_type == 'postgres':
+            lock_id = 780001 if category == 'series' else 780002
+            cur.execute('SELECT pg_advisory_xact_lock(%s)', (lock_id,))
+        else:
+            cur.execute('BEGIN IMMEDIATE')
+
+        ph = '%s' if db_type == 'postgres' else '?'
+        cur.execute(
+            f'SELECT folder_name, catalog_id FROM catalog_item_ids WHERE media_type = {ph}',
+            (media_type,),
+        )
+        rows = cur.fetchall() or []
+        registry = {str(row[0]): int(row[1]) for row in rows}
+        used_ids = set(registry.values())
+        high_water_mark = max(
+            max(used_ids, default=0),
+            int(minimum_high_water_mark or 0),
+        )
+
+        for folder_name, preferred_id in candidates:
+            key = str(folder_name or '').strip()
+            if not key:
+                continue
+            item_id = registry.get(key)
+            if item_id is None:
+                preferred_is_free = (
+                    isinstance(preferred_id, int)
+                    and preferred_id > 0
+                    and preferred_id not in used_ids
+                )
+                if preferred_is_free:
+                    item_id = preferred_id
+                else:
+                    item_id = high_water_mark + 1
+                    while item_id in used_ids:
+                        item_id += 1
+                cur.execute(
+                    f'INSERT INTO catalog_item_ids (media_type, folder_name, catalog_id) '
+                    f'VALUES ({ph}, {ph}, {ph})',
+                    (media_type, key, item_id),
+                )
+                registry[key] = item_id
+                used_ids.add(item_id)
+                high_water_mark = max(high_water_mark, item_id)
+            resolved[key] = item_id
+
+        conn.commit()
+        _catalog_id_fallback_maps[category].update(registry)
+        _catalog_id_persisted_keys[category].update(registry)
+        _catalog_id_fallback_max[category] = max(
+            _catalog_id_fallback_max[category], high_water_mark
+        )
+        return resolved
+    except Exception as exc:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f'[CATALOG-ID] persistent registry unavailable: {exc}', flush=True)
+
+        # Keep IDs monotonic for the lifetime of this process even if the DB is
+        # temporarily unavailable. A later successful call persists the map.
+        fallback = _catalog_id_fallback_maps[category]
+        high_water_mark = max(
+            _catalog_id_fallback_max[category],
+            int(minimum_high_water_mark or 0),
+        )
+        used_ids = set(fallback.values())
+        for folder_name, preferred_id in candidates:
+            key = str(folder_name or '').strip()
+            if not key:
+                continue
+            item_id = fallback.get(key)
+            if item_id is None:
+                preferred_is_free = (
+                    isinstance(preferred_id, int)
+                    and preferred_id > 0
+                    and preferred_id not in used_ids
+                )
+                if preferred_is_free:
+                    item_id = preferred_id
+                else:
+                    item_id = high_water_mark + 1
+                    while item_id in used_ids:
+                        item_id += 1
+                fallback[key] = item_id
+                used_ids.add(item_id)
+                high_water_mark = max(high_water_mark, item_id)
+            resolved[key] = item_id
+        _catalog_id_fallback_max[category] = high_water_mark
+        return resolved
+    finally:
+        release_db_connection(conn, db_type)
+
+
 def _assign_ids_to_folders(all_c):
     """
     [PERMANENT & STABLE ID MAPPING - ZERO ID SHIFTING]
@@ -2266,9 +2405,9 @@ def _assign_ids_to_folders(all_c):
     meskipun ada item di tengah (misal ID 230) yang dihapus.
     
     Aturan Kunci:
-    1. Prioritas 1: Gunakan 'id' yang sudah melekat pada item itu sendiri.
-    2. Prioritas 2: Gunakan mapping ID permanen dari file list.json (by folder name).
-    3. Prioritas 3: Untuk item baru yang belum punya ID, gunakan (max_known_id + 1).
+    1. Prioritas 1: Gunakan mapping permanen append-only dari database.
+    2. ID list.json/item lama dipakai untuk migrasi awal jika belum pernah terdaftar.
+    3. Item baru menggunakan high-water mark kategori + 1.
     4. DILARANG KERAS menggunakan urutan indeks/enumerate (1..N) sebagai fallback,
        karena akan membuat seluruh poster Google Drive (movies_<id> / series_<id>) bergeser kacau.
     5. Urutkan berdasarkan ID (bukan abjad/name), sehingga item baru berada di bawah ID terakhir.
@@ -2277,47 +2416,46 @@ def _assign_ids_to_folders(all_c):
         return all_c
     list_map, known_max_id = _get_list_json_folder_ids()
 
-    for cat in ('series', 'movies'):
-        items = all_c.get(cat) or []
-        used_ids = set(list_map[cat].values())
-        curr_max = known_max_id[cat]
+    with _catalog_id_assignment_lock:
+        for cat in ('series', 'movies'):
+            items = all_c.get(cat) or []
+            for name, item_id in list_map[cat].items():
+                _catalog_id_fallback_maps[cat].setdefault(name, item_id)
+            _catalog_id_fallback_max[cat] = max(
+                _catalog_id_fallback_max[cat], known_max_id[cat]
+            )
 
-        # Catat seluruh ID int yang sudah ada pada items saat ini
-        for it in items:
-            if isinstance(it.get('id'), int) and it['id'] > 0:
-                used_ids.add(it['id'])
-                if it['id'] > curr_max:
-                    curr_max = it['id']
+            candidates = []
+            for item in items:
+                name = str(item.get('name') or '').strip()
+                preferred_id = list_map[cat].get(name)
+                if not isinstance(preferred_id, int) or preferred_id <= 0:
+                    preferred_id = item.get('id')
+                candidates.append((name, preferred_id))
+            permanent_ids = _reserve_catalog_ids(
+                cat,
+                candidates,
+                minimum_high_water_mark=_catalog_id_fallback_max[cat],
+            )
 
-        new_items = []
-        for item in items:
-            item_id = item.get('id')
-            
-            # 1. Jika belum punya ID valid, cari dari mapping permanen list.json
-            if not isinstance(item_id, int) or item_id <= 0:
-                item_id = list_map[cat].get(item.get('name'))
-            
-            # 2. Jika benar-benar item baru yang belum terdaftar, alokasikan max_id + 1
-            if not isinstance(item_id, int) or item_id <= 0:
-                curr_max += 1
-                while curr_max in used_ids:
-                    curr_max += 1
-                item_id = curr_max
-                used_ids.add(item_id)
+            new_items = []
+            for item in items:
+                name = str(item.get('name') or '').strip()
+                item_id = permanent_ids.get(name)
+                if not isinstance(item_id, int) or item_id <= 0:
+                    # Nameless malformed entries are not persisted, but still
+                    # receive a non-recycled process-local ID.
+                    _catalog_id_fallback_max[cat] += 1
+                    item_id = _catalog_id_fallback_max[cat]
 
-            # Reconstruct dictionary dengan 'id' ditaruh paling depan sebelum 'name'
-            reordered = {'id': item_id}
-            for k, v in item.items():
-                if k != 'id':
-                    reordered[k] = v
-            new_items.append(reordered)
+                reordered = {'id': item_id}
+                for k, v in item.items():
+                    if k != 'id':
+                        reordered[k] = v
+                new_items.append(reordered)
 
-        # Urutkan berdasarkan ID (bukan abjad) agar item baru selalu berada di bawah ID terakhir
-        new_items.sort(key=lambda x: (
-            0 if isinstance(x.get('id'), int) else 1,
-            x.get('id') if isinstance(x.get('id'), int) else 99999999
-        ))
-        all_c[cat] = new_items
+            new_items.sort(key=lambda x: x.get('id', 99999999))
+            all_c[cat] = new_items
     return all_c
 
 def _normalize_key(name):
@@ -6341,16 +6479,6 @@ def get_gdrive_stream_details(current_user,file_path):
         
         file_metadata = _get_gdrive_file_metadata(fid)
         file_name = request.args.get('file_name') or file_metadata.get('file_name', '')
-        embedded_subtitle_tracks = []
-        for track in file_metadata.get('embedded_subtitle_tracks', []):
-            stream_index = track.get('stream_index')
-            if stream_index is None:
-                continue
-            track_token = quote(_make_stream_token(fid), safe='')
-            embedded_subtitle_tracks.append({
-                **track,
-                "url": f"/api/gdrive-embedded-subtitle/{fid}/{stream_index}.vtt?stream_token={track_token}",
-            })
         res = {
             "url": f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media", 
             "stream_url": f"/api/gdrive-stream/{fid}?stream_token={quote(_make_stream_token(fid), safe='')}",
@@ -6366,7 +6494,6 @@ def get_gdrive_stream_details(current_user,file_path):
             "audio_profile": file_metadata.get('audio_profile', ''),
             "audio_probe_status": file_metadata.get('audio_probe_status', ''),
             "audio_streams": file_metadata.get('audio_streams', []),
-            "embedded_subtitle_tracks": embedded_subtitle_tracks,
             "browser_audio_supported": file_metadata.get('browser_audio_supported'),
             "headers": {
                 "Authorization": f"Bearer {token}",
@@ -6418,25 +6545,11 @@ def _get_fresh_gdrive_token():
 
 def _get_gdrive_file_metadata(fid):
     now = time.time()
-    disk_cache_key = f"gdrive_media_metadata_v3_{fid}"
     with _gdrive_file_metadata_cache_lock:
         cached_metadata = _gdrive_file_metadata_cache.get(fid)
         cached_at = _gdrive_file_metadata_cache_ts.get(fid, 0)
         if cached_metadata and _is_gdrive_file_metadata_cache_fresh(cached_metadata, cached_at, now):
             return cached_metadata
-
-    try:
-        disk_metadata = disk_cache.get(disk_cache_key)
-        if isinstance(disk_metadata, dict) and disk_metadata.get('audio_probe_status') in ('ok', 'no-audio'):
-            with _gdrive_file_metadata_cache_lock:
-                _gdrive_file_metadata_cache[fid] = disk_metadata
-                _gdrive_file_metadata_cache_ts[fid] = now
-            subtitle_tracks = disk_metadata.get('embedded_subtitle_tracks') or []
-            if subtitle_tracks:
-                _cache_gdrive_embedded_subtitle_tracks(f"embedded_subtitle_tracks_v2_{fid}", subtitle_tracks)
-            return disk_metadata
-    except Exception:
-        pass
 
     with _gdrive_file_metadata_key_locks_lock:
         key_lock = _gdrive_file_metadata_key_locks.setdefault(fid, threading.Lock())
@@ -6468,11 +6581,6 @@ def _get_gdrive_file_metadata(fid):
         with _gdrive_file_metadata_cache_lock:
             _gdrive_file_metadata_cache[fid] = metadata
             _gdrive_file_metadata_cache_ts[fid] = now
-        if metadata.get('audio_probe_status') in ('ok', 'no-audio'):
-            try:
-                disk_cache.set(disk_cache_key, metadata, expire=EMBEDDED_SUBTITLE_CACHE_TTL_SECONDS)
-            except Exception:
-                pass
         return metadata
 
 def _is_gdrive_file_metadata_cache_fresh(metadata, cached_at, now):
@@ -6526,25 +6634,6 @@ def _probe_gdrive_media_metadata(fid):
             if stream.get('codec_type') == 'audio'
         ]
         audio_streams = [stream for stream in audio_streams if stream]
-        embedded_subtitle_tracks = []
-        for stream in payload.get('streams', []):
-            if stream.get('codec_type') != 'subtitle':
-                continue
-            codec = str(stream.get('codec_name') or '').lower()
-            if codec not in {'ass', 'mov_text', 'ssa', 'subrip', 'text', 'webvtt'}:
-                continue
-            tags = stream.get('tags') or {}
-            disposition = stream.get('disposition') or {}
-            embedded_subtitle_tracks.append({
-                "codec": codec,
-                "default": bool(disposition.get('default')),
-                "forced": bool(disposition.get('forced')),
-                "label": tags.get('title') or str(tags.get('language') or '').lower() or f"Subtitle {len(embedded_subtitle_tracks) + 1}",
-                "language": str(tags.get('language') or '').lower(),
-                "stream_index": int(stream['index']),
-            })
-        if embedded_subtitle_tracks:
-            _cache_gdrive_embedded_subtitle_tracks(f"embedded_subtitle_tracks_v2_{fid}", embedded_subtitle_tracks)
         primary_audio = next((stream for stream in audio_streams if stream.get('default')), None)
         if not primary_audio and audio_streams:
             primary_audio = audio_streams[0]
@@ -6555,7 +6644,6 @@ def _probe_gdrive_media_metadata(fid):
                 "browser_audio_supported": True,
                 "duration_ms": round(max(numeric_durations) * 1000) if numeric_durations else 0,
                 "audio_streams": audio_streams,
-                "embedded_subtitle_tracks": embedded_subtitle_tracks,
             }
 
         audio_codec = primary_audio.get('codec', '')
@@ -6566,7 +6654,6 @@ def _probe_gdrive_media_metadata(fid):
             "audio_profile": primary_audio.get('profile', ''),
             "audio_probe_status": "ok",
             "audio_streams": audio_streams,
-            "embedded_subtitle_tracks": embedded_subtitle_tracks,
             "browser_audio_supported": _is_browser_supported_audio_codec(audio_codec),
             "duration_ms": round(max(numeric_durations) * 1000) if numeric_durations else 0,
         }
@@ -6660,6 +6747,18 @@ def _get_gdrive_stream_http_session():
     if session is None:
         session = requests.Session()
         session.headers.update({"User-Agent": "Mutflix/1.0"})
+        retry = Retry(
+            total=2,
+            connect=2,
+            read=0,
+            status=2,
+            backoff_factor=0.35,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({'GET'}),
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+        session.mount('https://', adapter)
         _gdrive_stream_http_local.session = session
     return session
 
@@ -6681,7 +6780,10 @@ def _proxy_gdrive_media(fid):
     headers["Range"] = range_header or "bytes=0-"
 
     stream_http = _get_gdrive_stream_http_session()
-    upstream = stream_http.get(media_url, headers=headers, stream=True, timeout=(10, 120))
+    try:
+        upstream = stream_http.get(media_url, headers=headers, stream=True, timeout=(10, 120))
+    except requests.RequestException:
+        return jsonify({"error": "GDrive stream temporarily unavailable"}), 502
     if upstream.status_code in (401, 403):
         svc = get_gdrive_service()
         if not svc:
@@ -6694,7 +6796,10 @@ def _proxy_gdrive_media(fid):
             _gdrive_token = token
             _gdrive_token_ts = time.time()
         headers["Authorization"] = f"Bearer {token}"
-        upstream = stream_http.get(media_url, headers=headers, stream=True, timeout=(10, 120))
+        try:
+            upstream = stream_http.get(media_url, headers=headers, stream=True, timeout=(10, 120))
+        except requests.RequestException:
+            return jsonify({"error": "GDrive stream temporarily unavailable"}), 502
 
     def generate():
         try:
@@ -7140,7 +7245,7 @@ def _start_gdrive_embedded_subtitle_extract(fid, stream_index, *, start_seconds=
         "-i", media_url,
     ])
     if duration_seconds > 0:
-        command.extend(["-t", str(duration_seconds)])
+        command.extend(["-to", str(start_seconds + duration_seconds)])
     command.extend([
         "-map", f"0:{stream_index}",
         "-vn",
@@ -7181,8 +7286,8 @@ def _embedded_subtitle_timing_headers(start_seconds=0, duration_seconds=0):
     return {
         "Access-Control-Expose-Headers": "X-Mutflix-Subtitle-Timeline, X-Mutflix-Subtitle-Cue-Offset, X-Mutflix-Subtitle-Window-Duration, X-Mutflix-Subtitle-Cache-Version",
         "X-Mutflix-Subtitle-Cache-Version": EMBEDDED_SUBTITLE_VTT_CACHE_VERSION,
-        "X-Mutflix-Subtitle-Cue-Offset": f"{float(start_seconds):g}",
-        "X-Mutflix-Subtitle-Timeline": "relative",
+        "X-Mutflix-Subtitle-Cue-Offset": "0",
+        "X-Mutflix-Subtitle-Timeline": "absolute",
         "X-Mutflix-Subtitle-Window-Duration": f"{float(duration_seconds):g}",
     }
 

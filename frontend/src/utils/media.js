@@ -199,7 +199,11 @@ export function getDetailArtworkUrl(item) {
 
 export function getStillUrl(item) {
   if (!item) return ''
-  const stillPath = item.still_path
+  const stillPath = item.profile_url
+    || item.profile_image_url
+    || (item.profile_path ? getTmdbImageUrl(item.profile_path, 'w185') : '')
+    || (item.tmdb_profile_path ? getTmdbImageUrl(item.tmdb_profile_path, 'w185') : '')
+    || item.still_path
     || item.still_url
     || (item.still_file_id ? `/api/gdrive-poster/${item.still_file_id}` : '')
     || item.thumbnail_url

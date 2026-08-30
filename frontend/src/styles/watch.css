@@ -378,6 +378,13 @@
   margin: 0;
 }
 
+.watch-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
 .watch-error button,
 .watch-floating-actions button {
   display: inline-flex;
