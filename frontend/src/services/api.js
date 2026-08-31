@@ -11,8 +11,8 @@ import {
   getPosterUrl,
 } from '../utils/media'
 
-const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v5'
-const EMBEDDED_SUBTITLE_REQUEST_TIMEOUT_MS = 45000
+const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v6'
+const EMBEDDED_SUBTITLE_REQUEST_TIMEOUT_MS = 120000
 const AUDIO_TRANSCODE_START_RETRY_DELAYS_MS = [900]
 const PLAYBACK_SOURCE_PROBE_RETRY_DELAYS_MS = [650, 1400]
 const VIDEO_QUEUE_CACHE_TTL_MS = 10 * 60 * 1000
@@ -685,7 +685,10 @@ async function fetchProgressiveSubtitleTrack(
     throwOnHttpError = false,
   } = {},
 ) {
-  const response = await fetch(subtitlePath, { signal })
+  const response = await fetch(subtitlePath, {
+    cache: throwOnHttpError ? 'no-store' : 'default',
+    signal,
+  })
   if (!response.ok) {
     if (throwOnHttpError) throw new Error(`Subtitle request failed (${response.status})`)
     return { cues: [], url: '' }
@@ -696,7 +699,7 @@ async function fetchProgressiveSubtitleTrack(
     const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
     const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), resolvedCueOffsetSeconds)
     if (!cues.length) {
-      if (throwOnHttpError && !subtitleText.trim()) throw new Error('Subtitle response was empty')
+      if (throwOnHttpError) throw new Error('Subtitle response contained no cues')
       return { cues: [], url: '' }
     }
     return {
@@ -724,7 +727,7 @@ async function fetchProgressiveSubtitleTrack(
   const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
   const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), resolvedCueOffsetSeconds)
   if (!cues.length) {
-    if (throwOnHttpError && !subtitleText.trim()) throw new Error('Subtitle response was empty')
+    if (throwOnHttpError) throw new Error('Subtitle response contained no cues')
     return { cues: [], url: '' }
   }
   onCues?.(cues)
