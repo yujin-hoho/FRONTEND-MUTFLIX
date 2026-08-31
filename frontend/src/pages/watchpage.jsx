@@ -57,6 +57,7 @@ const SUBTITLE_POSITION_MAX_PERCENT = 90
 const EMBEDDED_SUBTITLE_WINDOW_SECONDS = 180
 const EMBEDDED_SUBTITLE_WINDOW_LOOKBEHIND_SECONDS = 10
 const EMBEDDED_SUBTITLE_PREFETCH_LEAD_SECONDS = 30
+const EMBEDDED_SUBTITLE_RETRY_DELAYS_MS = [1500, 4000, 10000, 20000]
 const PLAYBACK_RATE_STORAGE_KEY = 'mutflix.playback-rate'
 const SUBTITLE_SETTINGS_STORAGE_KEY = 'mutflix.subtitle-settings'
 const DEFAULT_SUBTITLE_SETTINGS = {
@@ -109,7 +110,7 @@ function WatchPage({
   const isSeekBarActiveRef = useRef(false)
   const embeddedSubtitleTracksRef = useRef([])
   const embeddedSubtitleTrackUrlRef = useRef('')
-  const embeddedSubtitleWindowRequestsRef = useRef(new Set())
+  const embeddedSubtitleWindowRequestsRef = useRef(new Map())
   const externalSubtitleCuesRef = useRef([])
   const isSubtitleDelayInputFocusedRef = useRef(false)
   const selectedSubtitleIdRef = useRef('')
@@ -911,8 +912,12 @@ function WatchPage({
 
     windows.forEach(({ durationSeconds, startSeconds }) => {
       const requestKey = `${embeddedSubtitleTrackUrl}:${startSeconds}:${durationSeconds}`
-      if (embeddedSubtitleWindowRequestsRef.current.has(requestKey)) return
-      embeddedSubtitleWindowRequestsRef.current.add(requestKey)
+      const previousRequest = embeddedSubtitleWindowRequestsRef.current.get(requestKey)
+      if (previousRequest?.status === 'loading' || previousRequest?.status === 'loaded') return
+      if (previousRequest?.retryAt > Date.now()) return
+
+      const attempt = Number(previousRequest?.attempt || 0) + 1
+      embeddedSubtitleWindowRequestsRef.current.set(requestKey, { attempt, status: 'loading' })
 
       fetchEmbeddedSubtitleWindow(embeddedSubtitleTrackUrl, startSeconds, durationSeconds, {
         onCues: (cues) => {
@@ -923,9 +928,18 @@ function WatchPage({
       }).then(({ cues }) => {
         if (embeddedSubtitleTrackUrlRef.current === embeddedSubtitleTrackUrl) {
           setSubtitleCues((currentCues) => mergeSubtitleCues(currentCues, createSubtitleCues(cues)))
+          embeddedSubtitleWindowRequestsRef.current.set(requestKey, { attempt, status: 'loaded' })
         }
       }).catch(() => {
-        embeddedSubtitleWindowRequestsRef.current.delete(requestKey)
+        if (embeddedSubtitleTrackUrlRef.current !== embeddedSubtitleTrackUrl) return
+        const retryDelay = EMBEDDED_SUBTITLE_RETRY_DELAYS_MS[
+          Math.min(attempt - 1, EMBEDDED_SUBTITLE_RETRY_DELAYS_MS.length - 1)
+        ]
+        embeddedSubtitleWindowRequestsRef.current.set(requestKey, {
+          attempt,
+          retryAt: Date.now() + retryDelay,
+          status: 'retry',
+        })
       })
     })
   }, [currentTime, embeddedSubtitleTrackUrl])

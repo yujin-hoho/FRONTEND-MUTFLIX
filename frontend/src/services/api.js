@@ -658,15 +658,25 @@ export async function fetchEmbeddedSubtitleWindow(subtitleTrackUrl, startSeconds
     cueOffsetMode: 'response-header',
     cueOffsetSeconds: startSeconds,
     onCues,
+    throwOnHttpError: true,
   })
 }
 
 async function fetchProgressiveSubtitleTrack(
   subtitlePath,
-  { createObjectUrl = true, cueOffsetMode = 'always', cueOffsetSeconds = 0, onCues } = {},
+  {
+    createObjectUrl = true,
+    cueOffsetMode = 'always',
+    cueOffsetSeconds = 0,
+    onCues,
+    throwOnHttpError = false,
+  } = {},
 ) {
   const response = await fetch(subtitlePath)
-  if (!response.ok) return { cues: [], url: '' }
+  if (!response.ok) {
+    if (throwOnHttpError) throw new Error(`Subtitle request failed (${response.status})`)
+    return { cues: [], url: '' }
+  }
   const resolvedCueOffsetSeconds = getSubtitleCueOffset(response, cueOffsetSeconds, cueOffsetMode)
   if (!response.body) {
     const subtitleText = decodeSubtitleText(await response.arrayBuffer())
@@ -697,7 +707,10 @@ async function fetchProgressiveSubtitleTrack(
   subtitleText += decoder.decode()
   const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
   const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), resolvedCueOffsetSeconds)
-  if (!cues.length) return { cues: [], url: '' }
+  if (!cues.length) {
+    if (throwOnHttpError && !subtitleText.trim()) throw new Error('Subtitle response was empty')
+    return { cues: [], url: '' }
+  }
   onCues?.(cues)
   return {
     cues,
