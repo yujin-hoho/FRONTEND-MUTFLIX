@@ -12,6 +12,7 @@ import {
 } from '../utils/media'
 
 const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v5'
+const EMBEDDED_SUBTITLE_REQUEST_TIMEOUT_MS = 45000
 const AUDIO_TRANSCODE_START_RETRY_DELAYS_MS = [900]
 const PLAYBACK_SOURCE_PROBE_RETRY_DELAYS_MS = [650, 1400]
 const VIDEO_QUEUE_CACHE_TTL_MS = 10 * 60 * 1000
@@ -646,20 +647,31 @@ export async function fetchEmbeddedSubtitleTracks(embeddedSubtitlesUrl) {
   return []
 }
 
-export async function fetchEmbeddedSubtitleWindow(subtitleTrackUrl, startSeconds, durationSeconds, { onCues } = {}) {
+export async function fetchEmbeddedSubtitleWindow(subtitleTrackUrl, startSeconds, durationSeconds, { onCues, signal } = {}) {
   if (!subtitleTrackUrl) return { cues: [], url: '' }
 
   const subtitleUrl = new URL(subtitleTrackUrl, window.location.origin)
   subtitleUrl.searchParams.set('start_seconds', String(startSeconds))
   subtitleUrl.searchParams.set('duration_seconds', String(durationSeconds))
   subtitleUrl.searchParams.set('subtitle_cache_v', EMBEDDED_SUBTITLE_CACHE_VERSION)
-  return fetchProgressiveSubtitleTrack(subtitleUrl.toString(), {
-    createObjectUrl: false,
-    cueOffsetMode: 'response-header',
-    cueOffsetSeconds: startSeconds,
-    onCues,
-    throwOnHttpError: true,
-  })
+  const requestController = new AbortController()
+  const abortRequest = () => requestController.abort()
+  if (signal?.aborted) abortRequest()
+  else signal?.addEventListener('abort', abortRequest, { once: true })
+  const timeoutId = window.setTimeout(abortRequest, EMBEDDED_SUBTITLE_REQUEST_TIMEOUT_MS)
+  try {
+    return await fetchProgressiveSubtitleTrack(subtitleUrl.toString(), {
+      createObjectUrl: false,
+      cueOffsetMode: 'response-header',
+      cueOffsetSeconds: startSeconds,
+      onCues,
+      signal: requestController.signal,
+      throwOnHttpError: true,
+    })
+  } finally {
+    window.clearTimeout(timeoutId)
+    signal?.removeEventListener('abort', abortRequest)
+  }
 }
 
 async function fetchProgressiveSubtitleTrack(
@@ -669,10 +681,11 @@ async function fetchProgressiveSubtitleTrack(
     cueOffsetMode = 'always',
     cueOffsetSeconds = 0,
     onCues,
+    signal,
     throwOnHttpError = false,
   } = {},
 ) {
-  const response = await fetch(subtitlePath)
+  const response = await fetch(subtitlePath, { signal })
   if (!response.ok) {
     if (throwOnHttpError) throw new Error(`Subtitle request failed (${response.status})`)
     return { cues: [], url: '' }
@@ -682,7 +695,10 @@ async function fetchProgressiveSubtitleTrack(
     const subtitleText = decodeSubtitleText(await response.arrayBuffer())
     const webVtt = normalizeSubtitleToWebVtt(subtitleText, subtitlePath)
     const cues = offsetSubtitleCues(parseSubtitleCues(webVtt), resolvedCueOffsetSeconds)
-    if (!cues.length) return { cues: [], url: '' }
+    if (!cues.length) {
+      if (throwOnHttpError && !subtitleText.trim()) throw new Error('Subtitle response was empty')
+      return { cues: [], url: '' }
+    }
     return {
       cues,
       url: createObjectUrl ? URL.createObjectURL(new Blob([webVtt], { type: 'text/vtt' })) : '',

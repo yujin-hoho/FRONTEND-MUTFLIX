@@ -147,6 +147,7 @@ function WatchPage({
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
   const [subtitleDelayInputValue, setSubtitleDelayInputValue] = useState(() => formatSubtitleDelay(DEFAULT_SUBTITLE_SETTINGS.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
+  const [subtitleRetryTick, setSubtitleRetryTick] = useState(0)
   const [embeddedSubtitleTracks, setEmbeddedSubtitleTracks] = useState([])
   const [embeddedSubtitleTrackUrl, setEmbeddedSubtitleTrackUrl] = useState('')
   const [selectedSubtitleId, setSelectedSubtitleId] = useState('')
@@ -355,10 +356,18 @@ function WatchPage({
     if (element?.track) element.track.mode = 'hidden'
   }, [])
 
+  const clearEmbeddedSubtitleWindowRequests = useCallback(() => {
+    embeddedSubtitleWindowRequestsRef.current.forEach((requestState) => {
+      window.clearTimeout(requestState?.retryTimeoutId)
+      requestState?.controller?.abort()
+    })
+    embeddedSubtitleWindowRequestsRef.current.clear()
+  }, [])
+
   const selectSubtitleTrack = useCallback((subtitleId, tracks = embeddedSubtitleTracksRef.current) => {
     selectedSubtitleIdRef.current = subtitleId
     setSelectedSubtitleId(subtitleId)
-    embeddedSubtitleWindowRequestsRef.current.clear()
+    clearEmbeddedSubtitleWindowRequests()
 
     if (subtitleId === 'external') {
       embeddedSubtitleTrackUrlRef.current = ''
@@ -372,7 +381,7 @@ function WatchPage({
     embeddedSubtitleTrackUrlRef.current = trackUrl
     setEmbeddedSubtitleTrackUrl(trackUrl)
     setSubtitleCues([])
-  }, [])
+  }, [clearEmbeddedSubtitleWindowRequests])
 
   const clearStreamStallTimeout = useCallback(() => {
     window.clearTimeout(streamStallTimeoutRef.current)
@@ -779,6 +788,25 @@ function WatchPage({
 
   useEffect(() => clearMediaErrorRecovery, [clearMediaErrorRecovery])
 
+  useEffect(() => clearEmbeddedSubtitleWindowRequests, [clearEmbeddedSubtitleWindowRequests])
+
+  useEffect(() => {
+    function retryInterruptedSubtitleWindows() {
+      let hasRetry = false
+      embeddedSubtitleWindowRequestsRef.current.forEach((requestState, requestKey) => {
+        if (requestState?.status !== 'retry' && requestState?.status !== 'loading') return
+        window.clearTimeout(requestState.retryTimeoutId)
+        requestState.controller?.abort()
+        embeddedSubtitleWindowRequestsRef.current.delete(requestKey)
+        hasRetry = true
+      })
+      if (hasRetry) setSubtitleRetryTick((tick) => tick + 1)
+    }
+
+    window.addEventListener('online', retryInterruptedSubtitleWindows)
+    return () => window.removeEventListener('online', retryInterruptedSubtitleWindows)
+  }, [])
+
   useEffect(() => () => window.clearTimeout(seekPreviewTimeoutRef.current), [])
 
   useEffect(() => {
@@ -836,7 +864,7 @@ function WatchPage({
     selectedAudioStreamIndexRef.current = null
     embeddedSubtitleTracksRef.current = []
     embeddedSubtitleTrackUrlRef.current = ''
-    embeddedSubtitleWindowRequestsRef.current.clear()
+    clearEmbeddedSubtitleWindowRequests()
     externalSubtitleCuesRef.current = []
     selectedSubtitleIdRef.current = ''
 
@@ -899,7 +927,7 @@ function WatchPage({
       cancelAudioTranscodeStartRequest()
       if (nextSubtitleUrl) URL.revokeObjectURL(nextSubtitleUrl)
     }
-  }, [authToken, cancelAudioTranscodeStartRequest, clearHeldFrame, clearMediaErrorRecovery, clearSeekPreview, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath, videoPath])
+  }, [authToken, cancelAudioTranscodeStartRequest, clearEmbeddedSubtitleWindowRequests, clearHeldFrame, clearMediaErrorRecovery, clearSeekPreview, clearStreamStallTimeout, loadPlaybackSource, markerFolderName, selectSubtitleTrack, subtitlePath, videoPath])
 
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
@@ -917,7 +945,8 @@ function WatchPage({
       if (previousRequest?.retryAt > Date.now()) return
 
       const attempt = Number(previousRequest?.attempt || 0) + 1
-      embeddedSubtitleWindowRequestsRef.current.set(requestKey, { attempt, status: 'loading' })
+      const controller = new AbortController()
+      embeddedSubtitleWindowRequestsRef.current.set(requestKey, { attempt, controller, status: 'loading' })
 
       fetchEmbeddedSubtitleWindow(embeddedSubtitleTrackUrl, startSeconds, durationSeconds, {
         onCues: (cues) => {
@@ -925,24 +954,33 @@ function WatchPage({
             setSubtitleCues((currentCues) => mergeSubtitleCues(currentCues, createSubtitleCues(cues)))
           }
         },
+        signal: controller.signal,
       }).then(({ cues }) => {
-        if (embeddedSubtitleTrackUrlRef.current === embeddedSubtitleTrackUrl) {
-          setSubtitleCues((currentCues) => mergeSubtitleCues(currentCues, createSubtitleCues(cues)))
-          embeddedSubtitleWindowRequestsRef.current.set(requestKey, { attempt, status: 'loaded' })
-        }
+        const requestState = embeddedSubtitleWindowRequestsRef.current.get(requestKey)
+        if (embeddedSubtitleTrackUrlRef.current !== embeddedSubtitleTrackUrl || requestState?.controller !== controller) return
+        setSubtitleCues((currentCues) => mergeSubtitleCues(currentCues, createSubtitleCues(cues)))
+        embeddedSubtitleWindowRequestsRef.current.set(requestKey, { attempt, status: 'loaded' })
       }).catch(() => {
-        if (embeddedSubtitleTrackUrlRef.current !== embeddedSubtitleTrackUrl) return
+        const requestState = embeddedSubtitleWindowRequestsRef.current.get(requestKey)
+        if (embeddedSubtitleTrackUrlRef.current !== embeddedSubtitleTrackUrl || requestState?.controller !== controller) return
         const retryDelay = EMBEDDED_SUBTITLE_RETRY_DELAYS_MS[
           Math.min(attempt - 1, EMBEDDED_SUBTITLE_RETRY_DELAYS_MS.length - 1)
         ]
+        const retryTimeoutId = window.setTimeout(() => {
+          const requestState = embeddedSubtitleWindowRequestsRef.current.get(requestKey)
+          if (requestState?.status !== 'retry' || requestState.attempt !== attempt) return
+          embeddedSubtitleWindowRequestsRef.current.delete(requestKey)
+          setSubtitleRetryTick((tick) => tick + 1)
+        }, retryDelay)
         embeddedSubtitleWindowRequestsRef.current.set(requestKey, {
           attempt,
           retryAt: Date.now() + retryDelay,
+          retryTimeoutId,
           status: 'retry',
         })
       })
     })
-  }, [currentTime, embeddedSubtitleTrackUrl])
+  }, [currentTime, embeddedSubtitleTrackUrl, subtitleRetryTick])
 
   useEffect(() => {
     const player = playerRef.current
