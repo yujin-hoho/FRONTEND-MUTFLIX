@@ -23,6 +23,7 @@ function MyListPage({
   profileId,
   profileMyList = [],
   selectedProfile,
+  syncRevision = 0,
   watchHistory = [],
 }) {
   const [activeStatus, setActiveStatus] = useState('plan_to_watch')
@@ -79,6 +80,31 @@ function MyListPage({
       ignore = true
     }
   }, [authToken, profileId])
+
+  useEffect(() => {
+    if (syncRevision === 0) return undefined
+
+    const nextLists = createEmptyMyListByStatus()
+    profileMyList.forEach((item) => {
+      const itemStatus = item.my_list_status || item.status || 'plan_to_watch'
+      if (MY_LIST_STATUSES.includes(itemStatus)) nextLists[itemStatus].push(item)
+    })
+    let ignore = false
+    Promise.resolve().then(() => {
+      if (ignore) return
+      setMyListByStatus(nextLists)
+      setItemCounts({
+        completed: nextLists.completed.length,
+        plan_to_watch: nextLists.plan_to_watch.length,
+      })
+      setStatusByStatus({ completed: 'ready', plan_to_watch: 'ready' })
+      setErrorByStatus(createEmptyErrorByStatus())
+    })
+
+    return () => {
+      ignore = true
+    }
+  }, [profileMyList, syncRevision])
 
   useEffect(() => {
     if (statusByStatus[activeStatus] !== 'loading') return undefined

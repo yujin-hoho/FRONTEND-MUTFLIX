@@ -102,7 +102,7 @@ export async function editProfile(authToken, profile) {
 export async function fetchDashboardData(authToken, profileId) {
   const headers = { 'x-access-token': authToken }
   const [historyResponse, catalogResponse] = await Promise.all([
-    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&enrich_stills=true&limit=100`, { headers }),
+    fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&enrich_stills=true&limit=100`, { cache: 'no-store', headers }),
     fetch(`${API_BASE_URL}/api/folders`, { headers }),
   ])
   const historyData = await historyResponse.json().catch(() => [])
@@ -134,11 +134,27 @@ export async function fetchDashboardData(authToken, profileId) {
   }
 }
 
+export async function fetchWatchHistory(authToken, profileId) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&limit=100`,
+    {
+      cache: 'no-store',
+      headers: { 'x-access-token': authToken },
+    },
+  )
+  const data = await response.json().catch(() => [])
+  if (!response.ok) {
+    throw new Error(data.message || data.error || 'Failed to load watch history.')
+  }
+  return normalizeWatchHistory(data)
+}
+
 export async function fetchMyList(authToken, profileId, { status } = {}) {
   const params = new URLSearchParams({ profile_id: profileId })
   if (status) params.set('status', status)
 
   const response = await fetch(`${API_BASE_URL}/api/mylist?${params.toString()}`, {
+    cache: 'no-store',
     headers: { 'x-access-token': authToken },
   })
   const data = await response.json().catch(() => [])
@@ -149,6 +165,7 @@ export async function fetchMyList(authToken, profileId, { status } = {}) {
 export async function fetchMyListCounts(authToken, profileId) {
   const params = new URLSearchParams({ profile_id: profileId })
   const response = await fetch(`${API_BASE_URL}/api/mylist/counts?${params.toString()}`, {
+    cache: 'no-store',
     headers: { 'x-access-token': authToken },
   })
   const data = await response.json().catch(() => ({}))
@@ -910,7 +927,11 @@ function parseSubtitleTimestamp(timestamp) {
 }
 
 export async function saveWatchProgress(authToken, payload) {
-  const normalizedPayload = { ...payload, media_path: normalizeMediaPath(payload.media_path) }
+  const normalizedPayload = {
+    ...payload,
+    client_updated_at: payload.client_updated_at || new Date().toISOString(),
+    media_path: normalizeMediaPath(payload.media_path),
+  }
   const response = await fetch(`${API_BASE_URL}/api/history/save`, {
     method: 'POST',
     headers: {
@@ -1529,12 +1550,14 @@ function normalizeMyListItem(item) {
   const metadata = item.meta_json && typeof item.meta_json === 'object' ? item.meta_json : {}
   const mediaType = String(item.media_type || metadata.media_type || metadata.type || '').toLowerCase()
   const isMovie = mediaType === 'movie'
+  const status = item.status || 'plan_to_watch'
 
   return {
     ...metadata,
     folder_name: item.folder_name || metadata.folder_name || metadata.name || '',
     media_type: isMovie ? 'movie' : 'tv',
-    my_list_status: item.status || 'plan_to_watch',
+    my_list_status: status,
+    status,
     type: isMovie ? 'movie' : 'series',
   }
 }

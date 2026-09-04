@@ -23,6 +23,7 @@ import {
   fetchDetailData,
   fetchMyList,
   fetchProfiles,
+  fetchWatchHistory,
   hideWatchHistory,
   mergeCatalogMetadataUpdates,
   removeMyListItem,
@@ -67,6 +68,9 @@ const EMPTY_DETAIL_DATA = {
   isMetadataLoading: false,
   error: null,
 }
+
+const PROFILE_SYNC_INTERVAL_MS = 30 * 1000
+const PROFILE_SYNC_DEBOUNCE_MS = 3 * 1000
 
 function App() {
   const location = useLocation()
@@ -149,6 +153,7 @@ function App() {
     }
   })
   const [detailData, setDetailData] = useState(EMPTY_DETAIL_DATA)
+  const [profileSyncRevision, setProfileSyncRevision] = useState(0)
   const [contextMenu, setContextMenu] = useState(null)
   const featuredItemKeys = useRef(new Map())
   const historyRevision = useRef(0)
@@ -185,6 +190,73 @@ function App() {
   useEffect(() => {
     dashboardRowsCacheKey.current = ''
   }, [selectedProfile?.id])
+
+  useEffect(() => {
+    if (!currentUser || !authToken || !selectedProfile?.id || isWatchRoute) return undefined
+
+    let disposed = false
+    let isSyncing = false
+    let lastSyncAt = Date.now()
+
+    async function syncProfileData() {
+      if (disposed || isSyncing || document.visibilityState === 'hidden') return
+      isSyncing = true
+      const startingHistoryRevision = historyRevision.current
+
+      try {
+        const [historyResult, myListResult] = await Promise.allSettled([
+          fetchWatchHistory(authToken, selectedProfile.id),
+          fetchMyList(authToken, selectedProfile.id),
+        ])
+        if (disposed) return
+        if (historyResult.status === 'rejected' && myListResult.status === 'rejected') return
+
+        setProfileData((currentData) => {
+          const watchHistory = historyResult.status === 'fulfilled'
+            && historyRevision.current === startingHistoryRevision
+            ? historyResult.value
+            : currentData.watchHistory
+          const myList = myListResult.status === 'fulfilled'
+            ? myListResult.value
+            : currentData.myList
+          const currentCatalog = catalogDataRef.current
+          writeDashboardCache(selectedProfile.id, {
+            history: watchHistory,
+            movies: currentCatalog.movies,
+            rows: currentCatalog.rows,
+            series: currentCatalog.series,
+          })
+          return { ...currentData, myList, watchHistory }
+        })
+        setProfileSyncRevision((revision) => revision + 1)
+      } finally {
+        isSyncing = false
+        lastSyncAt = Date.now()
+      }
+    }
+
+    function requestProfileSync() {
+      if (Date.now() - lastSyncAt < PROFILE_SYNC_DEBOUNCE_MS) return
+      void syncProfileData()
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'visible') requestProfileSync()
+    }
+
+    window.addEventListener('focus', requestProfileSync)
+    window.addEventListener('pageshow', requestProfileSync)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    const intervalId = window.setInterval(requestProfileSync, PROFILE_SYNC_INTERVAL_MS)
+
+    return () => {
+      disposed = true
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', requestProfileSync)
+      window.removeEventListener('pageshow', requestProfileSync)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [authToken, currentUser, isWatchRoute, selectedProfile?.id])
 
   useEffect(() => {
     if (!currentUser || !authToken || selectedProfile) return
@@ -233,7 +305,7 @@ function App() {
       const dashboardRequest = fetchDashboardData(authToken, selectedProfile.id)
         .then((dashboard) => ({ dashboard }))
         .catch((error) => ({ error }))
-      const myListRequest = fetchMyList(authToken, selectedProfile.id, isMyListRoute ? { status: 'plan_to_watch' } : undefined)
+      const myListRequest = fetchMyList(authToken, selectedProfile.id)
         .then((myList) => ({ myList }))
         .catch(() => ({ myList: [] }))
 
@@ -1145,6 +1217,7 @@ function App() {
           onSearchCatalog={handleSearchCatalog}
           profileId={selectedProfile.id}
           profileMyList={profileData.myList}
+          syncRevision={profileSyncRevision}
           selectedProfile={selectedProfile}
           watchHistory={profileData.watchHistory}
         />,
@@ -1248,7 +1321,7 @@ async function promoteCompletedMyListItem({
 function isPlanToWatchMyListItem(item, myList) {
   return (Array.isArray(myList) ? myList : []).some((entry) => (
     isSameMyListItem(entry, item)
-    && (entry.status || entry.my_list_status || 'plan_to_watch') === 'plan_to_watch'
+    && (entry.my_list_status || entry.status || 'plan_to_watch') === 'plan_to_watch'
   ))
 }
 
