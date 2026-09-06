@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Play } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
 import ProfileMenu from '../components/ProfileMenu'
@@ -7,9 +7,7 @@ import SearchBox from '../components/search/SearchBox'
 import { createDashboardRowsSnapshot } from '../utils/cache'
 import {
   getBackdropUrl,
-  getDetailArtworkUrl,
   getGenres,
-  getItemKey,
   getPosterFallbackUrl,
   getPosterUrl,
   getRating,
@@ -17,13 +15,11 @@ import {
   getTitle,
   isCatalogItemCompleted,
   isWatchCompleted,
-  preloadImages,
   rotateItems,
 } from '../utils/media'
 
 function DashboardPage({
   catalogData,
-  featuredItemKey,
   isAdmin = false,
   onChangeProfile,
   onHydrateItems,
@@ -43,43 +39,35 @@ function DashboardPage({
   profileData,
   selectedProfile,
 }) {
+  const [rotationKey, setRotationKey] = useState(() => getRotationKey(selectedProfile.id))
+  useEffect(() => {
+    const updateRotation = () => setRotationKey(getRotationKey(selectedProfile.id))
+    updateRotation()
+    const interval = window.setInterval(updateRotation, 30000)
+    window.addEventListener('focus', updateRotation)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', updateRotation)
+    }
+  }, [selectedProfile.id])
   const dashboardView = useMemo(
-    () => buildDashboardView(catalogData, selectedProfile, featuredItemKey, profileData.watchHistory, myList),
-    [catalogData, featuredItemKey, myList, profileData.watchHistory, selectedProfile],
+    () => buildDashboardView(catalogData, rotationKey, profileData.watchHistory, myList),
+    [catalogData, rotationKey, myList, profileData.watchHistory],
   )
   const displayView = catalogData.rows
-    ? { ...dashboardView, ...catalogData.rows }
+    ? {
+      ...dashboardView,
+      ...catalogData.rows,
+      featuredItem: dashboardView.featuredItem,
+      featuredBackdrop: dashboardView.featuredBackdrop,
+      featuredFallback: dashboardView.featuredFallback,
+    }
     : dashboardView
 
   useEffect(() => {
     if (!onDashboardRowsReady || catalogData.isLoading) return
     onDashboardRowsReady(createDashboardRowsSnapshot(dashboardView))
   }, [catalogData.isLoading, dashboardView, onDashboardRowsReady])
-
-  // Low-priority background preload only after page has loaded and browser is idle
-  useEffect(() => {
-    const allRows = [...(displayView.curatedRows || []), ...(displayView.catalogRows || [])]
-    const urls = []
-    allRows.slice(0, 4).forEach((row) => {
-      (row.items || []).slice(0, 6).forEach((item) => {
-        const url = getPosterUrl(item) || getDetailArtworkUrl(item)
-        if (url) urls.push(url)
-      })
-    })
-    if (!urls.length) return
-
-    const idleId = (window.requestIdleCallback || ((cb) => setTimeout(cb, 2500)))(() => {
-      preloadImages(urls, { concurrency: 2 })
-    })
-
-    return () => {
-      if (window.cancelIdleCallback) {
-        window.cancelIdleCallback(idleId)
-      } else {
-        clearTimeout(idleId)
-      }
-    }
-  }, [displayView])
 
   return (
     <main className="dashboard-page">
@@ -168,15 +156,13 @@ function DashboardPage({
   )
 }
 
-function buildDashboardView(catalogData, selectedProfile, featuredItemKey, watchHistory = [], myList = []) {
-  const rotationKey = getRotationKey(selectedProfile.id)
+function buildDashboardView(catalogData, rotationKey, watchHistory = [], myList = []) {
   const completedContext = { myList, watchHistory }
   const catalogItems = [...catalogData.movies, ...catalogData.series]
     .filter((item) => !isCatalogItemCompleted(item, completedContext))
   const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
   const heroCandidates = backdropItems.length ? backdropItems : catalogItems
-  const featuredItem = (featuredItemKey && backdropItems.find((item) => getItemKey(item) === featuredItemKey))
-    || rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
+  const featuredItem = rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
     || backdropItems[0]
     || catalogItems[0]
   const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Animation', 'Documentary']

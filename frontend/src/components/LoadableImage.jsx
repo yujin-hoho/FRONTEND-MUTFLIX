@@ -16,7 +16,28 @@ const LoadableImage = memo(function LoadableImage({
   const resolvedSrc = useFallback || !src ? fallbackSrc : src
   const [imageState, setImageState] = useState(() => getInitialImageState(src || fallbackSrc))
   const imgRef = useRef(null)
+  const containerRef = useRef(null)
+  const [proximity, setProximity] = useState(0)
   const isPriority = fetchPriority === 'high' || loading === 'eager'
+
+  useEffect(() => {
+    if (isPriority) return
+    const target = containerRef.current?.parentElement
+    if (!target) return
+    if (typeof IntersectionObserver === 'undefined') {
+      setProximity(2)
+      return
+    }
+    const nearby = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setProximity((current) => Math.max(current, 1))
+    }, { rootMargin: '900px 300px' })
+    const visible = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setProximity(2)
+    })
+    nearby.observe(target)
+    visible.observe(target)
+    return () => { nearby.disconnect(); visible.disconnect() }
+  }, [isPriority, resolvedSrc])
 
   useEffect(() => {
     setUseFallback(false)
@@ -30,14 +51,14 @@ const LoadableImage = memo(function LoadableImage({
     }
   }, [resolvedSrc])
 
-  // For non-priority GDrive images, pre-load via queue so we don't
-  // blast the server with 30+ simultaneous requests
+  // Start nearby artwork through the shared queue; visible artwork gets priority.
   useEffect(() => {
     if (!resolvedSrc || imageState === 'loaded' || imageState === 'error') return
     if (isPriority) return // Let browser handle priority images natively
+    if (!proximity) return
 
     let cancelled = false
-    requestImageLoad(resolvedSrc, { priority: false })
+    requestImageLoad(resolvedSrc, { priority: proximity === 2 })
       .then(() => {
         if (!cancelled) {
           rememberLoadedImageUrl(resolvedSrc)
@@ -56,7 +77,7 @@ const LoadableImage = memo(function LoadableImage({
       })
 
     return () => { cancelled = true }
-  }, [resolvedSrc, isPriority, fallbackSrc]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolvedSrc, isPriority, fallbackSrc, proximity]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!resolvedSrc) {
     return shimmerOnError
@@ -74,15 +95,14 @@ const LoadableImage = memo(function LoadableImage({
   const showShimmer = (imageState === 'loading' && !showLoadingFallback) || (imageState === 'error' && shimmerOnError)
   const shouldRenderImage = imageState !== 'error' && Boolean(resolvedSrc)
 
-  // For non-priority GDrive images managed by the queue:
+  // For non-priority images managed by the queue:
   // don't set src on the img element until the queue has resolved,
   // so the browser doesn't bypass the queue by starting its own parallel load.
-  const isGdrive = resolvedSrc.includes('/api/gdrive-poster')
-  const useQueuedSrc = !isPriority && isGdrive
+  const useQueuedSrc = !isPriority
   const imgSrc = useQueuedSrc ? (imageState === 'loaded' ? resolvedSrc : '') : resolvedSrc
 
   return (
-    <>
+    <span ref={containerRef} style={{ display: 'contents' }}>
       {showShimmer && <span className="image-shimmer" aria-hidden="true" />}
       {showLoadingFallback && (
         <img
@@ -100,7 +120,7 @@ const LoadableImage = memo(function LoadableImage({
           className={`${className} ${imageState === 'loaded' ? 'image-loaded' : 'image-loading'}`.trim()}
           decoding="async"
           fetchPriority={fetchPriority}
-          loading={loading}
+          loading="eager"
           onError={() => {
             if (fallbackSrc && resolvedSrc !== fallbackSrc) {
               setUseFallback(true)
@@ -126,7 +146,7 @@ const LoadableImage = memo(function LoadableImage({
           src={imgSrc}
         />
       )}
-    </>
+    </span>
   )
 })
 

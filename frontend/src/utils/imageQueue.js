@@ -11,17 +11,18 @@
  */
 
 const MAX_CONCURRENT = 8 // Browser per-host limit is ~6-8; match it
-const GDRIVE_PROXY_PATH = '/api/gdrive-poster'
 const IMAGE_LOAD_TIMEOUT_MS = 15000
 
 let activeCount = 0
 const queue = [] // [{src, resolve, reject}]
+const pending = new Map()
 
 function dispatch() {
   while (queue.length > 0 && activeCount < MAX_CONCURRENT) {
     const { src, resolve, reject } = queue.shift()
     activeCount++
     loadImage(src).then(resolve, reject).finally(() => {
+      pending.delete(src)
       activeCount--
       dispatch()
     })
@@ -60,20 +61,24 @@ function loadImage(src) {
 /**
  * Request to load an image, respecting the concurrency limit.
  * Returns a promise that resolves when the image is loaded (or rejects on error).
- * Priority images bypass the queue and load immediately.
+ * Priority requests move ahead of waiting requests while respecting the limit.
  */
 export function requestImageLoad(src, { priority = false } = {}) {
   if (!src) return Promise.reject(new Error('No src'))
 
-  // Non-GDrive images or priority images: load immediately without queuing
-  const isGdrive = src.includes(GDRIVE_PROXY_PATH)
-  if (!isGdrive || priority) {
-    return loadImage(src)
+  if (pending.has(src)) {
+    const index = queue.findIndex((entry) => entry.src === src)
+    if (priority && index > 0) queue.unshift(...queue.splice(index, 1))
+    return pending.get(src)
   }
 
-  // GDrive images: queue and dispatch via concurrency limiter
-  return new Promise((resolve, reject) => {
-    queue.push({ src, resolve, reject })
-    dispatch()
+  // Share in-flight requests and limit background work across image sources.
+  const promise = new Promise((resolve, reject) => {
+    const entry = { src, resolve, reject }
+    if (priority) queue.unshift(entry)
+    else queue.push(entry)
   })
+  pending.set(src, promise)
+  dispatch()
+  return promise
 }
