@@ -2,7 +2,7 @@
   height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
-  background: #020617;
+  background: #0b0b0b;
   color: #f8fafc;
   scrollbar-width: none;
 }
@@ -42,7 +42,7 @@
   padding: 120px clamp(20px, 4vw, 54px) 96px;
   background:
     radial-gradient(circle at 18% 20%, rgba(var(--brand-primary-rgb), 0.18), transparent 28%),
-    linear-gradient(135deg, #07111f, #020617 72%);
+    linear-gradient(135deg, #121212, #0b0b0b 72%);
 }
 
 .detail-backdrop,
@@ -65,7 +65,7 @@
   z-index: 0;
   display: block;
   overflow: hidden;
-  background: #111827;
+  background: #1a1a1a;
 }
 
 .image-shimmer::after {
@@ -106,8 +106,8 @@
 
 .detail-shade {
   background:
-    linear-gradient(90deg, #020617 0%, rgba(2, 6, 23, 0.88) 34%, rgba(2, 6, 23, 0.18) 72%),
-    linear-gradient(0deg, #020617 0%, transparent 32%);
+    linear-gradient(90deg, #0b0b0b 0%, rgba(11, 11, 11, 0.88) 34%, rgba(11, 11, 11, 0.18) 72%),
+    linear-gradient(0deg, #0b0b0b 0%, transparent 32%);
 }
 
 .detail-copy {
@@ -143,7 +143,7 @@
 
 .detail-meta span {
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(24, 24, 24, 0.72);
   color: #dbeafe;
   padding: 5px 9px;
   font-size: 0.78rem;
@@ -177,7 +177,7 @@
   width: 100%;
   height: 12px;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.2);
+  background: rgba(160, 160, 160, 0.2);
   animation: detail-overview-pulse 1.2s ease-in-out infinite;
 }
 
@@ -220,7 +220,7 @@
   display: block;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(148, 163, 184, 0.34);
+  background: rgba(160, 160, 160, 0.34);
 }
 
 .detail-watch-progress-track {
@@ -334,7 +334,7 @@
   display: block;
   overflow: hidden;
   border-radius: 5px;
-  background: #111827;
+  background: #1a1a1a;
 }
 
 .skeleton-block::after {
@@ -445,7 +445,7 @@
   grid-template-columns: 42px minmax(180px, 240px) 1fr;
   align-items: center;
   gap: 18px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  border-bottom: 1px solid rgba(160, 160, 160, 0.16);
   border-radius: 6px;
   padding: 18px 14px 18px 6px;
   transition: background 160ms ease;
@@ -459,7 +459,7 @@
 
 .episode-card:hover,
 .episode-card:focus-visible {
-  background: rgba(148, 163, 184, 0.1);
+  background: rgba(160, 160, 160, 0.1);
 }
 
 .episode-card:focus-visible {
@@ -516,7 +516,7 @@
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 5px;
-  background: #111827;
+  background: #1a1a1a;
 }
 
 .episode-thumbnail img,
@@ -535,7 +535,7 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: rgba(2, 6, 23, 0.42);
+  background: rgba(11, 11, 11, 0.42);
   pointer-events: none;
 }
 
@@ -547,7 +547,7 @@
 }
 
 .episode-thumbnail-fallback {
-  background: linear-gradient(135deg, #1f2937, #020617);
+  background: linear-gradient(135deg, #242424, #0b0b0b);
 }
 
 .episode-play-icon {
@@ -561,7 +561,7 @@
   place-items: center;
   border: 1px solid rgba(var(--brand-primary-rgb), 0.86);
   border-radius: 50%;
-  background: rgba(2, 6, 23, 0.62);
+  background: rgba(11, 11, 11, 0.62);
   color: var(--brand-primary);
   opacity: 0;
   transform: translate(-50%, -50%);
@@ -574,7 +574,7 @@
   right: 8px;
   z-index: 2;
   border-radius: 999px;
-  background: rgba(2, 6, 23, 0.82);
+  background: rgba(11, 11, 11, 0.82);
   color: var(--brand-primary);
   padding: 3px 6px;
   font-size: 0.7rem;
@@ -604,7 +604,7 @@
 .credits-panel {
   display: grid;
   gap: 42px;
-  border-left: 1px solid rgba(148, 163, 184, 0.18);
+  border-left: 1px solid rgba(160, 160, 160, 0.18);
   padding-left: 34px;
 }
 
@@ -675,7 +675,7 @@
   overflow: hidden;
   margin-top: 14px;
   border-radius: 6px;
-  background: #111827;
+  background: #1a1a1a;
 }
 
 .trailer-embed iframe {
@@ -695,7 +695,7 @@
   aspect-ratio: 2 / 3;
   overflow: hidden;
   border-radius: 5px;
-  background: #111827;
+  background: #1a1a1a;
 }
 
 .recommendation-poster img {
@@ -744,7 +744,7 @@ button.cast-card:focus-visible h3 {
   height: 82px;
   overflow: hidden;
   border-radius: 50%;
-  background: #111827;
+  background: #1a1a1a;
 }
 
 .cast-avatar img {

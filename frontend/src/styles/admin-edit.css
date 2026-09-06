@@ -3,7 +3,7 @@
   min-height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
-  background: #020617;
+  background: #0b0b0b;
   color: #f8fafc;
   scrollbar-width: none;
 }
@@ -23,7 +23,7 @@
   justify-content: space-between;
   height: 76px;
   padding: 0 clamp(20px, 4vw, 54px);
-  background: linear-gradient(180deg, rgba(2, 6, 23, 0.96), rgba(2, 6, 23, 0));
+  background: linear-gradient(180deg, rgba(11, 11, 11, 0.96), rgba(11, 11, 11, 0));
 }
 
 .admin-edit-back,
@@ -51,7 +51,7 @@
 }
 
 .admin-edit-save {
-  background: rgba(148, 163, 184, 0.16);
+  background: rgba(160, 160, 160, 0.16);
   color: rgba(248, 250, 252, 0.56);
   cursor: not-allowed;
 }
@@ -69,7 +69,7 @@
   align-items: end;
   overflow: hidden;
   padding: 116px clamp(20px, 4vw, 54px) 72px;
-  background: #07111f;
+  background: #121212;
 }
 
 .admin-edit-backdrop,
@@ -88,8 +88,8 @@
 
 .admin-edit-shade {
   background:
-    linear-gradient(90deg, #020617 0%, rgba(2, 6, 23, 0.84) 38%, rgba(2, 6, 23, 0.18) 74%),
-    linear-gradient(0deg, #020617 0%, transparent 34%);
+    linear-gradient(90deg, #0b0b0b 0%, rgba(11, 11, 11, 0.84) 38%, rgba(11, 11, 11, 0.18) 74%),
+    linear-gradient(0deg, #0b0b0b 0%, transparent 34%);
 }
 
 .admin-edit-copy {
@@ -122,7 +122,7 @@
 
 .admin-edit-meta span {
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.76);
+  background: rgba(24, 24, 24, 0.76);
   color: #dbeafe;
   padding: 6px 10px;
   font-size: 0.78rem;
@@ -138,9 +138,9 @@
 }
 
 .admin-edit-panel {
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  border: 1px solid rgba(160, 160, 160, 0.18);
   border-radius: 8px;
-  background: rgba(7, 17, 31, 0.86);
+  background: rgba(18, 18, 18, 0.86);
   padding: 20px;
 }
 
@@ -201,9 +201,9 @@
   grid-template-columns: 18px 1fr;
   align-items: center;
   gap: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid rgba(160, 160, 160, 0.24);
   border-radius: 8px;
-  background: rgba(2, 6, 23, 0.62);
+  background: rgba(11, 11, 11, 0.62);
   color: var(--brand-primary);
   padding: 0 12px;
 }
@@ -230,9 +230,9 @@
 }
 
 .admin-edit-type-toggle button {
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid rgba(160, 160, 160, 0.2);
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.76);
+  background: rgba(24, 24, 24, 0.76);
   color: #cbd5e1;
   padding: 10px 12px;
   font-weight: 800;
@@ -293,7 +293,7 @@
   overflow: hidden;
   border-radius: 6px;
   border: 2px solid rgba(var(--brand-primary-rgb), 0.4);
-  background: #0f172a;
+  background: #181818;
 }
 
 .admin-edit-current-poster-box img {
@@ -375,8 +375,8 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  background: rgba(7, 17, 31, 0.76);
-  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(18, 18, 18, 0.76);
+  border: 1px solid rgba(160, 160, 160, 0.18);
   border-radius: 10px;
   overflow: hidden;
   cursor: pointer;
@@ -391,7 +391,7 @@
 
 .admin-poster-card.selected {
   border-color: rgba(var(--brand-primary-rgb), 0.8);
-  background: rgba(4, 28, 15, 0.7);
+  background: rgba(20, 20, 20, 0.7);
 }
 
 .admin-poster-card.local-active {
@@ -404,7 +404,7 @@
   width: 100%;
   aspect-ratio: 2 / 3;
   overflow: hidden;
-  background: #0f172a;
+  background: #181818;
 }
 
 .admin-poster-thumbnail img {
@@ -453,7 +453,7 @@
   font-size: 0.72rem;
   font-weight: 800;
   color: #94a3b8;
-  background: rgba(15, 23, 42, 0.8);
+  background: rgba(24, 24, 24, 0.8);
   padding: 2px 6px;
   border-radius: 4px;
 }
@@ -470,9 +470,9 @@
   justify-content: center;
   gap: 6px;
   width: 100%;
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid rgba(160, 160, 160, 0.24);
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.7);
+  background: rgba(24, 24, 24, 0.7);
   color: #e2e8f0;
   padding: 8px 10px;
   font-size: 0.8rem;

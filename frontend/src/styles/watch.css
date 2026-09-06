@@ -165,10 +165,10 @@
   align-items: center;
   min-height: 26px;
   margin-top: 0 !important;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  border: 1px solid rgba(160, 160, 160, 0.28);
   border-radius: 999px;
   padding: 4px 9px;
-  background: rgba(15, 23, 42, 0.54);
+  background: rgba(24, 24, 24, 0.54);
   color: #cbd5e1 !important;
   font-size: 0.72rem !important;
   font-weight: 650;
@@ -190,7 +190,7 @@
   place-items: center;
   border: 0;
   border-radius: 50%;
-  background: rgba(15, 23, 42, 0.68);
+  background: rgba(24, 24, 24, 0.68);
   color: #f8fafc;
   transition: background 160ms ease, color 160ms ease;
 }
@@ -208,7 +208,7 @@
 }
 
 .watch-icon-button:disabled:hover {
-  background: rgba(15, 23, 42, 0.68);
+  background: rgba(24, 24, 24, 0.68);
   color: #64748b;
 }
 
@@ -219,10 +219,10 @@
   width: min(360px, calc(100vw - 32px));
   max-height: min(58vh, 430px);
   overflow-y: auto;
-  border: 1px solid rgba(148, 163, 184, 0.34);
+  border: 1px solid rgba(160, 160, 160, 0.34);
   border-radius: 10px;
   backdrop-filter: blur(18px);
-  background: rgba(2, 6, 23, 0.72);
+  background: rgba(11, 11, 11, 0.72);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
   color: #f8fafc;
   padding: 12px;
@@ -253,9 +253,9 @@
   gap: 10px;
   width: 100%;
   min-height: 64px;
-  border: 1px solid rgba(148, 163, 184, 0.26);
+  border: 1px solid rgba(160, 160, 160, 0.26);
   border-radius: 7px;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(24, 24, 24, 0.72);
   color: #f8fafc;
   padding: 7px 9px;
   text-align: left;
@@ -267,7 +267,7 @@
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 5px;
-  background: rgba(15, 23, 42, 0.9);
+  background: rgba(24, 24, 24, 0.9);
 }
 
 .watch-episode-list-artwork .image-shimmer,
@@ -288,7 +288,7 @@
   bottom: 0;
   left: 0;
   height: 3px;
-  background: rgba(148, 163, 184, 0.32);
+  background: rgba(160, 160, 160, 0.32);
 }
 
 .watch-episode-progress-track > span {
@@ -309,7 +309,7 @@
 .watch-episode-list-item:hover,
 .watch-episode-list-item.active {
   border-color: rgba(var(--brand-primary-rgb), 0.76);
-  background: rgba(5, 46, 22, 0.78);
+  background: rgba(32, 32, 32, 0.78);
 }
 
 .watch-episode-list-index {
@@ -392,7 +392,7 @@
   gap: 8px;
   border: 1px solid rgba(var(--brand-primary-rgb), 0.72);
   border-radius: 6px;
-  background: rgba(2, 6, 23, 0.84);
+  background: rgba(11, 11, 11, 0.84);
   color: var(--brand-primary);
   padding: 10px 15px;
   font-weight: 850;
@@ -429,9 +429,9 @@
   width: min(620px, calc(100vw - 24px));
   max-height: min(70vh, 570px);
   overflow-y: auto;
-  border: 1px solid rgba(148, 163, 184, 0.34);
+  border: 1px solid rgba(160, 160, 160, 0.34);
   border-radius: 10px;
-  background: rgba(2, 6, 23, 0.97);
+  background: rgba(11, 11, 11, 0.97);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
   color: #f8fafc;
   padding: 16px;
@@ -473,9 +473,9 @@
 
 .watch-subtitle-close,
 .watch-subtitle-delay button {
-  border: 1px solid rgba(148, 163, 184, 0.34);
+  border: 1px solid rgba(160, 160, 160, 0.34);
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.88);
+  background: rgba(24, 24, 24, 0.88);
   color: #f8fafc;
 }
 
@@ -527,9 +527,9 @@
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  border: 1px solid rgba(148, 163, 184, 0.4);
+  border: 1px solid rgba(160, 160, 160, 0.4);
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.92);
+  background: rgba(24, 24, 24, 0.92);
   color: #f8fafc;
   padding: 7px 8px;
 }
@@ -554,9 +554,9 @@
   gap: 3px;
   width: 100%;
   min-height: 52px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
+  border: 1px solid rgba(160, 160, 160, 0.28);
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(24, 24, 24, 0.72);
   color: #f8fafc;
   padding: 9px 10px;
   text-align: left;
@@ -565,7 +565,7 @@
 .watch-audio-track:hover,
 .watch-audio-track.active {
   border-color: rgba(var(--brand-primary-rgb), 0.76);
-  background: rgba(5, 46, 22, 0.78);
+  background: rgba(32, 32, 32, 0.78);
 }
 
 .watch-audio-track-title {
@@ -763,12 +763,12 @@
 .watch-speed select {
   width: 68px;
   height: 34px;
-  border: 1px solid rgba(148, 163, 184, 0.34);
+  border: 1px solid rgba(160, 160, 160, 0.34);
   border-radius: 7px;
   background:
     linear-gradient(45deg, transparent 50%, #cbd5e1 50%) calc(100% - 14px) 14px / 5px 5px no-repeat,
     linear-gradient(135deg, #cbd5e1 50%, transparent 50%) calc(100% - 9px) 14px / 5px 5px no-repeat,
-    rgba(15, 23, 42, 0.9);
+    rgba(24, 24, 24, 0.9);
   color: #f8fafc;
   padding: 0 24px 0 10px;
   font: inherit;
@@ -780,7 +780,7 @@
 
 .watch-speed select:hover {
   border-color: rgba(124, 242, 173, 0.72);
-  background-color: rgba(15, 23, 42, 0.96);
+  background-color: rgba(24, 24, 24, 0.96);
 }
 
 .watch-speed select:focus-visible {
