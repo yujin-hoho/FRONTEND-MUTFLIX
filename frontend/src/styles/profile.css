@@ -139,7 +139,7 @@
 .add-profile-icon {
   border: 3px solid transparent;
   background: rgba(var(--brand-primary-rgb), 0.14);
-  color: #ff8a91;
+  color: var(--brand-primary);
   transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
 }
 
@@ -177,7 +177,7 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #ffe4e6;
+  color: var(--brand-primary);
   font-weight: 700;
 }
 
@@ -305,7 +305,7 @@
   border-radius: 8px;
   border: 1px solid rgba(var(--brand-primary-rgb), 0.78);
   background: rgba(var(--brand-primary-rgb), 0.12);
-  color: #ff8a91;
+  color: var(--brand-primary);
   font-weight: 850;
   cursor: pointer;
 }

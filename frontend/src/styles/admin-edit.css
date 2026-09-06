@@ -39,7 +39,7 @@
 
 .admin-edit-back {
   background: rgba(var(--brand-primary-rgb), 0.14);
-  color: #ff8a91;
+  color: var(--brand-primary);
   cursor: pointer;
 }
 
@@ -149,7 +149,7 @@
   align-items: center;
   gap: 10px;
   margin-bottom: 18px;
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .admin-edit-panel-heading h2 {
@@ -204,7 +204,7 @@
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
   background: rgba(2, 6, 23, 0.62);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 0 12px;
 }
 
@@ -244,7 +244,7 @@
 .admin-edit-type-toggle button:focus-visible {
   border-color: rgba(var(--brand-primary-rgb), 0.62);
   background: rgba(var(--brand-primary-rgb), 0.16);
-  color: #ffe4e6;
+  color: var(--brand-primary);
   outline: none;
 }
 
@@ -332,7 +332,7 @@
 
 .admin-edit-message.error {
   background: rgba(239, 68, 68, 0.16);
-  color: #fecaca;
+  color: var(--brand-primary);
 }
 
 .admin-edit-poster-section {
@@ -360,7 +360,7 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  color: #ffe4e6;
+  color: var(--brand-primary);
   font-weight: 800;
   padding: 20px 0;
 }
@@ -485,7 +485,7 @@
 .admin-poster-select-btn:focus-visible {
   border-color: var(--brand-primary);
   background: rgba(var(--brand-primary-rgb), 0.16);
-  color: #ffe4e6;
+  color: var(--brand-primary);
   outline: none;
 }
 

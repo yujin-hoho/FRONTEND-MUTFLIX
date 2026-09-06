@@ -22,7 +22,7 @@
   border: 0;
   border-radius: 999px;
   background: rgba(var(--brand-primary-rgb), 0.14);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 10px 14px;
   font-weight: 800;
   cursor: pointer;
@@ -212,7 +212,7 @@
 }
 
 .detail-watch-progress-copy strong {
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .detail-watch-progress-track,
@@ -296,7 +296,7 @@
 }
 
 .season-nav button:hover {
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .season-nav button:hover::after {
@@ -488,7 +488,7 @@
   gap: 7px;
   border: 0;
   background: rgba(var(--brand-primary-rgb), 0.08);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 8px 14px;
   font-weight: 800;
   cursor: pointer;
@@ -562,7 +562,7 @@
   border: 1px solid rgba(var(--brand-primary-rgb), 0.86);
   border-radius: 50%;
   background: rgba(2, 6, 23, 0.62);
-  color: #ff8a91;
+  color: var(--brand-primary);
   opacity: 0;
   transform: translate(-50%, -50%);
   transition: opacity 160ms ease, background 160ms ease;
@@ -575,7 +575,7 @@
   z-index: 2;
   border-radius: 999px;
   background: rgba(2, 6, 23, 0.82);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 3px 6px;
   font-size: 0.7rem;
   font-weight: 800;
@@ -615,7 +615,7 @@
 
 .credits-panel h2 {
   margin-bottom: 22px;
-  color: #ff8a91;
+  color: var(--brand-primary);
   font-size: 1.65rem;
 }
 
@@ -638,7 +638,7 @@
 }
 
 .title-facts dt {
-  color: #ff8a91;
+  color: var(--brand-primary);
   font-size: 0.86rem;
   font-weight: 800;
 }
@@ -660,13 +660,13 @@
   border: 1px solid rgba(var(--brand-primary-rgb), 0.24);
   border-radius: 999px;
   background: rgba(var(--brand-primary-rgb), 0.08);
-  color: #ffe4e6;
+  color: var(--brand-primary);
   padding: 6px 9px;
   font-size: 0.78rem;
 }
 
 .season-facts strong {
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .trailer-embed {
@@ -735,7 +735,7 @@ button.cast-card {
 
 button.cast-card:hover h3,
 button.cast-card:focus-visible h3 {
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .cast-avatar {

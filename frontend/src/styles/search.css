@@ -89,7 +89,7 @@
 .search-filter-trigger:focus-visible,
 .search-filter-trigger.active {
   background: rgba(var(--brand-primary-rgb), 0.14);
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .search-filter-menu {
@@ -128,7 +128,7 @@
 }
 
 .search-filter-heading span {
-  color: #ff8a91;
+  color: var(--brand-primary);
   font-size: 0.62rem;
   font-weight: 800;
   letter-spacing: 0.16em;
@@ -263,13 +263,13 @@
 .search-filter-chip-grid button:focus-visible {
   border-color: rgba(124, 242, 173, 0.5);
   background: rgba(var(--brand-primary-rgb), 0.1);
-  color: #ffe4e6;
+  color: var(--brand-primary);
 }
 
 .search-filter-chip-grid button.active {
   border-color: rgba(124, 242, 173, 0.64);
   background: rgba(var(--brand-primary-rgb), 0.2);
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .search-filter-reset {
@@ -281,7 +281,7 @@
   border: 0;
   border-top: 1px solid rgba(148, 163, 184, 0.12);
   background: rgba(15, 23, 42, 0.5);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 11px 14px;
   font-size: 0.72rem;
   font-weight: 800;
@@ -291,7 +291,7 @@
 .search-filter-reset:hover,
 .search-filter-reset:focus-visible {
   background: rgba(var(--brand-primary-rgb), 0.12);
-  color: #ffe4e6;
+  color: var(--brand-primary);
 }
 
 .search-preview {
@@ -320,7 +320,7 @@
 }
 
 .search-preview-heading strong {
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .search-preview-list {
@@ -397,7 +397,7 @@
   width: 100%;
   border: 0;
   background: rgba(var(--brand-primary-rgb), 0.08);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 12px;
   font-size: 0.8rem;
   font-weight: 800;
@@ -408,7 +408,7 @@
 .search-preview-all:hover,
 .search-preview-all:focus-visible {
   background: rgba(var(--brand-primary-rgb), 0.18);
-  color: #ffe4e6;
+  color: var(--brand-primary);
 }
 
 .search-preview-empty {
@@ -595,7 +595,7 @@
   min-width: 22px;
   border-radius: 999px;
   background: rgba(var(--brand-primary-rgb), 0.12);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 3px 7px;
   font-size: 0.7rem;
   text-align: center;
@@ -674,10 +674,10 @@
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid rgba(255, 228, 230, 0.72);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.72);
   border-radius: 999px;
   background: rgba(2, 6, 23, 0.86);
-  color: #ffe4e6;
+  color: var(--brand-primary);
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
   cursor: pointer;
   opacity: 0;

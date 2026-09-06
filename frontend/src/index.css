@@ -3,7 +3,7 @@
 :root {
   --brand-primary: #E50914;
   --brand-primary-rgb: 229, 9, 20;
-  --brand-hover: #B20710;
+  --brand-hover: var(--brand-primary);
   --catalog-poster-width: 168px;
 }
 

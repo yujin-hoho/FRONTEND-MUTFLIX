@@ -123,7 +123,7 @@
 
 .watch-topbar p {
   margin-bottom: 3px;
-  color: #ff8a91;
+  color: var(--brand-primary);
   font-size: 0.76rem;
   font-weight: 850;
   letter-spacing: 0.12em;
@@ -314,7 +314,7 @@
 
 .watch-episode-list-index {
   margin: 0 !important;
-  color: #ff8a91 !important;
+  color: var(--brand-primary) !important;
   font-size: 0.72rem !important;
   font-weight: 850;
 }
@@ -361,14 +361,14 @@
   display: grid;
   place-content: center;
   justify-items: center;
-  color: #ff8a91;
+  color: var(--brand-primary);
   pointer-events: none;
 }
 
 .watch-error {
   gap: 14px;
   padding: 20px;
-  color: #fecaca;
+  color: var(--brand-primary);
   text-align: center;
   pointer-events: auto;
 }
@@ -393,7 +393,7 @@
   border: 1px solid rgba(var(--brand-primary-rgb), 0.72);
   border-radius: 6px;
   background: rgba(2, 6, 23, 0.84);
-  color: #ff8a91;
+  color: var(--brand-primary);
   padding: 10px 15px;
   font-weight: 850;
 }
@@ -490,7 +490,7 @@
 .watch-subtitle-close:hover,
 .watch-subtitle-delay button:hover {
   border-color: rgba(var(--brand-primary-rgb), 0.76);
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .watch-subtitle-toggle {
@@ -675,7 +675,7 @@
 
 .watch-controls .watch-icon-button:hover,
 .watch-controls .watch-icon-button.active {
-  color: #ff8a91;
+  color: var(--brand-primary);
 }
 
 .watch-controls .watch-icon-button:disabled:hover {
@@ -737,7 +737,7 @@
 }
 
 .watch-speed select:focus-visible {
-  border-color: #ff8a91;
+  border-color: var(--brand-primary);
   box-shadow: 0 0 0 3px rgba(124, 242, 173, 0.18);
 }
 
