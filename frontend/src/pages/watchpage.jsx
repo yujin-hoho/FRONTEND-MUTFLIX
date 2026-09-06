@@ -1673,6 +1673,7 @@ function WatchPage({
         <input
           aria-label="Seek video"
           className="watch-seek"
+          style={{ '--seek-progress': `${duration > 0 ? Math.min(100, Math.max(0, visiblePlaybackTime / duration * 100)) : 0}%` }}
           max={duration || 0}
           min="0"
           onChange={handleSeek}
