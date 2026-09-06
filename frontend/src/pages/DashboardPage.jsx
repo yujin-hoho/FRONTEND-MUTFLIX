@@ -58,9 +58,6 @@ function DashboardPage({
     ? {
       ...dashboardView,
       ...catalogData.rows,
-      featuredItem: dashboardView.featuredItem,
-      featuredBackdrop: dashboardView.featuredBackdrop,
-      featuredFallback: dashboardView.featuredFallback,
     }
     : dashboardView
 

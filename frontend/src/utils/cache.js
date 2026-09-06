@@ -477,6 +477,9 @@ function snapshotCatalogItem(item) {
     'folder_name',
     'name',
     'title',
+    'description',
+    'overview',
+    'tmdb_overview',
     ...CATALOG_METADATA_FIELDS,
   ].forEach((field) => {
     if (!isMeaningfulValue(field, item[field])) return
