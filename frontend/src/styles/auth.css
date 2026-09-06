@@ -4,7 +4,7 @@
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(380px, 0.85fr);
   background:
-    radial-gradient(circle at 18% 12%, rgba(0, 220, 100, 0.34), transparent 34%),
+    radial-gradient(circle at 18% 12%, rgba(var(--brand-primary-rgb), 0.34), transparent 34%),
     linear-gradient(115deg, rgba(0, 0, 0, 0.18), rgba(0, 0, 0, 0.84) 58%),
     url('/src/assets/hero.png');
   background-size: cover;
@@ -50,7 +50,7 @@
 }
 
 .brand-mark {
-  color: #00dc64;
+  color: var(--brand-primary);
   font-size: clamp(2rem, 4.5vw, 4rem);
   font-weight: 950;
   line-height: 0.85;
@@ -59,8 +59,8 @@
 }
 
 .status-pill {
-  border: 1px solid rgba(180, 248, 207, 0.26);
-  background: rgba(6, 78, 59, 0.36);
+  border: 1px solid rgba(254, 205, 211, 0.26);
+  background: rgba(100, 10, 16, 0.36);
   color: #ecfdf5;
   border-radius: 999px;
   padding: 9px 14px;
@@ -76,7 +76,7 @@
 
 .eyebrow,
 .form-heading p {
-  color: #7cf2ad;
+  color: #ff8a91;
   font-weight: 750;
   letter-spacing: 0;
   text-transform: uppercase;
@@ -93,7 +93,7 @@
 
 .hero-text {
   max-width: 560px;
-  color: #d1fae5;
+  color: #ffe4e6;
   font-size: clamp(0.95rem, 1.35vw, 1.08rem);
   line-height: 1.55;
 }
@@ -101,7 +101,7 @@
 .hero-footer {
   width: min(46vw, 520px);
   height: 1px;
-  background: linear-gradient(90deg, rgba(0, 220, 100, 0.8), transparent);
+  background: linear-gradient(90deg, rgba(var(--brand-primary-rgb), 0.8), transparent);
 }
 
 .auth-panel {
@@ -112,7 +112,7 @@
   padding: 28px;
   background: rgba(2, 6, 23, 0.78);
   backdrop-filter: blur(20px);
-  border-left: 1px solid rgba(180, 248, 207, 0.12);
+  border-left: 1px solid rgba(254, 205, 211, 0.12);
 }
 
 .login-card {
@@ -143,7 +143,7 @@
 }
 
 .mode-switch button {
-  border: 1px solid rgba(0, 220, 100, 0.72);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.72);
   border-radius: 6px;
   background: transparent;
   color: #94a3b8;
@@ -152,8 +152,8 @@
 }
 
 .mode-switch button.active {
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
 }
 
 .login-form {
@@ -164,7 +164,7 @@
 .field {
   display: grid;
   gap: 8px;
-  color: #d1fae5;
+  color: #ffe4e6;
   font-size: 0.9rem;
   font-weight: 700;
 }
@@ -177,15 +177,15 @@
   border-radius: 8px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   background: rgba(15, 23, 42, 0.72);
-  color: #7cf2ad;
+  color: #ff8a91;
   padding: 0 16px;
   transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
 .input-wrap:focus-within {
-  border-color: rgba(0, 220, 100, 0.9);
+  border-color: rgba(var(--brand-primary-rgb), 0.9);
   background: rgba(15, 23, 42, 0.92);
-  box-shadow: 0 0 0 4px rgba(0, 220, 100, 0.16);
+  box-shadow: 0 0 0 4px rgba(var(--brand-primary-rgb), 0.16);
 }
 
 .input-wrap input {
@@ -211,12 +211,12 @@
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #b4f8cf;
+  color: #fecdd3;
   cursor: pointer;
 }
 
 .icon-button:hover {
-  background: rgba(0, 220, 100, 0.12);
+  background: rgba(var(--brand-primary-rgb), 0.12);
 }
 
 .form-options {
@@ -238,13 +238,13 @@
 .remember-option input {
   width: 18px;
   height: 18px;
-  accent-color: #00dc64;
+  accent-color: var(--brand-primary);
 }
 
 .link-button {
   border: 0;
   background: transparent;
-  color: #7cf2ad;
+  color: #ff8a91;
   text-decoration: none;
   font-weight: 700;
   cursor: pointer;
@@ -252,7 +252,7 @@
 }
 
 .link-button:hover {
-  color: #b4f8cf;
+  color: #fecdd3;
 }
 
 .notice {
@@ -286,17 +286,17 @@
   gap: 10px;
   border: 0;
   border-radius: 8px;
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
   font-weight: 900;
   font-size: 1rem;
   cursor: pointer;
-  box-shadow: 0 18px 45px rgba(0, 220, 100, 0.28);
+  box-shadow: 0 18px 45px rgba(var(--brand-primary-rgb), 0.28);
   transition: transform 160ms ease, background 160ms ease, opacity 160ms ease;
 }
 
 .submit-button:hover:not(:disabled) {
-  background: #39ee8a;
+  background: var(--brand-hover);
   transform: translateY(-1px);
 }
 

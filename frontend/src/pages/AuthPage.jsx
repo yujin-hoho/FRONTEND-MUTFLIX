@@ -31,7 +31,7 @@ function AuthPage({
 
         <div className="hero-copy">
           <p className="eyebrow">Unlimited nights. Curated watchlist.</p>
-          <h1>Movies, series, and watch parties on one green screen.</h1>
+          <h1>Movies, series, and watch parties on one screen.</h1>
           <p className="hero-text">
             Sign in to continue your queue, keep progress synced, and open your private profile.
           </p>

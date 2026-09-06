@@ -123,7 +123,7 @@
 
 .watch-topbar p {
   margin-bottom: 3px;
-  color: #7cf2ad;
+  color: #ff8a91;
   font-size: 0.76rem;
   font-weight: 850;
   letter-spacing: 0.12em;
@@ -197,8 +197,8 @@
 
 .watch-icon-button:hover,
 .watch-icon-button.active {
-  background: rgba(0, 220, 100, 0.88);
-  color: #02140a;
+  background: rgba(var(--brand-primary-rgb), 0.88);
+  color: #ffffff;
 }
 
 .watch-icon-button:disabled {
@@ -294,7 +294,7 @@
 .watch-episode-progress-track > span {
   display: block;
   height: 100%;
-  background: #00dc64;
+  background: var(--brand-primary);
 }
 
 .watch-episode-list-copy {
@@ -308,13 +308,13 @@
 
 .watch-episode-list-item:hover,
 .watch-episode-list-item.active {
-  border-color: rgba(0, 220, 100, 0.76);
+  border-color: rgba(var(--brand-primary-rgb), 0.76);
   background: rgba(5, 46, 22, 0.78);
 }
 
 .watch-episode-list-index {
   margin: 0 !important;
-  color: #7cf2ad !important;
+  color: #ff8a91 !important;
   font-size: 0.72rem !important;
   font-weight: 850;
 }
@@ -361,7 +361,7 @@
   display: grid;
   place-content: center;
   justify-items: center;
-  color: #7cf2ad;
+  color: #ff8a91;
   pointer-events: none;
 }
 
@@ -390,18 +390,18 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid rgba(0, 220, 100, 0.72);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.72);
   border-radius: 6px;
   background: rgba(2, 6, 23, 0.84);
-  color: #7cf2ad;
+  color: #ff8a91;
   padding: 10px 15px;
   font-weight: 850;
 }
 
 .watch-error button:hover,
 .watch-floating-actions button:hover {
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
 }
 
 .watch-floating-actions {
@@ -489,8 +489,8 @@
 
 .watch-subtitle-close:hover,
 .watch-subtitle-delay button:hover {
-  border-color: rgba(0, 220, 100, 0.76);
-  color: #7cf2ad;
+  border-color: rgba(var(--brand-primary-rgb), 0.76);
+  color: #ff8a91;
 }
 
 .watch-subtitle-toggle {
@@ -502,7 +502,7 @@
 }
 
 .watch-subtitle-toggle input {
-  accent-color: #00dc64;
+  accent-color: var(--brand-primary);
 }
 
 .watch-subtitle-settings-grid {
@@ -564,7 +564,7 @@
 
 .watch-audio-track:hover,
 .watch-audio-track.active {
-  border-color: rgba(0, 220, 100, 0.76);
+  border-color: rgba(var(--brand-primary-rgb), 0.76);
   background: rgba(5, 46, 22, 0.78);
 }
 
@@ -596,7 +596,7 @@
 .watch-subtitle-range-setting input {
   height: 18px;
   padding: 0;
-  accent-color: #00dc64;
+  accent-color: var(--brand-primary);
 }
 
 .watch-subtitle-delay {
@@ -627,7 +627,7 @@
   width: 100%;
   height: 18px;
   padding: 0;
-  accent-color: #00dc64;
+  accent-color: var(--brand-primary);
 }
 
 .watch-subtitle-delay-number {
@@ -643,7 +643,7 @@
 .watch-seek,
 .watch-volume {
   height: 4px;
-  accent-color: #00dc64;
+  accent-color: var(--brand-primary);
 }
 
 .watch-seek {
@@ -675,7 +675,7 @@
 
 .watch-controls .watch-icon-button:hover,
 .watch-controls .watch-icon-button.active {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .watch-controls .watch-icon-button:disabled:hover {
@@ -737,7 +737,7 @@
 }
 
 .watch-speed select:focus-visible {
-  border-color: #7cf2ad;
+  border-color: #ff8a91;
   box-shadow: 0 0 0 3px rgba(124, 242, 173, 0.18);
 }
 

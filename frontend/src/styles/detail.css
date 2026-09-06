@@ -21,16 +21,16 @@
   gap: 8px;
   border: 0;
   border-radius: 999px;
-  background: rgba(0, 220, 100, 0.14);
-  color: #7cf2ad;
+  background: rgba(var(--brand-primary-rgb), 0.14);
+  color: #ff8a91;
   padding: 10px 14px;
   font-weight: 800;
   cursor: pointer;
 }
 
 .detail-back:hover {
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
 }
 
 .detail-hero {
@@ -41,7 +41,7 @@
   overflow: hidden;
   padding: 120px clamp(20px, 4vw, 54px) 96px;
   background:
-    radial-gradient(circle at 18% 20%, rgba(0, 220, 100, 0.18), transparent 28%),
+    radial-gradient(circle at 18% 20%, rgba(var(--brand-primary-rgb), 0.18), transparent 28%),
     linear-gradient(135deg, #07111f, #020617 72%);
 }
 
@@ -119,7 +119,7 @@
 
 .detail-type {
   margin: 0 0 10px;
-  color: #00dc64;
+  color: var(--brand-primary);
   font-size: 0.82rem;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -151,7 +151,7 @@
 }
 
 .detail-meta .detail-rating {
-  color: #00dc64;
+  color: var(--brand-primary);
 }
 
 .detail-overview {
@@ -212,7 +212,7 @@
 }
 
 .detail-watch-progress-copy strong {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .detail-watch-progress-track,
@@ -232,7 +232,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #00dc64;
+  background: var(--brand-primary);
 }
 
 .detail-body {
@@ -290,13 +290,13 @@
   left: 0;
   height: 2px;
   border-radius: 999px;
-  background: #00dc64;
+  background: var(--brand-primary);
   transform: scaleX(0);
   transition: transform 220ms ease;
 }
 
 .season-nav button:hover {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .season-nav button:hover::after {
@@ -304,7 +304,7 @@
 }
 
 .season-nav button.active {
-  color: #00dc64;
+  color: var(--brand-primary);
 }
 
 .season-nav button.active::after {
@@ -463,7 +463,7 @@
 }
 
 .episode-card:focus-visible {
-  outline: 2px solid #00dc64;
+  outline: 2px solid var(--brand-primary);
   outline-offset: 2px;
 }
 
@@ -474,9 +474,9 @@
   min-height: 44px;
   margin-top: 12px;
   overflow: hidden;
-  border: 1px solid rgba(0, 220, 100, 0.54);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.54);
   border-radius: 5px;
-  background: rgba(0, 220, 100, 0.08);
+  background: rgba(var(--brand-primary-rgb), 0.08);
 }
 
 .episode-pagination button {
@@ -487,8 +487,8 @@
   justify-content: center;
   gap: 7px;
   border: 0;
-  background: rgba(0, 220, 100, 0.08);
-  color: #7cf2ad;
+  background: rgba(var(--brand-primary-rgb), 0.08);
+  color: #ff8a91;
   padding: 8px 14px;
   font-weight: 800;
   cursor: pointer;
@@ -496,12 +496,12 @@
 }
 
 .episode-pagination button + button {
-  border-left: 1px solid rgba(0, 220, 100, 0.28);
+  border-left: 1px solid rgba(var(--brand-primary-rgb), 0.28);
 }
 
 .episode-pagination button:hover {
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
 }
 
 .episode-number {
@@ -559,10 +559,10 @@
   height: 44px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(0, 220, 100, 0.86);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.86);
   border-radius: 50%;
   background: rgba(2, 6, 23, 0.62);
-  color: #7cf2ad;
+  color: #ff8a91;
   opacity: 0;
   transform: translate(-50%, -50%);
   transition: opacity 160ms ease, background 160ms ease;
@@ -575,7 +575,7 @@
   z-index: 2;
   border-radius: 999px;
   background: rgba(2, 6, 23, 0.82);
-  color: #7cf2ad;
+  color: #ff8a91;
   padding: 3px 6px;
   font-size: 0.7rem;
   font-weight: 800;
@@ -597,8 +597,8 @@
 }
 
 .episode-card:hover .episode-play-icon {
-  background: rgba(0, 220, 100, 0.88);
-  color: #02140a;
+  background: rgba(var(--brand-primary-rgb), 0.88);
+  color: #ffffff;
 }
 
 .credits-panel {
@@ -615,7 +615,7 @@
 
 .credits-panel h2 {
   margin-bottom: 22px;
-  color: #7cf2ad;
+  color: #ff8a91;
   font-size: 1.65rem;
 }
 
@@ -638,7 +638,7 @@
 }
 
 .title-facts dt {
-  color: #7cf2ad;
+  color: #ff8a91;
   font-size: 0.86rem;
   font-weight: 800;
 }
@@ -657,16 +657,16 @@
 }
 
 .season-facts span {
-  border: 1px solid rgba(0, 220, 100, 0.24);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.24);
   border-radius: 999px;
-  background: rgba(0, 220, 100, 0.08);
-  color: #d1fae5;
+  background: rgba(var(--brand-primary-rgb), 0.08);
+  color: #ffe4e6;
   padding: 6px 9px;
   font-size: 0.78rem;
 }
 
 .season-facts strong {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .trailer-embed {
@@ -735,7 +735,7 @@ button.cast-card {
 
 button.cast-card:hover h3,
 button.cast-card:focus-visible h3 {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .cast-avatar {

@@ -1,6 +1,9 @@
 @import "tailwindcss";
 
 :root {
+  --brand-primary: #E50914;
+  --brand-primary-rgb: 229, 9, 20;
+  --brand-hover: #B20710;
   --catalog-poster-width: 168px;
 }
 

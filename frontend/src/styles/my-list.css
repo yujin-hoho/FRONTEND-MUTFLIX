@@ -21,7 +21,7 @@
 
 .my-list-heading p {
   margin: 0 0 8px;
-  color: #00dc64;
+  color: var(--brand-primary);
   font-size: 0.78rem;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -75,14 +75,14 @@
   left: 0;
   height: 2px;
   border-radius: 999px;
-  background: #00dc64;
+  background: var(--brand-primary);
   transform: scaleX(0);
   transition: transform 180ms ease;
 }
 
 .my-list-tabs button:hover,
 .my-list-tabs button.active {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .my-list-tabs button.active::after {
@@ -92,8 +92,8 @@
 .my-list-tabs strong {
   min-width: 22px;
   border-radius: 999px;
-  background: rgba(0, 220, 100, 0.12);
-  color: #7cf2ad;
+  background: rgba(var(--brand-primary-rgb), 0.12);
+  color: #ff8a91;
   padding: 3px 7px;
   font-size: 0.7rem;
 }

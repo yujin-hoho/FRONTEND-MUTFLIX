@@ -3,7 +3,7 @@
   display: grid;
   grid-template-rows: auto 1fr;
   background:
-    radial-gradient(circle at 50% 0%, rgba(0, 220, 100, 0.16), transparent 34%),
+    radial-gradient(circle at 50% 0%, rgba(var(--brand-primary-rgb), 0.16), transparent 34%),
     #020617;
   color: #f8fafc;
   overflow: hidden;
@@ -132,20 +132,20 @@
 }
 
 .profile-edit-button:hover {
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
 }
 
 .add-profile-icon {
   border: 3px solid transparent;
-  background: rgba(0, 220, 100, 0.14);
-  color: #7cf2ad;
+  background: rgba(var(--brand-primary-rgb), 0.14);
+  color: #ff8a91;
   transition: border-color 160ms ease, transform 160ms ease, background 160ms ease;
 }
 
 .add-profile-card:hover .add-profile-icon,
 .add-profile-card:focus-visible .add-profile-icon {
-  background: rgba(0, 220, 100, 0.16);
+  background: rgba(var(--brand-primary-rgb), 0.16);
   color: #f8fafc;
 }
 
@@ -177,7 +177,7 @@
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: #d1fae5;
+  color: #ffe4e6;
   font-weight: 700;
 }
 
@@ -248,8 +248,8 @@
 
 .profile-avatar-tabs button.active,
 .profile-avatar-tabs button:hover {
-  border-color: rgba(0, 220, 100, 0.82);
-  background: rgba(0, 220, 100, 0.16);
+  border-color: rgba(var(--brand-primary-rgb), 0.82);
+  background: rgba(var(--brand-primary-rgb), 0.16);
   color: #f8fafc;
 }
 
@@ -278,7 +278,7 @@
 
 .profile-avatar-option:hover,
 .profile-avatar-option.selected {
-  border-color: #00dc64;
+  border-color: var(--brand-primary);
 }
 
 .profile-avatar-option span {
@@ -290,8 +290,8 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
 }
 
 .modal-actions {
@@ -303,16 +303,16 @@
 .secondary-button {
   height: 52px;
   border-radius: 8px;
-  border: 1px solid rgba(0, 220, 100, 0.78);
-  background: rgba(0, 220, 100, 0.12);
-  color: #7cf2ad;
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.78);
+  background: rgba(var(--brand-primary-rgb), 0.12);
+  color: #ff8a91;
   font-weight: 850;
   cursor: pointer;
 }
 
 .secondary-button:hover {
-  border-color: #39ee8a;
-  background: rgba(0, 220, 100, 0.2);
+  border-color: var(--brand-hover);
+  background: rgba(var(--brand-primary-rgb), 0.2);
 }
 
 .modal-submit {

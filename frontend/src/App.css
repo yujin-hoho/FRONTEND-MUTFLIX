@@ -24,7 +24,7 @@
   width: 100%;
   border: 0;
   background: transparent;
-  color: #d1fae5;
+  color: #ffe4e6;
   padding: 12px 13px;
   font-size: 0.84rem;
   font-weight: 800;
@@ -34,7 +34,7 @@
 
 .mutflix-context-menu button:hover,
 .mutflix-context-menu button:focus-visible {
-  background: rgba(0, 220, 100, 0.16);
+  background: rgba(var(--brand-primary-rgb), 0.16);
   color: #f8fafc;
   outline: none;
 }

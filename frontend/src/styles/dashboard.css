@@ -18,7 +18,7 @@
   justify-items: center;
   gap: 14px;
   background: #020617;
-  color: #d1fae5;
+  color: #ffe4e6;
   font-weight: 750;
 }
 
@@ -38,7 +38,7 @@
   top: 50%;
   left: 50%;
   margin: 0;
-  color: #d1fae5;
+  color: #ffe4e6;
   font-size: 0.95rem;
   font-weight: 750;
   letter-spacing: 0.04em;
@@ -134,7 +134,7 @@
   left: 0;
   height: 2px;
   border-radius: 999px;
-  background: #00dc64;
+  background: var(--brand-primary);
   transform: scaleX(0);
   transform-origin: center;
   transition: transform 220ms ease;
@@ -142,12 +142,12 @@
 
 .dashboard-nav button.active,
 .dashboard-nav a.active {
-  color: #00dc64;
+  color: var(--brand-primary);
 }
 
 .dashboard-nav button:hover,
 .dashboard-nav a:hover {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .dashboard-nav button:hover::after,
@@ -162,7 +162,7 @@
 
 .dashboard-nav button.active:hover,
 .dashboard-nav a.active:hover {
-  color: #39ee8a;
+  color: var(--brand-hover);
 }
 
 .dashboard-nav button:hover,
@@ -198,7 +198,7 @@
 }
 
 .profile-menu-trigger:hover {
-  background: rgba(0, 220, 100, 0.16);
+  background: rgba(var(--brand-primary-rgb), 0.16);
 }
 
 .profile-menu-avatar {
@@ -207,10 +207,10 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  border: 2px solid #00dc64;
+  border: 2px solid var(--brand-primary);
   border-radius: 50%;
-  background: linear-gradient(135deg, #00dc64, #14b8a6);
-  color: #02140a;
+  background: linear-gradient(135deg, var(--brand-primary), #B20710);
+  color: #ffffff;
   font-size: 0.88rem;
   font-weight: 900;
 }
@@ -243,8 +243,8 @@
 }
 
 .profile-menu-dropdown button:hover {
-  background: rgba(0, 220, 100, 0.14);
-  color: #7cf2ad;
+  background: rgba(var(--brand-primary-rgb), 0.14);
+  color: #ff8a91;
 }
 
 .dashboard-hero {
@@ -255,7 +255,7 @@
   padding: 120px clamp(20px, 4vw, 54px) 96px;
   overflow: hidden;
   background:
-    radial-gradient(circle at 18% 20%, rgba(0, 220, 100, 0.18), transparent 28%),
+    radial-gradient(circle at 18% 20%, rgba(var(--brand-primary-rgb), 0.18), transparent 28%),
     linear-gradient(135deg, #07111f, #020617 72%);
 }
 
@@ -311,15 +311,15 @@
   gap: 10px;
   border: 0;
   border-radius: 8px;
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
   padding: 0 22px;
   font-weight: 900;
   cursor: pointer;
 }
 
 .play-button:hover {
-  background: #39ee8a;
+  background: var(--brand-hover);
 }
 
 .dashboard-shell {
@@ -336,7 +336,7 @@
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  color: #d1fae5;
+  color: #ffe4e6;
   font-weight: 750;
 }
 
@@ -371,7 +371,7 @@
   flex: 0 0 auto;
   border: 0;
   background: transparent;
-  color: #7cf2ad;
+  color: #ff8a91;
   font-size: 0.84rem;
   font-weight: 750;
   cursor: pointer;
@@ -439,7 +439,7 @@
 }
 
 .catalog-scroll-button:hover {
-  color: #7cf2ad;
+  color: #ff8a91;
 }
 
 .catalog-scroll-button-left {
@@ -493,10 +493,10 @@
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid rgba(209, 250, 229, 0.72);
+  border: 1px solid rgba(255, 228, 230, 0.72);
   border-radius: 999px;
   background: rgba(2, 6, 23, 0.86);
-  color: #d1fae5;
+  color: #ffe4e6;
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
   cursor: pointer;
   opacity: 0;
@@ -512,8 +512,8 @@
 
 .catalog-edit-button:hover,
 .catalog-edit-button:focus-visible {
-  background: #00dc64;
-  color: #02140a;
+  background: var(--brand-primary);
+  color: #ffffff;
   outline: none;
 }
 
@@ -556,7 +556,7 @@
 .rating-pie {
   background:
     radial-gradient(circle at center, rgba(2, 6, 23, 0.94) 0 57%, transparent 58%),
-    conic-gradient(#00dc64 var(--rating-percent), rgba(148, 163, 184, 0.42) 0);
+    conic-gradient(var(--brand-primary) var(--rating-percent), rgba(148, 163, 184, 0.42) 0);
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.34);
 }
 
@@ -565,10 +565,10 @@
   z-index: 2;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(209, 250, 229, 0.74);
+  border: 1px solid rgba(255, 228, 230, 0.74);
   border-radius: 50%;
-  background: rgba(0, 220, 100, 0.92);
-  color: #02140a;
+  background: rgba(var(--brand-primary-rgb), 0.92);
+  color: #ffffff;
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
 }
 
@@ -742,7 +742,7 @@
   display: block;
   height: 100%;
   border-radius: 0 999px 999px 0;
-  background: #00dc64;
+  background: var(--brand-primary);
 }
 
 .history-frame img {
@@ -808,7 +808,7 @@
   display: grid;
   place-items: center;
   background:
-    linear-gradient(135deg, rgba(0, 220, 100, 0.78), rgba(15, 23, 42, 0.92)),
+    linear-gradient(135deg, rgba(var(--brand-primary-rgb), 0.78), rgba(15, 23, 42, 0.92)),
     #0f172a;
 }
 
