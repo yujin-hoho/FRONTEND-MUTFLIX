@@ -341,7 +341,7 @@ function App() {
 
         const refreshedDashboard = mergeDashboardCache(dashboard, cachedDashboard)
 
-        // Show data immediately — merge with current state to preserve cached metadata & rows
+        // Replace the cached snapshot as soon as fresh data arrives.
         if (!ignore) {
           setProfileData((currentData) => ({
             myList,
@@ -352,17 +352,25 @@ function App() {
             error: null,
           }))
           setCatalogData((current) => {
-            const merged = mergeCatalogMetadataUpdates(
+            const merged = mergeDashboardCache(
               { movies: refreshedDashboard.movies, series: refreshedDashboard.series },
               current,
             )
-            const preservedRows = current.rows || refreshedDashboard.rows
+            dashboardRowsCacheKey.current = ''
+            writeDashboardCache(selectedProfile.id, {
+              history: historyRevision.current === startingHistoryRevision
+                ? refreshedDashboard.history
+                : profileDataRef.current.watchHistory,
+              movies: merged.movies,
+              series: merged.series,
+              rows: null,
+            })
             return {
               ...merged,
               totals: refreshedDashboard.totals || { movies: merged.movies.length, series: merged.series.length },
-              rows: preservedRows,
+              rows: null,
               isLoading: false,
-              isFromCache: Boolean(preservedRows),
+              isFromCache: false,
               error: null,
             }
           })
@@ -381,7 +389,7 @@ function App() {
                   : profileDataRef.current.watchHistory,
                 movies: merged.movies,
                 series: merged.series,
-                rows: current.rows,
+                rows: current.rows || undefined,
               })
               return {
                 ...merged,
@@ -405,7 +413,7 @@ function App() {
                 : profileDataRef.current.watchHistory,
               movies: merged.movies,
               series: merged.series,
-              rows: current.rows,
+              rows: current.rows || undefined,
             })
             return {
               ...merged,

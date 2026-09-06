@@ -1,6 +1,6 @@
-const STATIC_CACHE = 'mutflix-static-v2'
+const STATIC_CACHE = 'reel-static-v3'
 const IMAGE_CACHE = 'mutflix-images-v2'
-const STATIC_ASSETS = ['/', '/index.html', '/mutflix-logo.png', '/icons.svg']
+const STATIC_ASSETS = ['/', '/index.html', '/REEL-logo-red.svg', '/REEL-logo-centered-dark.svg', '/icons.svg']
 const MAX_IMAGE_CACHE_ITEMS = 800
 
 self.addEventListener('install', (event) => {

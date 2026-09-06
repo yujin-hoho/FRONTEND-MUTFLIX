@@ -69,8 +69,8 @@ function DashboardPage({
   return (
     <main className="dashboard-page">
       <nav className="dashboard-topbar" aria-label="Dashboard">
-        <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
-          MUTFLIX
+        <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="RÉEL dashboard">
+          <img className="brand-logo" src="/REEL-logo-red.svg" alt="RÉEL" width="486" height="202" />
         </a>
         <div className="dashboard-nav">
           <button className="active" type="button">Home</button>
@@ -106,12 +106,12 @@ function DashboardPage({
         />
         <div className="dashboard-hero-shade" />
         <div className="dashboard-hero-content">
-          <h1>{displayView.featuredItem ? getTitle(displayView.featuredItem) : 'Mutflix'}</h1>
+          <h1>{displayView.featuredItem ? getTitle(displayView.featuredItem) : 'RÉEL'}</h1>
           <p>
             {displayView.featuredItem?.description
               || displayView.featuredItem?.overview
               || displayView.featuredItem?.tmdb_overview
-              || 'Explore movies and series from your Mutflix catalog.'}
+              || 'Explore movies and series from your RÉEL catalog.'}
           </p>
           <button className="play-button" onClick={() => displayView.featuredItem && onOpenDetail(displayView.featuredItem)} type="button">
             <Play size={22} fill="currentColor" />
@@ -120,7 +120,7 @@ function DashboardPage({
         </div>
       </section>
 
-      <section className="dashboard-shell" aria-label="Mutflix catalog">
+      <section className="dashboard-shell" aria-label="RÉEL catalog">
         {catalogData.error && (
           <div className="notice error dashboard-notice" role="alert">
             <AlertCircle size={18} />

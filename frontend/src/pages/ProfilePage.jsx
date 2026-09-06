@@ -25,8 +25,8 @@ function ProfilePage({
 
   return (
     <main className="profile-page">
-      <a className="brand-mark profile-brand" href="/" aria-label="Mutflix home">
-        MUTFLIX
+      <a className="brand-mark profile-brand" href="/" aria-label="RÉEL home">
+        <img className="brand-logo" src="/REEL-logo-red.svg" alt="RÉEL" width="486" height="202" />
       </a>
 
       <section className="profile-selector" aria-label="Choose profile">

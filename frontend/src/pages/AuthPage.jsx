@@ -21,10 +21,10 @@ function AuthPage({
 }) {
   return (
     <main className="login-page">
-      <section className="brand-panel" aria-label="Mutflix preview">
-        <nav className="topbar" aria-label="Mutflix">
-          <a className="brand-mark" href="/" aria-label="Mutflix home">
-            MUTFLIX
+      <section className="brand-panel" aria-label="RÉEL preview">
+        <nav className="topbar" aria-label="RÉEL">
+          <a className="brand-mark" href="/" aria-label="RÉEL home">
+            <img className="brand-logo" src="/REEL-logo-red.svg" alt="RÉEL" width="486" height="202" />
           </a>
           <span className="status-pill">Private streaming</span>
         </nav>
@@ -44,7 +44,7 @@ function AuthPage({
         <div className="login-card">
           <div className="form-heading">
             <p>{isRegister ? 'Create access' : 'Welcome back'}</p>
-            <h2>{isRegister ? 'Join Mutflix' : 'Sign in'}</h2>
+            <h2>{isRegister ? 'Join RÉEL' : 'Sign in'}</h2>
           </div>
 
           <div className="mode-switch" aria-label="Choose authentication mode">

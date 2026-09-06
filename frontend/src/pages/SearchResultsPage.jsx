@@ -239,8 +239,8 @@ function SearchResultsPage({
   return (
     <main className="search-page" ref={searchPageRef}>
       <nav className="dashboard-topbar search-topbar" aria-label="Katalog">
-        <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="Mutflix dashboard">
-          MUTFLIX
+        <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="RÉEL dashboard">
+          <img className="brand-logo" src="/REEL-logo-red.svg" alt="RÉEL" width="486" height="202" />
         </a>
         <div className="dashboard-nav">
           <a href="/dashboard">Home</a>

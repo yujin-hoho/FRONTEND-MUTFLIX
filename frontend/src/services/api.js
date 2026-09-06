@@ -103,7 +103,7 @@ export async function fetchDashboardData(authToken, profileId) {
   const headers = { 'x-access-token': authToken }
   const [historyResponse, catalogResponse] = await Promise.all([
     fetch(`${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&enrich_stills=true&limit=100`, { cache: 'no-store', headers }),
-    fetch(`${API_BASE_URL}/api/folders`, { headers }),
+    fetch(`${API_BASE_URL}/api/folders`, { cache: 'no-store', headers }),
   ])
   const historyData = await historyResponse.json().catch(() => [])
   const catalog = await catalogResponse.json().catch(() => ({}))

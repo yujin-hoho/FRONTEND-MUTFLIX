@@ -43,6 +43,12 @@
   gap: 18px;
 }
 
+.brand-logo {
+  display: block;
+  width: 3.25em;
+  height: auto;
+}
+
 .brand-mark {
   color: #00dc64;
   font-size: clamp(2rem, 4.5vw, 4rem);

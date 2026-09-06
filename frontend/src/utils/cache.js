@@ -96,11 +96,11 @@ export function writeDashboardCache(profileId, { history, movies, rows, series }
     const movieItems = Array.isArray(movies) ? movies : []
     const seriesItems = Array.isArray(series) ? series : []
     const totals = {
-      movies: movieItems.length || Number(previousEntry.totals?.movies || previousEntry.totalMovies || 0),
-      series: seriesItems.length || Number(previousEntry.totals?.series || previousEntry.totalSeries || 0),
+      movies: movieItems.length,
+      series: seriesItems.length,
     }
     const metadata = buildCatalogMetadataCache(previousEntry.metadata, movieItems, seriesItems)
-    const dashboardRows = normalizeDashboardRowsSnapshot(rows || previousEntry.rows)
+    const dashboardRows = normalizeDashboardRowsSnapshot(rows === undefined ? previousEntry.rows : rows)
     const entries = Object.entries(cache)
       .filter(([entryProfileId, entry]) => (
         entryProfileId !== profileKey
