@@ -737,14 +737,14 @@
   margin-left: 4px;
   color: #e2e8f0;
   font-family: Arial, Helvetica, sans-serif;
-  font-size: 0.8rem;
+  font-size: 0.96rem;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
 
 .watch-finished-at {
   color: #94a3b8;
-  font-size: 0.74rem;
+  font-size: 0.88rem;
   font-variant-numeric: tabular-nums;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -756,8 +756,8 @@
   align-items: center;
   gap: 7px;
   color: #cbd5e1;
-  font-size: 0.74rem;
-  font-weight: 750;
+  font-size: 0.9rem;
+  font-weight: 500;
 }
 
 .watch-speed select {
@@ -779,13 +779,13 @@
 }
 
 .watch-speed select:hover {
-  border-color: rgba(124, 242, 173, 0.72);
+  border-color: rgba(var(--brand-primary-rgb), 0.72);
   background-color: rgba(24, 24, 24, 0.96);
 }
 
 .watch-speed select:focus-visible {
   border-color: var(--brand-primary);
-  box-shadow: 0 0 0 3px rgba(124, 242, 173, 0.18);
+  box-shadow: 0 0 0 3px rgba(var(--brand-primary-rgb), 0.18);
 }
 
 @media (max-width: 640px) {
@@ -839,6 +839,6 @@
 
   .watch-time,
   .watch-finished-at {
-    font-size: 0.7rem;
+    font-size: 0.82rem;
   }
 }

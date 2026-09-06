@@ -16,7 +16,7 @@
 }
 
 .search-box-form:focus-within {
-  border-color: rgba(124, 242, 173, 0.74);
+  border-color: rgba(var(--brand-primary-rgb), 0.74);
   background: rgba(24, 24, 24, 0.92);
   box-shadow: 0 0 0 3px rgba(var(--brand-primary-rgb), 0.12);
 }
@@ -29,6 +29,19 @@
   background: transparent;
   color: #f8fafc;
   font: inherit;
+}
+
+.search-box-form input[type='search']::-webkit-search-cancel-button,
+.search-box-form input[type='search']::-webkit-search-decoration {
+  display: none;
+  -webkit-appearance: none;
+}
+
+.search-box-form input[type='search']::-ms-clear,
+.search-box-form input[type='search']::-ms-reveal {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .search-box-form input::placeholder {
@@ -159,7 +172,7 @@
   overflow-y: auto;
   padding: 7px 17px 16px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(124, 242, 173, 0.28) transparent;
+  scrollbar-color: rgba(var(--brand-primary-rgb), 0.28) transparent;
 }
 
 .search-filter-body > p {
@@ -180,7 +193,7 @@
   min-width: 0;
   display: grid;
   gap: 4px;
-  border: 1px solid rgba(124, 242, 173, 0.12);
+  border: 1px solid rgba(var(--brand-primary-rgb), 0.12);
   border-radius: 10px;
   background:
     linear-gradient(145deg, rgba(var(--brand-primary-rgb), 0.07), rgba(24, 24, 24, 0.46)),
@@ -194,7 +207,7 @@
 
 .search-filter-featured button:hover,
 .search-filter-featured button:focus-visible {
-  border-color: rgba(124, 242, 173, 0.34);
+  border-color: rgba(var(--brand-primary-rgb), 0.34);
   background:
     linear-gradient(145deg, rgba(var(--brand-primary-rgb), 0.12), rgba(24, 24, 24, 0.5)),
     rgba(20, 20, 20, 0.82);
@@ -203,11 +216,11 @@
 }
 
 .search-filter-featured button.active {
-  border-color: rgba(124, 242, 173, 0.48);
+  border-color: rgba(var(--brand-primary-rgb), 0.48);
   background:
     linear-gradient(145deg, rgba(var(--brand-primary-rgb), 0.18), rgba(24, 24, 24, 0.54)),
     rgba(20, 20, 20, 0.88);
-  box-shadow: inset 0 0 0 1px rgba(124, 242, 173, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(var(--brand-primary-rgb), 0.05);
 }
 
 .search-filter-featured strong {
@@ -261,13 +274,13 @@
 
 .search-filter-chip-grid button:hover,
 .search-filter-chip-grid button:focus-visible {
-  border-color: rgba(124, 242, 173, 0.5);
+  border-color: rgba(var(--brand-primary-rgb), 0.5);
   background: rgba(var(--brand-primary-rgb), 0.1);
   color: var(--brand-primary);
 }
 
 .search-filter-chip-grid button.active {
-  border-color: rgba(124, 242, 173, 0.64);
+  border-color: rgba(var(--brand-primary-rgb), 0.64);
   background: rgba(var(--brand-primary-rgb), 0.2);
   color: var(--brand-primary);
 }
@@ -491,7 +504,7 @@
   overflow-x: auto;
   padding-bottom: 4px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(124, 242, 173, 0.28) transparent;
+  scrollbar-color: rgba(var(--brand-primary-rgb), 0.28) transparent;
 }
 
 .person-search-card {

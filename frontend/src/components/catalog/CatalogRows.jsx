@@ -1,7 +1,9 @@
 import { ChevronLeft, ChevronRight, Pencil, X } from 'lucide-react'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import LoadableImage from '../LoadableImage'
+import { findCatalogItemForHistory } from '../../utils/historyCatalog'
 import {
+  getBackdropUrl,
   getDetailArtworkUrl,
   getItemKey,
   getEpisodeHistoryLabel,
@@ -113,7 +115,9 @@ export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, o
         {visibleItems.map((item, index) => {
           const stillUrl = getServerStillUrl(item)
           const catalogItem = findCatalogItemForHistory(item, catalogItems)
-          const fallbackUrl = getServerBackdropUrl(catalogItem || item, 'w500')
+          const backdropUrl = getBackdropUrl(catalogItem, 'w500') || getServerBackdropUrl(item, 'w500')
+          const artworkUrl = backdropUrl || stillUrl
+          const fallbackUrl = artworkUrl === stillUrl ? '' : stillUrl
           return (
             <article className="catalog-card history-card" key={item.media_path} onContextMenu={(event) => onOpenContextMenu?.(event, { historyEntry: item })}>
               <button className="history-play-surface" onClick={() => onPlay(item)} type="button">
@@ -122,11 +126,10 @@ export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, o
                     alt={item.media_title || item.series_title || 'Continue watching'}
                     fallbackSrc={fallbackUrl === stillUrl ? '' : fallbackUrl}
                     fetchPriority={index < 6 ? 'high' : 'auto'}
-                    key={`${stillUrl}-${fallbackUrl}`}
+                    key={`${artworkUrl}-${fallbackUrl}`}
                     loading={index < 6 ? 'eager' : 'lazy'}
-                    showFallbackWhileLoading
                     shimmerOnError={false}
-                    src={stillUrl}
+                    src={artworkUrl}
                   />
                   <span className="history-progress-label">{Math.round(getWatchProgress(item))}%</span>
                   <span className="history-progress-track">
@@ -156,28 +159,6 @@ export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, o
     </section>
   )
 })
-
-function findCatalogItemForHistory(historyItem, catalogItems) {
-  const candidates = [historyItem.series_path, historyItem.series_title, historyItem.media_title, historyItem.source]
-    .map(normalizeHistoryTitle)
-    .filter(Boolean)
-  if (!candidates.length) return null
-
-  return catalogItems.find((item) => {
-    const aliases = [item.folder_name, item.name, getTitle(item), item.source].map(normalizeHistoryTitle)
-    return candidates.some((candidate) => aliases.includes(candidate))
-  }) || null
-}
-
-function normalizeHistoryTitle(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-}
 
 function DraggableScroller({ children, className, variant = '' }) {
   const scrollerRef = useRef(null)

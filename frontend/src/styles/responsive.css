@@ -40,6 +40,14 @@
 }
 
 @media (max-width: 900px) {
+  .dashboard-topbar-overlay {
+    margin-bottom: -112px;
+  }
+
+  .dashboard-topbar-overlay + .dashboard-hero {
+    padding-top: 156px;
+  }
+
   .dashboard-topbar {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -111,6 +119,10 @@
 }
 
 @media (max-width: 640px) {
+  .dashboard-topbar-overlay {
+    margin-bottom: -106px;
+  }
+
   :root {
     --catalog-poster-width: 132px;
   }
@@ -245,14 +257,14 @@
   }
 
   .dashboard-hero {
-    min-height: min(68dvh, 620px);
-    padding: 72px 16px 72px;
+    min-height: min(76dvh, 700px);
+    padding: 72px 16px 92px;
   }
 
   .dashboard-hero-poster,
   .detail-backdrop {
     width: 100%;
-    opacity: 0.42;
+    opacity: 0.52;
   }
 
   .detail-hero {
@@ -316,7 +328,7 @@
   .detail-back {
     top: max(12px, env(safe-area-inset-top));
     left: 12px;
-    padding: 9px 12px;
+    padding: 8px 0;
   }
 
   .detail-hero {
@@ -336,12 +348,6 @@
   .detail-content-grid,
   .movie-detail-content-grid {
     gap: 30px;
-    padding-right: 0;
-  }
-
-  .movie-detail-content-grid .recommendations > div,
-  .recommendations > div {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
     padding-right: 0;
   }
 
@@ -386,8 +392,6 @@
   .movie-detail-content-grid .credits-panel {
     grid-template-columns: 1fr;
     grid-template-areas:
-      'trailer'
-      'recommendations'
       'details'
       'info'
       'cast'
@@ -565,7 +569,7 @@
   }
 
   .watch-time {
-    font-size: 0.64rem;
+    font-size: 0.78rem;
   }
 
   .watch-subtitle-panel {

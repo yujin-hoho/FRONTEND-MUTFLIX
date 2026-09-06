@@ -21,6 +21,9 @@ const videoQueueCache = new Map()
 const DETAIL_CREDITS_CACHE_TTL_MS = 30 * 60 * 1000
 const MAX_DETAIL_CREDITS_CACHE_ITEMS = 40
 const detailCreditsCache = new Map()
+const DETAIL_CREDITS_STORAGE_KEY = 'mutflix_detail_credits_v1'
+const DETAIL_CREDITS_STORAGE_TTL_MS = 24 * 60 * 60 * 1000
+const MAX_STORED_DETAIL_CREDITS = 20
 
 export function createEmptyCredits() {
   return { cast: [], crew: [], meta: null, recommendations: [], trailerId: '' }
@@ -1009,7 +1012,9 @@ export async function fetchDetailData(authToken, item, { onCoreReady, onCreditsR
 
   const headers = { 'x-access-token': authToken }
   const initialTmdbId = getTmdbId(detailItem)
-  const creditsPromise = initialTmdbId ? getCreditsFromServer(detailItem, headers) : null
+  // Start cast/crew immediately. When no TMDB ID is present yet, the lookup by
+  // folder name runs alongside the video request instead of waiting for it.
+  const creditsPromise = getCreditsFromServer(detailItem, headers)
   const response = await fetch(`${API_BASE_URL}/api/videos/${encodeURIComponent(itemPath)}?defer_metadata=true`, {
     cache: 'no-store',
     headers,
@@ -1028,9 +1033,10 @@ export async function fetchDetailData(authToken, item, { onCoreReady, onCreditsR
   onCoreReady?.({ item: mergedItem, videos: coreVideos, credits: createEmptyCredits() })
 
   const enrichedVideosPromise = enrichEpisodesFromServer(mergedItem, coreVideos, headers)
-  const resolvedCreditsPromise = creditsPromise && getTmdbId(mergedItem) === initialTmdbId
-    ? creditsPromise
-    : getCreditsFromServer(mergedItem, headers)
+  const mergedTmdbId = getTmdbId(mergedItem)
+  const resolvedCreditsPromise = initialTmdbId && mergedTmdbId && mergedTmdbId !== initialTmdbId
+    ? getCreditsFromServer(mergedItem, headers)
+    : creditsPromise
   if (onCreditsReady) {
     resolvedCreditsPromise.then((resolvedCredits) => onCreditsReady(resolvedCredits)).catch(() => {})
   }
@@ -1227,17 +1233,25 @@ async function getCreditsFromServer(item, headers) {
   }
   if (cached) detailCreditsCache.delete(cacheKey)
 
+  const storedCredits = readStoredDetailCredits(cacheKey)
+  if (storedCredits) {
+    const promise = Promise.resolve(storedCredits)
+    detailCreditsCache.set(cacheKey, { cachedAt: Date.now(), promise })
+    return promise
+  }
+
   const promise = loadCreditsFromServer(item, headers)
     .then((credits) => {
       const hasCredits = Boolean(
         credits?.meta
-        || credits?.trailerId
         || credits?.cast?.length
         || credits?.crew?.length
-        || credits?.recommendations?.length,
       )
       if (cacheKey && hasCredits) {
         detailCreditsCache.set(cacheKey, { cachedAt: Date.now(), promise: Promise.resolve(credits) })
+        writeStoredDetailCredits(cacheKey, credits)
+        const resolvedTmdbId = Number(credits?.meta?.id || 0)
+        if (resolvedTmdbId > 0) writeStoredDetailCredits(`${mediaType}:${resolvedTmdbId}`, credits)
         trimDetailCreditsCache()
       } else if (cacheKey) {
         detailCreditsCache.delete(cacheKey)
@@ -1262,6 +1276,65 @@ function trimDetailCreditsCache() {
   }
 }
 
+function readStoredDetailCredits(cacheKey) {
+  if (!cacheKey) return null
+  try {
+    const cache = JSON.parse(localStorage.getItem(DETAIL_CREDITS_STORAGE_KEY) || '{}')
+    const entry = cache[cacheKey]
+    if (!entry || Date.now() - Number(entry.cachedAt || 0) > DETAIL_CREDITS_STORAGE_TTL_MS) return null
+    return entry.credits || null
+  } catch {
+    localStorage.removeItem(DETAIL_CREDITS_STORAGE_KEY)
+    return null
+  }
+}
+
+function writeStoredDetailCredits(cacheKey, credits) {
+  if (!cacheKey || !credits) return
+  try {
+    const now = Date.now()
+    const cache = JSON.parse(localStorage.getItem(DETAIL_CREDITS_STORAGE_KEY) || '{}')
+    const activeEntries = Object.entries(cache)
+      .filter(([, entry]) => now - Number(entry?.cachedAt || 0) <= DETAIL_CREDITS_STORAGE_TTL_MS)
+      .sort(([, first], [, second]) => Number(second.cachedAt || 0) - Number(first.cachedAt || 0))
+      .slice(0, MAX_STORED_DETAIL_CREDITS - 1)
+    const nextCache = Object.fromEntries(activeEntries)
+    nextCache[cacheKey] = { cachedAt: now, credits: compactDetailCredits(credits) }
+    localStorage.setItem(DETAIL_CREDITS_STORAGE_KEY, JSON.stringify(nextCache))
+  } catch {
+    // Persistent metadata is an optimization; the in-memory cache remains active.
+  }
+}
+
+function compactDetailCredits(credits) {
+  const meta = credits?.meta || {}
+  const metaKeys = [
+    'id', 'title', 'name', 'poster_path', 'backdrop_path', 'overview', 'vote_average',
+    'genres', 'original_language', 'release_date', 'first_air_date', 'origin_country',
+    'production_countries', 'networks', 'type', 'status', 'episode_run_time', 'runtime',
+    'number_of_seasons', 'number_of_episodes',
+  ]
+  return {
+    cast: (Array.isArray(credits.cast) ? credits.cast : []).slice(0, 5).map(compactCreditPerson),
+    crew: (Array.isArray(credits.crew) ? credits.crew : []).slice(0, 8).map(compactCreditPerson),
+    meta: Object.fromEntries(metaKeys.filter((key) => meta[key] !== undefined).map((key) => [key, meta[key]])),
+    recommendations: [],
+    trailerId: '',
+  }
+}
+
+function compactCreditPerson(person = {}) {
+  return {
+    id: person.id,
+    name: person.name,
+    profile_path: person.profile_path,
+    character: person.character,
+    job: person.job,
+    department: person.department,
+    roles: person.roles,
+  }
+}
+
 async function loadCreditsFromServer(item, headers) {
   const mediaType = getMediaType(item) === 'movie' ? 'movie' : 'tv'
   const folderName = item.folder_name || item.name || getItemPath(item)
@@ -1277,7 +1350,7 @@ async function loadCreditsFromServer(item, headers) {
     }
 
     const params = new URLSearchParams({
-      append_to_response: 'credits,recommendations,videos',
+      append_to_response: 'credits',
       language: 'en-US',
     })
     const detailResponse = await fetch(`${API_BASE_URL}/api/tmdb/${mediaType}/${tmdbId}?${params.toString()}`, { headers })
@@ -1285,13 +1358,6 @@ async function loadCreditsFromServer(item, headers) {
     if (!detailResponse.ok || !details.id) return createEmptyCredits()
 
     const credits = details.credits || {}
-    const recommendations = details.recommendations || {}
-    const videos = details.videos || {}
-    const trailers = Array.isArray(videos.results)
-      ? videos.results.filter((video) => video.site === 'YouTube' && video.type === 'Trailer')
-      : []
-    const trailer = trailers.find((video) => video.official) || trailers[0]
-
     const crewJobs = new Set(['Director', 'Producer', 'Writer', 'Screenplay'])
     const crew = Array.isArray(credits.crew)
       ? credits.crew
@@ -1306,10 +1372,8 @@ async function loadCreditsFromServer(item, headers) {
       cast: Array.isArray(credits.cast) ? credits.cast.slice(0, 5) : [],
       crew,
       meta: details,
-      recommendations: Array.isArray(recommendations.results)
-        ? recommendations.results.slice(0, 16)
-        : [],
-      trailerId: trailer?.key || '',
+      recommendations: [],
+      trailerId: '',
     }
   } catch {
     return createEmptyCredits()

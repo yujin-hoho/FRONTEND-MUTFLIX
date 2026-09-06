@@ -18,18 +18,18 @@
   z-index: 12;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   border: 0;
-  border-radius: 999px;
-  background: rgba(var(--brand-primary-rgb), 0.14);
+  background: transparent;
   color: var(--brand-primary);
-  padding: 10px 14px;
-  font-weight: 800;
+  padding: 8px 0;
+  font-weight: 400;
+  text-shadow: 0 2px 5px rgba(0, 0, 0, 0.9);
   cursor: pointer;
 }
 
 .detail-back:hover {
-  background: var(--brand-primary);
+  background: transparent;
   color: #ffffff;
 }
 
@@ -72,7 +72,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(105deg, transparent 20%, rgba(124, 242, 173, 0.18) 42%, rgba(255, 255, 255, 0.16) 50%, rgba(124, 242, 173, 0.18) 58%, transparent 80%);
+  background: linear-gradient(105deg, transparent 30%, rgba(var(--brand-primary-rgb), 0.05) 42%, rgba(90, 90, 90, 0.16) 50%, rgba(var(--brand-primary-rgb), 0.05) 58%, transparent 70%);
   transform: translateX(-100%);
   animation: shimmer-slide 1.35s ease-in-out infinite;
 }
@@ -127,10 +127,10 @@
 }
 
 .detail-copy h1 {
-  margin: 0 0 16px;
-  font-size: clamp(2.35rem, 5.4vw, 4.8rem);
-  font-weight: 800;
-  line-height: 0.98;
+  margin: 0 0 20px;
+  font-size: clamp(2rem, 4.2vw, 3.7rem);
+  font-weight: 600;
+  line-height: 1.05;
   letter-spacing: 0;
 }
 
@@ -157,7 +157,7 @@
 .detail-overview {
   display: -webkit-box;
   max-width: 560px;
-  margin: 0 0 24px;
+  margin: 0 0 30px;
   color: #dbeafe;
   font-size: clamp(0.98rem, 1.35vw, 1.12rem);
   line-height: 1.65;
@@ -341,7 +341,7 @@
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(105deg, transparent 20%, rgba(124, 242, 173, 0.18) 42%, rgba(255, 255, 255, 0.16) 50%, rgba(124, 242, 173, 0.18) 58%, transparent 80%);
+  background: linear-gradient(105deg, transparent 30%, rgba(var(--brand-primary-rgb), 0.05) 42%, rgba(90, 90, 90, 0.16) 50%, rgba(var(--brand-primary-rgb), 0.05) 58%, transparent 70%);
   transform: translateX(-100%);
   animation: shimmer-slide 1.35s ease-in-out infinite;
 }
@@ -392,7 +392,6 @@
 .movie-detail-content-grid .credits-panel {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
-    'trailer recommendations'
     'details info'
     'cast crew';
   border-left: 0;
@@ -413,31 +412,6 @@
 
 .movie-detail-content-grid .crew-section {
   grid-area: crew;
-}
-
-.movie-detail-content-grid .trailer-section {
-  grid-area: trailer;
-}
-
-.movie-detail-content-grid .trailer-embed {
-  max-width: 720px;
-}
-
-.movie-detail-content-grid .trailer-section > h2,
-.movie-detail-content-grid .recommendations > h2 {
-  margin-bottom: 0;
-}
-
-.movie-detail-content-grid .recommendations {
-  grid-area: recommendations;
-}
-
-.movie-detail-content-grid .recommendations > div {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
-  align-content: start;
-  margin-top: 14px;
-  padding-right: 16px;
 }
 
 .episode-card {
@@ -617,6 +591,7 @@
   margin-bottom: 22px;
   color: var(--brand-primary);
   font-size: 1.65rem;
+  font-weight: 400;
 }
 
 .cast-list,
@@ -640,7 +615,7 @@
 .title-facts dt {
   color: var(--brand-primary);
   font-size: 0.86rem;
-  font-weight: 800;
+  font-weight: 400;
 }
 
 .title-facts dd {
@@ -659,61 +634,15 @@
 .season-facts span {
   border: 1px solid rgba(var(--brand-primary-rgb), 0.24);
   border-radius: 999px;
-  background: rgba(var(--brand-primary-rgb), 0.08);
-  color: var(--brand-primary);
+  background: transparent;
+  color: #dbeafe;
   padding: 6px 9px;
   font-size: 0.78rem;
 }
 
 .season-facts strong {
   color: var(--brand-primary);
-}
-
-.trailer-embed {
-  position: relative;
-  aspect-ratio: 16 / 9;
-  overflow: hidden;
-  margin-top: 14px;
-  border-radius: 6px;
-  background: #1a1a1a;
-}
-
-.trailer-embed iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-}
-
-.recommendations > div {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, var(--catalog-poster-width));
-  gap: 10px;
-}
-
-.recommendation-poster {
-  position: relative;
-  aspect-ratio: 2 / 3;
-  overflow: hidden;
-  border-radius: 5px;
-  background: #1a1a1a;
-}
-
-.recommendation-poster img {
-  width: 100%;
-  height: 100%;
-  display: block;
-  object-fit: cover;
-}
-
-.recommendations h3 {
-  display: -webkit-box;
-  margin: 7px 0 0;
-  overflow: hidden;
-  color: #dbeafe;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  font-weight: 400;
 }
 
 .cast-card {

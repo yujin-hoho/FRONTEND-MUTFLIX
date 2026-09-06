@@ -6,8 +6,6 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
   const cast = credits?.cast || []
   const crew = credits?.crew || []
   const meta = credits?.meta
-  const recommendations = credits?.recommendations || []
-  const trailerId = credits?.trailerId || ''
   const itemGenres = item ? getGenres(item) : []
   const genres = itemGenres.length > 0
     ? itemGenres
@@ -83,20 +81,6 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
           </div>
         </section>
       )}
-      {trailerId && (
-        <section className="trailer-section">
-          <h2>Trailer</h2>
-          <div className="trailer-embed">
-            <iframe
-              allow="autoplay; encrypted-media; picture-in-picture"
-              allowFullScreen
-              loading="eager"
-              src={`https://www.youtube.com/embed/${encodeURIComponent(trailerId)}?autoplay=1&mute=1&controls=1&playsinline=1&rel=0`}
-              title="Trailer"
-            />
-          </div>
-        </section>
-      )}
       {cast.length > 0 && (
         <section className="cast-section">
           <h2>Cast</h2>
@@ -146,21 +130,6 @@ const CreditsPanel = memo(function CreditsPanel({ credits, item, mediaType = 'se
               </PersonCard>
               )
             })}
-          </div>
-        </section>
-      )}
-      {recommendations.length > 0 && (
-        <section className="recommendations">
-          <h2>More Like This</h2>
-          <div>
-            {(isMovie ? recommendations.slice(0, 10) : recommendations).map((recommendation) => (
-              <article key={recommendation.id}>
-                <div className="recommendation-poster">
-                  <LoadableImage alt={recommendation.name || recommendation.title} key={recommendation.poster_path} src={getServerTmdbImageUrl(recommendation.poster_path, 'w342')} />
-                </div>
-                <h3>{recommendation.name || recommendation.title}</h3>
-              </article>
-            ))}
           </div>
         </section>
       )}

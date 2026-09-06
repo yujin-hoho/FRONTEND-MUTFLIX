@@ -71,6 +71,7 @@ const EMPTY_DETAIL_DATA = {
 
 const PROFILE_SYNC_INTERVAL_MS = 30 * 1000
 const PROFILE_SYNC_DEBOUNCE_MS = 3 * 1000
+const FEATURED_SELECTIONS_KEY = 'mutflix_featured_selections_v1'
 
 function App() {
   const location = useLocation()
@@ -692,13 +693,8 @@ function App() {
     }))
   }, [authToken, closeCompletedContextMenu, contextMenu, detailData.videos, profileData.myList, profileData.watchHistory, selectedProfile])
 
-  const handleToggleContextPlanToWatch = useCallback(async () => {
-    const menu = contextMenu
-    closeCompletedContextMenu()
-    if (!menu || !selectedProfile) return
-
-    const item = getContextMenuItem(menu, catalogDataRef.current)
-    if (!item) return
+  const handleToggleMyList = useCallback(async (item) => {
+    if (!item || !selectedProfile) return
     if (isPlanToWatchMyListItem(item, profileData.myList)) {
       await removeMyListItem(authToken, {
         item,
@@ -720,7 +716,13 @@ function App() {
       ...currentData,
       myList: mergeMyListItem(currentData.myList, planItem),
     }))
-  }, [authToken, closeCompletedContextMenu, contextMenu, profileData.myList, selectedProfile])
+  }, [authToken, profileData.myList, selectedProfile])
+
+  const handleToggleContextPlanToWatch = useCallback(async () => {
+    const menu = contextMenu
+    closeCompletedContextMenu()
+    if (menu) await handleToggleMyList(getContextMenuItem(menu, catalogDataRef.current))
+  }, [closeCompletedContextMenu, contextMenu, handleToggleMyList])
 
   useEffect(() => {
     if (!contextMenu) return undefined
@@ -1152,11 +1154,13 @@ function App() {
       return renderWithContextMenu(
         <DetailPage
           detailData={detailData}
+          isItemInMyList={(item) => isPlanToWatchMyListItem(item, profileData.myList)}
           key={getItemPath(detailData.item) || getTitle(detailData.item)}
           onBack={handleDetailBack}
           onOpenContextMenu={openCompletedContextMenu}
           onOpenPerson={handleOpenPersonSearch}
           onPlayVideo={(video) => handleOpenWatch(detailData.item, video, detailData.videos)}
+          onToggleMyList={handleToggleMyList}
           watchHistory={profileData.watchHistory}
         />,
       )
@@ -1237,6 +1241,8 @@ function App() {
     return renderWithContextMenu(
       <DashboardPage
         catalogData={catalogData}
+        onToggleMyList={handleToggleMyList}
+        isItemInMyList={(item) => isPlanToWatchMyListItem(item, profileData.myList)}
         isAdmin={currentUser?.role === 'admin'}
         onChangeProfile={handleChangeProfile}
         onDashboardRowsReady={handleDashboardRowsReady}
@@ -1255,7 +1261,13 @@ function App() {
         myList={profileData.myList}
         profileData={profileData}
         selectedProfile={selectedProfile}
-        featuredItemKey={getFeaturedItemKey(featuredItemKeys.current, selectedProfile.id, catalogData.movies, catalogData.series)}
+        featuredItemKey={getFeaturedItemKey(
+          featuredItemKeys.current,
+          selectedProfile.id,
+          catalogData.movies,
+          catalogData.series,
+          catalogData.rows?.featuredItem,
+        )}
       />,
     )
   }
@@ -1422,7 +1434,7 @@ function replaceCatalogItem(items, originalKey, updatedItem) {
   ))
 }
 
-function getFeaturedItemKey(featuredKeys, profileId, movies, series) {
+function getFeaturedItemKey(featuredKeys, profileId, movies, series, cachedFeaturedItem = null) {
   const rotationKey = getRotationKey(profileId)
   const catalogItems = [...movies, ...series]
   const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
@@ -1434,10 +1446,41 @@ function getFeaturedItemKey(featuredKeys, profileId, movies, series) {
     return currentFeatured.itemKey
   }
 
+  try {
+    const storedSelections = JSON.parse(localStorage.getItem(FEATURED_SELECTIONS_KEY) || '{}')
+    const storedFeatured = storedSelections[String(profileId)]
+    if (
+      storedFeatured?.rotationKey === rotationKey
+      && backdropItems.some((item) => getItemKey(item) === storedFeatured.itemKey)
+    ) {
+      featuredKeys.set(profileId, storedFeatured)
+      return storedFeatured.itemKey
+    }
+  } catch {
+    localStorage.removeItem(FEATURED_SELECTIONS_KEY)
+  }
+
+  const cachedItemKey = cachedFeaturedItem ? getItemKey(cachedFeaturedItem) : ''
+  const cachedItem = cachedItemKey
+    ? backdropItems.find((item) => getItemKey(item) === cachedItemKey)
+    : null
+
   const heroItems = backdropItems.length ? backdropItems : catalogItems
-  const heroItem = rotateItems(heroItems, `${rotationKey}-hero`)[0]
+  const heroItem = cachedItem || rotateItems(heroItems, `${rotationKey}-hero`)[0]
   const itemKey = heroItem ? getItemKey(heroItem) : ''
-  if (itemKey) featuredKeys.set(profileId, { itemKey, rotationKey })
+  if (itemKey) {
+    const nextFeatured = { itemKey, rotationKey }
+    featuredKeys.set(profileId, nextFeatured)
+    try {
+      const storedSelections = JSON.parse(localStorage.getItem(FEATURED_SELECTIONS_KEY) || '{}')
+      localStorage.setItem(FEATURED_SELECTIONS_KEY, JSON.stringify({
+        ...storedSelections,
+        [String(profileId)]: nextFeatured,
+      }))
+    } catch {
+      // The in-memory selection still keeps the banner stable for this session.
+    }
+  }
   return itemKey
 }
 

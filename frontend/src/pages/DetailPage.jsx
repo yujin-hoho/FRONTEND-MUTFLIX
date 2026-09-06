@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronDown, ChevronUp, Play } from 'lucide-react'
+import { Check, ChevronDown, ChevronUp, Play, Plus } from 'lucide-react'
 import { EPISODES_PER_PAGE } from '../config'
 import LoadableImage from '../components/LoadableImage'
 import CreditsPanel from '../components/detail/CreditsPanel'
@@ -20,7 +20,7 @@ import {
   preloadImages,
 } from '../utils/media'
 
-function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPlayVideo, watchHistory = [] }) {
+function DetailPage({ detailData, isItemInMyList, onBack, onOpenContextMenu, onOpenPerson, onPlayVideo, onToggleMyList, watchHistory = [] }) {
   const { credits, error, isLoading, isMetadataLoading, item, videos } = detailData
   const seasons = useMemo(
     () => [...new Set(videos.map((video) => Number(video.season || 1)))].sort((a, b) => a - b),
@@ -32,6 +32,8 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
   )
   const [activeSeason, setActiveSeason] = useState(null)
   const [visibleEpisodeCount, setVisibleEpisodeCount] = useState(EPISODES_PER_PAGE)
+  const [isSavingMyList, setIsSavingMyList] = useState(false)
+  const [myListError, setMyListError] = useState('')
   const selectedSeason = seasons.includes(activeSeason)
     ? activeSeason
     : seasons.includes(rememberedSeason)
@@ -104,10 +106,33 @@ function DetailPage({ detailData, onBack, onOpenContextMenu, onOpenPerson, onPla
           ) : (
             <p className="detail-overview">{overview || 'No description is available for this title yet.'}</p>
           )}
-          <button className="play-button" disabled={!firstVideo || isLoading} onClick={() => onPlayVideo(firstVideo)} type="button">
-            <Play fill="currentColor" size={20} />
-            <span>{isLoading ? 'Loading...' : firstVideo ? 'Play' : 'Unavailable offline'}</span>
-          </button>
+          <div className="dashboard-hero-buttons detail-hero-buttons">
+            <button className="play-button" disabled={!firstVideo || isLoading} onClick={() => onPlayVideo(firstVideo)} type="button">
+              <span>{isLoading ? 'Loading...' : firstVideo ? 'Watch Now' : 'Unavailable offline'}</span>
+            </button>
+            <button
+              className="hero-my-list-button"
+              aria-busy={isSavingMyList}
+              aria-pressed={Boolean(isItemInMyList?.(item))}
+              disabled={!item || isSavingMyList}
+              onClick={async () => {
+                setIsSavingMyList(true)
+                setMyListError('')
+                try {
+                  await onToggleMyList(item)
+                } catch (error) {
+                  setMyListError(error.message || 'Unable to update My List. Please try again.')
+                } finally {
+                  setIsSavingMyList(false)
+                }
+              }}
+              type="button"
+            >
+              <Plus size={22} />
+              <span>My List</span>
+            </button>
+          </div>
+          {myListError && <div className="hero-my-list-error" role="alert">{myListError}</div>}
           {isMovie && firstVideoProgress > 0 && (
             <div className="detail-watch-progress">
               <div className="detail-watch-progress-copy">

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Play } from 'lucide-react'
+import { AlertCircle, Plus } from 'lucide-react'
 import LoadableImage from '../components/LoadableImage'
 import ProfileMenu from '../components/ProfileMenu'
 import { CatalogRow, HistoryRow } from '../components/catalog/CatalogRows'
@@ -8,6 +8,7 @@ import { createDashboardRowsSnapshot } from '../utils/cache'
 import {
   getBackdropUrl,
   getGenres,
+  getItemKey,
   getPosterFallbackUrl,
   getPosterUrl,
   getRating,
@@ -20,6 +21,7 @@ import {
 
 function DashboardPage({
   catalogData,
+  featuredItemKey = '',
   isAdmin = false,
   onChangeProfile,
   onHydrateItems,
@@ -29,6 +31,8 @@ function DashboardPage({
   onOpenCatalogEdit,
   onOpenContextMenu,
   onOpenMyList,
+  onToggleMyList,
+  isItemInMyList,
   onOpenDetail,
   onHideHistory,
   onDashboardRowsReady,
@@ -40,6 +44,8 @@ function DashboardPage({
   selectedProfile,
 }) {
   const [rotationKey, setRotationKey] = useState(() => getRotationKey(selectedProfile.id))
+  const [isSavingMyList, setIsSavingMyList] = useState(false)
+  const [myListError, setMyListError] = useState('')
   useEffect(() => {
     const updateRotation = () => setRotationKey(getRotationKey(selectedProfile.id))
     updateRotation()
@@ -51,13 +57,14 @@ function DashboardPage({
     }
   }, [selectedProfile.id])
   const dashboardView = useMemo(
-    () => buildDashboardView(catalogData, rotationKey, profileData.watchHistory, myList),
-    [catalogData, rotationKey, myList, profileData.watchHistory],
+    () => buildDashboardView(catalogData, rotationKey, profileData.watchHistory, myList, featuredItemKey),
+    [catalogData, featuredItemKey, rotationKey, myList, profileData.watchHistory],
   )
   const displayView = catalogData.rows
     ? {
       ...dashboardView,
-      ...catalogData.rows,
+      catalogRows: catalogData.rows.catalogRows?.length ? catalogData.rows.catalogRows : dashboardView.catalogRows,
+      curatedRows: catalogData.rows.curatedRows?.length ? catalogData.rows.curatedRows : dashboardView.curatedRows,
     }
     : dashboardView
 
@@ -68,7 +75,7 @@ function DashboardPage({
 
   return (
     <main className="dashboard-page">
-      <nav className="dashboard-topbar" aria-label="Dashboard">
+      <nav className="dashboard-topbar dashboard-topbar-overlay" aria-label="Dashboard">
         <a className="brand-mark dashboard-brand" href="/dashboard" aria-label="RÉEL dashboard">
           <img className="brand-logo" src="/REEL-logo-red.svg" alt="RÉEL" width="486" height="202" />
         </a>
@@ -113,10 +120,33 @@ function DashboardPage({
               || displayView.featuredItem?.tmdb_overview
               || 'Explore movies and series from your RÉEL catalog.'}
           </p>
-          <button className="play-button" onClick={() => displayView.featuredItem && onOpenDetail(displayView.featuredItem)} type="button">
-            <Play size={22} fill="currentColor" />
-            <span>Play</span>
-          </button>
+          <div className="dashboard-hero-buttons">
+            <button className="play-button" onClick={() => displayView.featuredItem && onOpenDetail(displayView.featuredItem)} type="button">
+              <span>Watch Now</span>
+            </button>
+            <button
+              className="hero-my-list-button"
+              aria-pressed={Boolean(isItemInMyList?.(displayView.featuredItem))}
+              aria-busy={isSavingMyList}
+              disabled={!displayView.featuredItem || isSavingMyList}
+              onClick={async () => {
+                setIsSavingMyList(true)
+                setMyListError('')
+                try {
+                  await onToggleMyList(displayView.featuredItem)
+                } catch (error) {
+                  setMyListError(error.message || 'Unable to update My List. Please try again.')
+                } finally {
+                  setIsSavingMyList(false)
+                }
+              }}
+              type="button"
+            >
+              <Plus size={22} />
+              <span>My List</span>
+            </button>
+          </div>
+          {myListError && <div className="hero-my-list-error" role="alert">{myListError}</div>}
         </div>
       </section>
 
@@ -153,13 +183,14 @@ function DashboardPage({
   )
 }
 
-function buildDashboardView(catalogData, rotationKey, watchHistory = [], myList = []) {
+function buildDashboardView(catalogData, rotationKey, watchHistory = [], myList = [], featuredItemKey = '') {
   const completedContext = { myList, watchHistory }
   const catalogItems = [...catalogData.movies, ...catalogData.series]
     .filter((item) => !isCatalogItemCompleted(item, completedContext))
   const backdropItems = catalogItems.filter((item) => getBackdropUrl(item))
   const heroCandidates = backdropItems.length ? backdropItems : catalogItems
-  const featuredItem = rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
+  const featuredItem = heroCandidates.find((item) => getItemKey(item) === featuredItemKey)
+    || rotateItems(heroCandidates, `${rotationKey}-hero`)[0]
     || backdropItems[0]
     || catalogItems[0]
   const genreRows = ['Action', 'Comedy', 'Drama', 'Thriller', 'Romance', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Animation', 'Documentary']
