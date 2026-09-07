@@ -24,6 +24,7 @@ import {
   fetchMyList,
   fetchProfiles,
   fetchWatchHistory,
+  getCatalogMetadataFromTmdb,
   hideWatchHistory,
   mergeCatalogMetadataUpdates,
   removeMyListItem,
@@ -33,6 +34,7 @@ import {
 import {
   clearDashboardCache,
   mergeDashboardCache,
+  mergeMeaningfulValues,
   readDashboardCache,
   readProfilesCache,
   writeLocalTmdbOverride,

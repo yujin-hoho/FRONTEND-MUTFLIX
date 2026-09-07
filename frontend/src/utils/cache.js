@@ -509,7 +509,7 @@ function removeLegacyDashboardCaches() {
   LEGACY_DASHBOARD_CACHE_KEYS.forEach((cacheKey) => localStorage.removeItem(cacheKey))
 }
 
-function mergeMeaningfulValues(...sources) {
+export function mergeMeaningfulValues(...sources) {
   return sources.reduce((merged, source) => {
     Object.entries(source).forEach(([key, value]) => {
       if (key.startsWith('_') || !isMeaningfulValue(key, value)) return

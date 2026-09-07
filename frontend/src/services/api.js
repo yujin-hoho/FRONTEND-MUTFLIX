@@ -1519,7 +1519,7 @@ function hasTmdbMetadata(item) {
   )
 }
 
-function getCatalogMetadataFromTmdb(meta) {
+export function getCatalogMetadataFromTmdb(meta) {
   if (!meta) return {}
 
   return {
