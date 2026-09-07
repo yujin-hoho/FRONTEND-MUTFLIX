@@ -24,6 +24,48 @@ export function findCatalogItemForHistory(historyItem, catalogItems) {
   return null
 }
 
+const HISTORY_ARTWORK_FIELDS = [
+  'still_path',
+  'still_url',
+  'still_file_id',
+  'thumbnail_url',
+  'backdrop_url',
+  'primary_backdrop_url',
+  'backdrop_file_id',
+  'all_backdrop_urls',
+]
+
+// A history refresh may briefly return an entry before its episode artwork has
+// been enriched. Keep the last usable artwork for the same media path, while
+// still allowing a newly resolved value to replace it.
+export function preserveWatchHistoryArtwork(nextHistory = [], previousHistory = []) {
+  const previousByPath = new Map(
+    previousHistory
+      .filter(Boolean)
+      .map((entry) => [normalizePath(entry.media_path), entry]),
+  )
+
+  return nextHistory.map((entry) => {
+    const previous = previousByPath.get(normalizePath(entry?.media_path))
+    if (!entry || !previous) return entry
+
+    const preservedArtwork = {}
+    HISTORY_ARTWORK_FIELDS.forEach((field) => {
+      if (!hasUsableArtworkValue(entry[field]) && hasUsableArtworkValue(previous[field])) {
+        preservedArtwork[field] = previous[field]
+      }
+    })
+    return Object.keys(preservedArtwork).length
+      ? { ...entry, ...preservedArtwork }
+      : entry
+  })
+}
+
+function hasUsableArtworkValue(value) {
+  if (Array.isArray(value)) return value.some(Boolean)
+  return value !== null && value !== undefined && value !== ''
+}
+
 function normalizePath(value) {
   return String(value || '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')
 }

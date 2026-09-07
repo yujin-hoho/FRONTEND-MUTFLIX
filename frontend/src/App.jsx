@@ -59,6 +59,7 @@ import {
   normalizeWatchHistory,
   rotateItems,
 } from './utils/media'
+import { preserveWatchHistoryArtwork } from './utils/historyCatalog'
 import { DEFAULT_PROFILE_AVATAR_SEED } from './utils/profileAvatars'
 
 const EMPTY_DETAIL_DATA = {
@@ -216,7 +217,7 @@ function App() {
         setProfileData((currentData) => {
           const watchHistory = historyResult.status === 'fulfilled'
             && historyRevision.current === startingHistoryRevision
-            ? historyResult.value
+            ? preserveWatchHistoryArtwork(historyResult.value, currentData.watchHistory)
             : currentData.watchHistory
           const myList = myListResult.status === 'fulfilled'
             ? myListResult.value
@@ -342,13 +343,17 @@ function App() {
         if (error) throw error
 
         const refreshedDashboard = mergeDashboardCache(dashboard, cachedDashboard)
+        const refreshedHistory = preserveWatchHistoryArtwork(
+          refreshedDashboard.history,
+          profileDataRef.current.watchHistory,
+        )
 
         // Replace the cached snapshot as soon as fresh data arrives.
         if (!ignore) {
           setProfileData((currentData) => ({
             myList,
             watchHistory: historyRevision.current === startingHistoryRevision
-              ? refreshedDashboard.history
+              ? preserveWatchHistoryArtwork(refreshedHistory, currentData.watchHistory)
               : currentData.watchHistory,
             isLoading: false,
             error: null,
@@ -361,7 +366,7 @@ function App() {
             dashboardRowsCacheKey.current = ''
             writeDashboardCache(selectedProfile.id, {
               history: historyRevision.current === startingHistoryRevision
-                ? refreshedDashboard.history
+                ? refreshedHistory
                 : profileDataRef.current.watchHistory,
               movies: merged.movies,
               series: merged.series,
@@ -387,7 +392,7 @@ function App() {
               const merged = mergeCatalogMetadataUpdates(current, enrichedSoFar)
               writeDashboardCache(profileId, {
                 history: historyRevision.current === startingHistoryRevision
-                  ? refreshedDashboard.history
+                  ? refreshedHistory
                   : profileDataRef.current.watchHistory,
                 movies: merged.movies,
                 series: merged.series,
@@ -411,7 +416,7 @@ function App() {
             const merged = mergeCatalogMetadataUpdates(current, enrichedCatalog)
             writeDashboardCache(profileId, {
               history: historyRevision.current === startingHistoryRevision
-                ? refreshedDashboard.history
+                ? refreshedHistory
                 : profileDataRef.current.watchHistory,
               movies: merged.movies,
               series: merged.series,

@@ -113,15 +113,16 @@ export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, o
       </div>
       <DraggableScroller className="catalog-scroller history-scroller" variant="history">
         {visibleItems.map((item, index) => {
-          const stillUrl = getServerStillUrl(item)
+          const stillUrl = getServerStillUrl(item, 'w500')
           const catalogItem = findCatalogItemForHistory(item, catalogItems)
-          // History responses can carry useful artwork metadata of their own.
-          // Merge it with the catalog match so a transient catalog refresh
-          // cannot downgrade the card to the generic movie/series backdrop.
-          const artworkItem = catalogItem ? { ...item, ...catalogItem } : item
-          const backdropUrl = getBackdropUrl(artworkItem, 'w500') || getServerBackdropUrl(item, 'w500')
-          const artworkUrl = backdropUrl || stillUrl
-          const fallbackUrl = artworkUrl === stillUrl ? '' : stillUrl
+          const historyBackdropUrl = getBackdropUrl(item, 'w500') || getServerBackdropUrl(item, 'w500')
+          const catalogBackdropUrl = getBackdropUrl(catalogItem, 'w500')
+          // The episode still belongs to this exact history entry. Catalog
+          // artwork is only a fallback and must not replace it when catalog
+          // metadata finishes loading after the first render.
+          const backdropUrl = historyBackdropUrl || catalogBackdropUrl
+          const artworkUrl = stillUrl || backdropUrl
+          const fallbackUrl = artworkUrl === backdropUrl ? '' : backdropUrl
           return (
             <article className="catalog-card history-card" key={item.media_path} onContextMenu={(event) => onOpenContextMenu?.(event, { historyEntry: item })}>
               <button className="history-play-surface" onClick={() => onPlay(item)} type="button">
