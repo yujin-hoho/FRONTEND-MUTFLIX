@@ -562,7 +562,15 @@ function WatchPage({
   const seekBy = useCallback((seconds) => {
     const player = playerRef.current
     if (!player) return
-    const targetSeconds = Math.max(0, getPlaybackPosition(player, audioTranscodeOffsetRef.current) + seconds)
+    // During an audio-transcode seek the media element still reports the old
+    // fragment position until the replacement stream is ready. Build repeated
+    // skips from the pending logical target so a seek-bar click followed by
+    // ArrowRight advances from the position the user just selected.
+    const pendingTarget = pendingAudioTranscodeTargetRef.current
+    const playbackPosition = Number.isFinite(pendingTarget)
+      ? pendingTarget
+      : getPlaybackPosition(player, audioTranscodeOffsetRef.current)
+    const targetSeconds = Math.max(0, playbackPosition + seconds)
     if (!seekToPlaybackTime(targetSeconds)) return
     revealControls()
   }, [revealControls, seekToPlaybackTime])
@@ -1052,13 +1060,19 @@ function WatchPage({
 
   useEffect(() => {
     const handleKeyDown = (event) => {
-      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(event.target.tagName)) return
+      const targetTag = event.target?.tagName
+      const isArrowSeek = event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+      const isFocusedSeekBar = targetTag === 'INPUT'
+        && event.target?.classList?.contains('watch-seek')
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(targetTag) && !(isFocusedSeekBar && isArrowSeek)) return
       if (event.key === ' ') {
         event.preventDefault()
         togglePlay()
       } else if (event.key === 'ArrowLeft') {
+        event.preventDefault()
         seekBy(-10)
       } else if (event.key === 'ArrowRight') {
+        event.preventDefault()
         seekBy(10)
       } else if (event.key.toLowerCase() === 'f') {
         toggleFullscreen()

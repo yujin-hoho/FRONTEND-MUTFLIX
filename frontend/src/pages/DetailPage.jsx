@@ -6,6 +6,7 @@ import CreditsPanel from '../components/detail/CreditsPanel'
 import {
   formatDuration,
   getCleanEpisodeTitle,
+  getBackdropUrl,
   getGenres,
   getItemPath,
   getMediaType,
@@ -41,7 +42,8 @@ function DetailPage({ detailData, isItemInMyList, onBack, onOpenContextMenu, onO
       : seasons[0] || 1
   const isMovie = getMediaType(item) === 'movie'
   const serverBackdrop = getServerBackdropUrl(item, 'w1280')
-  const backdrop = serverBackdrop || (videos[0] ? getServerStillUrl(videos[0], 'w1280') : '')
+  const backdrop = getBackdropUrl(item, 'w1280')
+  const backdropFallback = serverBackdrop || (videos[0] ? getServerStillUrl(videos[0], 'w1280') : '')
   const genres = getGenres(item).length ? getGenres(item) : getGenres(credits?.meta)
   const rating = getRating(item) || getRating(credits?.meta)
   const releaseYear = getReleaseYear(item) || getReleaseYear(credits?.meta)
@@ -87,7 +89,15 @@ function DetailPage({ detailData, isItemInMyList, onBack, onOpenContextMenu, onO
       </button>
 
       <section className="detail-hero">
-        <LoadableImage className="detail-backdrop" fetchPriority="high" key={backdrop} loading="eager" src={backdrop} />
+        <LoadableImage
+          className="detail-backdrop"
+          fallbackSrc={backdropFallback}
+          fetchPriority="high"
+          key={`${backdrop}-${backdropFallback}`}
+          loading="eager"
+          showFallbackWhileLoading
+          src={backdrop}
+        />
         <div className="detail-shade" />
         <div className="detail-copy">
           <p className="detail-type">{isMovie ? 'Movie' : 'Series'}</p>

@@ -1,4 +1,5 @@
 import { API_BASE_URL } from '../config'
+import { selectBackdropCandidate } from './artwork'
 import { getProfileAvatarUrlFromSeed } from './profileAvatars'
 
 export function createProfileId() {
@@ -180,15 +181,10 @@ export function getBackdropUrl(item, size = 'w1280') {
     return resolveServerMediaUrl(backdrops[index], size)
   }
 
-  const backdrop = backdrops[0]
-    || item.backdrop_url
-    || (item.backdrop_file_id ? `/api/gdrive-poster/${item.backdrop_file_id}` : '')
-    || item.primary_backdrop_url
-    || item.backdrop
-    || item.background_url
-    || item.fanart_url
-    || (item.tmdb_backdrop_path ? getTmdbImageUrl(item.tmdb_backdrop_path, size) : '')
-    || (item.backdrop_path ? getTmdbImageUrl(item.backdrop_path, size) : '')
+  const candidate = selectBackdropCandidate(item)
+  const backdrop = backdrops[0] || (candidate.kind === 'tmdb'
+    ? getTmdbImageUrl(candidate.path, size)
+    : candidate.path)
 
   return resolveServerMediaUrl(backdrop, size)
 }

@@ -1,6 +1,5 @@
 import { API_BASE_URL, CLOUDFLARE_STREAM_PROXY_URL } from '../config'
 import {
-  getBackdropUrl,
   getCatalogIdentityKey,
   getGenres,
   getItemPath,
@@ -8,7 +7,6 @@ import {
   getTmdbId,
   normalizeMediaPath,
   normalizeWatchHistory,
-  getPosterUrl,
 } from '../utils/media'
 
 const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v6'
@@ -1432,20 +1430,11 @@ export async function removeMyListItem(authToken, { item, profileId }) {
 function getItemsNeedingMetadata(items, mediaType, maxItems) {
   return items
     .filter((item) => {
-      const hasTmdbId = Number(item.tmdb_id || item.idtmdb || item.tmdb_override_id || 0) > 0
-      const hasDesc = Boolean(item.description || item.overview || item.tmdb_overview)
-      const hasGenres = Boolean(getGenres(item).length)
-      const hasPoster = Boolean(getPosterUrl(item))
-      const hasBackdrop = Boolean(getBackdropUrl(item))
-
-      if (hasPoster && hasBackdrop && hasGenres && hasDesc) {
-        return false
-      }
-
-      return (
-        hasUnresolvedOverride(item)
-        || (!item.tmdb_metadata_resolved && (!hasTmdbId || !hasPoster || !hasBackdrop || !hasGenres || !hasDesc))
-      )
+      // Server artwork may be an intentionally fast placeholder. An item is
+      // only fully hydrated after the TMDB lookup has completed (including a
+      // recorded 404), otherwise the placeholder prevents the real backdrop
+      // from ever being requested.
+      return hasUnresolvedOverride(item) || !item.tmdb_metadata_resolved
     })
     .slice(0, maxItems)
     .map((item) => ({
