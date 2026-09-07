@@ -11,8 +11,7 @@
 
 const DEFAULT_ALLOWED_ORIGINS = '*';
 const CACHE_TTL_SECONDS = 86400;
-const INITIAL_RANGE_BYTES = 4 * 1024 * 1024;
-const CACHEABLE_RANGE_MAX_BYTES = INITIAL_RANGE_BYTES;
+const CACHEABLE_RANGE_MAX_BYTES = 4 * 1024 * 1024;
 const CACHE_KEY_PREFIX = '/__mutflix_cache/';
 
 export default {
@@ -93,18 +92,14 @@ export default {
 
 function createRangePlan(range) {
   const normalizedRange = range.trim();
-  if (normalizedRange !== 'bytes=0-') {
-    return {
-      proxyMode: normalizedRange ? 'direct-range' : 'direct-stream',
-      upstreamRange: normalizedRange,
-    };
-  }
 
-  // Cache a small metadata bootstrap, then let later playback and seek ranges
-  // stream continuously so the browser is not forced through chunk boundaries.
+  // Preserve open-ended ranges exactly as requested. Capping `bytes=0-` to a
+  // small bootstrap window makes some browsers treat the response as the
+  // complete fetch; playback then stalls as soon as that window is consumed.
+  // Explicit, bounded ranges can still be cached by createCacheKey().
   return {
-    proxyMode: 'initial-window',
-    upstreamRange: `bytes=0-${INITIAL_RANGE_BYTES - 1}`,
+    proxyMode: normalizedRange ? 'direct-range' : 'direct-stream',
+    upstreamRange: normalizedRange,
   };
 }
 
