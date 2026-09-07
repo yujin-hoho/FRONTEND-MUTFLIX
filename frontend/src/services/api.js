@@ -137,7 +137,7 @@ export async function fetchDashboardData(authToken, profileId) {
 
 export async function fetchWatchHistory(authToken, profileId) {
   const response = await fetch(
-    `${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&limit=100`,
+    `${API_BASE_URL}/api/history/get/${encodeURIComponent(profileId)}?include_hidden=true&enrich_stills=true&limit=100`,
     {
       cache: 'no-store',
       headers: { 'x-access-token': authToken },

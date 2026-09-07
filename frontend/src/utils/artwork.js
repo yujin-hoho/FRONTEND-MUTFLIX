@@ -20,3 +20,11 @@ export function selectBackdropCandidate(item = {}) {
       || '',
   }
 }
+
+export function shouldPreferBackdropCandidate(item = {}, candidate = selectBackdropCandidate(item)) {
+  return Boolean(
+    item.backdrop_file_id
+    || item.primary_backdrop_url
+    || candidate.kind === 'tmdb',
+  )
+}

@@ -115,7 +115,11 @@ export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, o
         {visibleItems.map((item, index) => {
           const stillUrl = getServerStillUrl(item)
           const catalogItem = findCatalogItemForHistory(item, catalogItems)
-          const backdropUrl = getBackdropUrl(catalogItem, 'w500') || getServerBackdropUrl(item, 'w500')
+          // History responses can carry useful artwork metadata of their own.
+          // Merge it with the catalog match so a transient catalog refresh
+          // cannot downgrade the card to the generic movie/series backdrop.
+          const artworkItem = catalogItem ? { ...item, ...catalogItem } : item
+          const backdropUrl = getBackdropUrl(artworkItem, 'w500') || getServerBackdropUrl(item, 'w500')
           const artworkUrl = backdropUrl || stillUrl
           const fallbackUrl = artworkUrl === stillUrl ? '' : stillUrl
           return (
@@ -124,7 +128,7 @@ export const HistoryRow = memo(function HistoryRow({ catalogItems = [], items, o
                 <div className="history-frame">
                   <LoadableImage
                     alt={item.media_title || item.series_title || 'Continue watching'}
-                    fallbackSrc={fallbackUrl === stillUrl ? '' : fallbackUrl}
+                    fallbackSrc={fallbackUrl}
                     fetchPriority={index < 6 ? 'high' : 'auto'}
                     key={`${artworkUrl}-${fallbackUrl}`}
                     loading={index < 6 ? 'eager' : 'lazy'}

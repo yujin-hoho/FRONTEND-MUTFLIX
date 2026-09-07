@@ -1,5 +1,5 @@
 import { API_BASE_URL } from '../config'
-import { selectBackdropCandidate } from './artwork'
+import { selectBackdropCandidate, shouldPreferBackdropCandidate } from './artwork'
 import { getProfileAvatarUrlFromSeed } from './profileAvatars'
 
 export function createProfileId() {
@@ -169,6 +169,18 @@ export function getPosterUrl(item, size = 'w342') {
 
 export function getBackdropUrl(item, size = 'w1280') {
   if (!item) return ''
+  const candidate = selectBackdropCandidate(item)
+
+  // Explicitly selected server artwork and resolved TMDB artwork must remain
+  // stable when a fresh catalog response also contains generic backdrop
+  // choices. Those choices commonly include the default movie/series image.
+  if (shouldPreferBackdropCandidate(item, candidate)) {
+    const selectedBackdrop = candidate.kind === 'tmdb'
+      ? getTmdbImageUrl(candidate.path, size)
+      : candidate.path
+    return resolveServerMediaUrl(selectedBackdrop, size)
+  }
+
   const backdrops = Array.isArray(item.all_backdrop_urls) && item.all_backdrop_urls.length > 0
     ? item.all_backdrop_urls.filter(Boolean)
     : []
@@ -181,10 +193,7 @@ export function getBackdropUrl(item, size = 'w1280') {
     return resolveServerMediaUrl(backdrops[index], size)
   }
 
-  const candidate = selectBackdropCandidate(item)
-  const backdrop = backdrops[0] || (candidate.kind === 'tmdb'
-    ? getTmdbImageUrl(candidate.path, size)
-    : candidate.path)
+  const backdrop = backdrops[0] || candidate.path
 
   return resolveServerMediaUrl(backdrop, size)
 }
