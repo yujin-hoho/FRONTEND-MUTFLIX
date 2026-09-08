@@ -464,7 +464,7 @@
 }
 
 .watch-subtitle-panel p,
-.watch-subtitle-delay-setting small {
+.watch-subtitle-setting small {
   display: block;
   margin-top: 3px;
   color: #94a3b8;
@@ -523,6 +523,7 @@
 
 .watch-subtitle-setting select,
 .watch-subtitle-range-setting input,
+.watch-subtitle-speed-number,
 .watch-subtitle-delay-number {
   box-sizing: border-box;
   width: 100%;
@@ -535,6 +536,7 @@
 }
 
 .watch-subtitle-setting select,
+.watch-subtitle-speed-number,
 .watch-subtitle-delay {
   min-height: var(--watch-subtitle-field-height);
 }

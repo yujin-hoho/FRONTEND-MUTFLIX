@@ -37,6 +37,7 @@ import {
   normalizeMediaPath,
 } from '../utils/media'
 import { getBufferedSeekTime } from '../utils/playbackBuffer'
+import { getSubtitleTime, getSubtitleWindows, normalizeSubtitleRate, SUBTITLE_SPEED_PRESETS } from '../utils/subtitleTiming'
 
 const SAVE_INTERVAL_MS = 10000
 const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
@@ -55,9 +56,6 @@ const SUBTITLE_OUTLINE_MAX_PX = 5
 const SUBTITLE_OUTLINE_MIN_PX = 0
 const SUBTITLE_POSITION_MIN_PERCENT = 8
 const SUBTITLE_POSITION_MAX_PERCENT = 90
-const EMBEDDED_SUBTITLE_WINDOW_SECONDS = 180
-const EMBEDDED_SUBTITLE_WINDOW_LOOKBEHIND_SECONDS = 10
-const EMBEDDED_SUBTITLE_PREFETCH_LEAD_SECONDS = 30
 const EMBEDDED_SUBTITLE_RETRY_DELAYS_MS = [1500, 4000, 10000, 20000]
 const PLAYBACK_RATE_STORAGE_KEY = 'mutflix.playback-rate'
 const SUBTITLE_SETTINGS_STORAGE_KEY = 'mutflix.subtitle-settings'
@@ -146,6 +144,7 @@ function WatchPage({
   const [selectedAudioId, setSelectedAudioId] = useState('')
   const [isAudioPanelOpen, setIsAudioPanelOpen] = useState(false)
   const [subtitleSettings, setSubtitleSettings] = useState(readSubtitleSettings)
+  const [subtitleRates, setSubtitleRates] = useState({})
   const [subtitleDelayInputValue, setSubtitleDelayInputValue] = useState(() => formatSubtitleDelay(DEFAULT_SUBTITLE_SETTINGS.delaySeconds))
   const [subtitleCues, setSubtitleCues] = useState([])
   const [subtitleRetryTick, setSubtitleRetryTick] = useState(0)
@@ -169,6 +168,8 @@ function WatchPage({
   const videoOriginalName = video.original_name || ''
   const videoPath = video.path
   const subtitlePath = video.subtitle_path || ''
+  const subtitleTimingKey = JSON.stringify([videoPath, subtitlePath, selectedSubtitleId])
+  const subtitleRate = normalizeSubtitleRate(subtitleRates[subtitleTimingKey])
   const isCaptionsEnabled = subtitleSettings.enabled
   const subtitleTracks = useMemo(() => [
     ...(subtitleUrl ? [{ id: 'external', label: 'Eksternal' }] : []),
@@ -212,14 +213,15 @@ function WatchPage({
     [duration, playbackRate, visiblePlaybackTime],
   )
   const subtitlePlaybackTime = Number.isFinite(seekPreviewTime) ? seekPreviewTime : currentTime
+  const subtitleTimelineTime = getSubtitleTime(subtitlePlaybackTime, subtitleRate, subtitleSettings.delaySeconds)
   const activeSubtitleCues = useMemo(
     () => isCaptionsEnabled
       ? subtitleCues.filter((cue) => (
-          cue.startTime <= subtitlePlaybackTime + subtitleSettings.delaySeconds
-          && cue.endTime > subtitlePlaybackTime + subtitleSettings.delaySeconds
+          cue.startTime <= subtitleTimelineTime
+          && cue.endTime > subtitleTimelineTime
         ))
       : [],
-    [isCaptionsEnabled, subtitleCues, subtitlePlaybackTime, subtitleSettings.delaySeconds],
+    [isCaptionsEnabled, subtitleCues, subtitleTimelineTime],
   )
   const subtitleCueStyle = useMemo(() => createSubtitleCueStyle(subtitleSettings), [subtitleSettings])
   const subtitlePositionStyle = useMemo(
@@ -957,11 +959,7 @@ function WatchPage({
   useEffect(() => {
     if (!embeddedSubtitleTrackUrl) return
 
-    const windows = [getEmbeddedSubtitleWindow(currentTime)]
-    const activeBucketStart = Math.floor(Math.max(0, currentTime) / EMBEDDED_SUBTITLE_WINDOW_SECONDS) * EMBEDDED_SUBTITLE_WINDOW_SECONDS
-    if (currentTime - activeBucketStart >= EMBEDDED_SUBTITLE_WINDOW_SECONDS - EMBEDDED_SUBTITLE_PREFETCH_LEAD_SECONDS) {
-      windows.push(getEmbeddedSubtitleWindow(activeBucketStart + EMBEDDED_SUBTITLE_WINDOW_SECONDS))
-    }
+    const windows = getSubtitleWindows(subtitleTimelineTime, subtitleRate)
 
     windows.forEach(({ durationSeconds, startSeconds }) => {
       const requestKey = `${embeddedSubtitleTrackUrl}:${startSeconds}:${durationSeconds}`
@@ -1005,7 +1003,7 @@ function WatchPage({
         })
       })
     })
-  }, [currentTime, embeddedSubtitleTrackUrl, subtitleRetryTick])
+  }, [embeddedSubtitleTrackUrl, subtitleRetryTick, subtitleTimelineTime, subtitleRate])
 
   useEffect(() => {
     const player = playerRef.current
@@ -1271,6 +1269,10 @@ function WatchPage({
 
   function handleSubtitleTrackChange(event) {
     selectSubtitleTrack(event.target.value)
+  }
+
+  function setSubtitleRate(value) {
+    setSubtitleRates((rates) => ({ ...rates, [subtitleTimingKey]: normalizeSubtitleRate(value) }))
   }
 
   function handleAudioTrackChange(event) {
@@ -1622,7 +1624,44 @@ function WatchPage({
                     <RotateCcw size={17} />
                   </button>
                 </div>
-                <small>- slower, + faster. Maximum 50 seconds.</small>
+                <small>- later, + earlier. Maximum 50 seconds.</small>
+              </div>
+              <label className="watch-subtitle-setting">
+                <span>Subtitle speed preset</span>
+                <select
+                  disabled={!hasSubtitleTrack}
+                  onChange={(event) => setSubtitleRate(event.target.value)}
+                  value={SUBTITLE_SPEED_PRESETS.some((preset) => preset.rate === subtitleRate) ? subtitleRate : 'custom'}
+                >
+                  {SUBTITLE_SPEED_PRESETS.map((preset) => <option key={preset.label} value={preset.rate}>{preset.label}</option>)}
+                  <option disabled value="custom">Custom speed</option>
+                </select>
+                <small>Subtitle source FPS → video FPS. Use when timing drifts steadily.</small>
+              </label>
+              <div className="watch-subtitle-setting">
+                <label htmlFor="subtitle-speed-percent">Subtitle speed (%)</label>
+                <input
+                  className="watch-subtitle-speed-number"
+                  defaultValue={Number((subtitleRate * 100).toFixed(6))}
+                  disabled={!hasSubtitleTrack}
+                  id="subtitle-speed-percent"
+                  key={`${subtitleTimingKey}:${subtitleRate}`}
+                  max="200"
+                  min="50"
+                  onBlur={(event) => {
+                    const displayedPercent = Number((subtitleRate * 100).toFixed(6))
+                    if (event.target.value.trim() && event.target.validity.valid && Number(event.target.value) !== displayedPercent) {
+                      setSubtitleRate(Number(event.target.value) / 100)
+                    }
+                    event.target.value = String(displayedPercent)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') event.currentTarget.blur()
+                  }}
+                  step="any"
+                  type="number"
+                />
+                <small>Above 100%: faster. Below 100%: slower. Press Enter or leave the field to apply. Choose Normal to reset. Applies to this video and track during this viewing session. Different scene cuts need a matching subtitle file.</small>
               </div>
               <label className="watch-subtitle-setting">
                 <span>Font</span>
@@ -2472,15 +2511,6 @@ function createSubtitleCues(cues) {
       text,
     }
   }).filter((cue) => cue.text)
-}
-
-function getEmbeddedSubtitleWindow(playheadSeconds) {
-  const numericPlayhead = Number.isFinite(playheadSeconds) ? Math.max(0, playheadSeconds) : 0
-  const bucketStart = Math.floor(numericPlayhead / EMBEDDED_SUBTITLE_WINDOW_SECONDS) * EMBEDDED_SUBTITLE_WINDOW_SECONDS
-  return {
-    durationSeconds: EMBEDDED_SUBTITLE_WINDOW_SECONDS + EMBEDDED_SUBTITLE_WINDOW_LOOKBEHIND_SECONDS,
-    startSeconds: Math.max(0, bucketStart - EMBEDDED_SUBTITLE_WINDOW_LOOKBEHIND_SECONDS),
-  }
 }
 
 function mergeSubtitleCues(currentCues, incomingCues) {
