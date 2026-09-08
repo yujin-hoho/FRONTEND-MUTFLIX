@@ -38,6 +38,7 @@ import {
 } from '../utils/media'
 import { getBufferedSeekTime } from '../utils/playbackBuffer'
 import { getSubtitleTime, getSubtitleWindows, normalizeSubtitleRate, SUBTITLE_SPEED_PRESETS } from '../utils/subtitleTiming'
+import SubtitleOverlay from '../components/SubtitleOverlay'
 
 const SAVE_INTERVAL_MS = 10000
 const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
@@ -214,15 +215,6 @@ function WatchPage({
   )
   const subtitlePlaybackTime = currentTime
   const subtitleTimelineTime = getSubtitleTime(subtitlePlaybackTime, subtitleRate, subtitleSettings.delaySeconds)
-  const activeSubtitleCues = useMemo(
-    () => isCaptionsEnabled
-      ? subtitleCues.filter((cue) => (
-          cue.startTime <= subtitleTimelineTime
-          && cue.endTime > subtitleTimelineTime
-        ))
-      : [],
-    [isCaptionsEnabled, subtitleCues, subtitleTimelineTime],
-  )
   const subtitleCueStyle = useMemo(() => createSubtitleCueStyle(subtitleSettings), [subtitleSettings])
   const subtitlePositionStyle = useMemo(
     () => ({ top: `${subtitleSettings.positionPercent}%` }),
@@ -1444,18 +1436,17 @@ function WatchPage({
         <img alt="" aria-hidden="true" className="watch-held-frame" src={heldFrameUrl} />
       )}
 
-      {activeSubtitleCues.length > 0 && (
-        <div
-          aria-hidden="true"
-          className="watch-subtitles"
-          style={subtitlePositionStyle}
-        >
-          {activeSubtitleCues.map((cue) => (
-            <p className="watch-subtitle-cue" key={`${cue.startTime}-${cue.endTime}-${cue.text}`} style={subtitleCueStyle}>
-              {cue.lines.map((line, index) => <span className="watch-subtitle-line" key={`${line}-${index}`}>{line}</span>)}
-            </p>
-          ))}
-        </div>
+      {isCaptionsEnabled && (
+        <SubtitleOverlay
+          key={subtitleTimingKey}
+          playerRef={playerRef}
+          offsetRef={audioTranscodeOffsetRef}
+          cues={subtitleCues}
+          rate={subtitleRate}
+          delaySeconds={subtitleSettings.delaySeconds}
+          cueStyle={subtitleCueStyle}
+          positionStyle={subtitlePositionStyle}
+        />
       )}
 
       <div className="watch-topbar">
