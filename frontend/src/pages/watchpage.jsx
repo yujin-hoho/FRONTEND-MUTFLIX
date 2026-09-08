@@ -212,7 +212,7 @@ function WatchPage({
     () => getFinishedAtLabel(duration, visiblePlaybackTime, playbackRate),
     [duration, playbackRate, visiblePlaybackTime],
   )
-  const subtitlePlaybackTime = Number.isFinite(seekPreviewTime) ? seekPreviewTime : currentTime
+  const subtitlePlaybackTime = currentTime
   const subtitleTimelineTime = getSubtitleTime(subtitlePlaybackTime, subtitleRate, subtitleSettings.delaySeconds)
   const activeSubtitleCues = useMemo(
     () => isCaptionsEnabled
@@ -415,7 +415,7 @@ function WatchPage({
     setSeekPreviewTime(null)
   }, [])
 
-  const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, fastTimeline = false, immediate = false } = {}) => {
+  const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, immediate = false } = {}) => {
     const audioTranscodeUrl = audioTranscodeBaseUrlRef.current
     if (!audioTranscodeUrl) return false
 
@@ -448,20 +448,17 @@ function WatchPage({
     setIsBuffering(true)
     const resolveStreamStart = () => {
       audioTranscodeStartTimeoutRef.current = null
-      if (fastTimeline) {
-        pendingAudioTranscodeOffsetRef.current = boundedTarget
-        setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, boundedTarget, requestId))
-        return
-      }
       fetchAudioTranscodeStart(audioTranscodeStartUrlRef.current, boundedTarget, { signal: controller.signal })
-        .catch((error) => error.name === 'AbortError'
-          ? null
-          : { streamStartSeconds: boundedTarget, timelineOffsetSeconds: boundedTarget })
         .then((start) => {
-          if (start === null || audioTranscodeStartRequestRef.current.id !== requestId) return
+          if (controller.signal.aborted || audioTranscodeStartRequestRef.current.id !== requestId) return
           pendingAudioTranscodeOffsetRef.current = start.timelineOffsetSeconds
           setCurrentTime(boundedTarget)
           setStreamUrl(getTimestampedAudioTranscodeUrl(audioTranscodeUrl, start.streamStartSeconds, requestId))
+        })
+        .catch((error) => {
+          if (error.name === 'AbortError' || audioTranscodeStartRequestRef.current.id !== requestId) return
+          setPlayerError(error.message)
+          setIsBuffering(false)
         })
     }
     if (immediate) {
@@ -472,7 +469,7 @@ function WatchPage({
     return true
   }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame])
 
-  const applyPlaybackSource = useCallback((playbackSource, { autoplay = true, fastAudioSwitch = false, startSeconds = 0 } = {}) => {
+  const applyPlaybackSource = useCallback((playbackSource, { autoplay = true, startSeconds = 0 } = {}) => {
     const {
       audioCodecLabel: nextAudioCodecLabel,
       audioProbeStatus,
@@ -503,7 +500,6 @@ function WatchPage({
     if (audioTranscodeUrl) {
       restartAudioTranscodeAt(startSeconds, {
         autoplay,
-        fastTimeline: fastAudioSwitch || startSeconds > 0,
         immediate: true,
       })
       return
@@ -515,7 +511,7 @@ function WatchPage({
     setStreamUrl(url)
   }, [restartAudioTranscodeAt])
 
-  const loadPlaybackSource = useCallback((audioStreamIndex, { autoplay = true, fastAudioSwitch = false, startSeconds = 0 } = {}) => {
+  const loadPlaybackSource = useCallback((audioStreamIndex, { autoplay = true, startSeconds = 0 } = {}) => {
     const requestId = playbackSourceRequestRef.current + 1
     playbackSourceRequestRef.current = requestId
     setPlayerError('')
@@ -531,7 +527,7 @@ function WatchPage({
       const nextPlaybackSource = audioStreamIndex === null
         ? getInitialPlaybackSourceForItem(playbackSource, item)
         : playbackSource
-      applyPlaybackSource(nextPlaybackSource, { autoplay, fastAudioSwitch, startSeconds })
+      applyPlaybackSource(nextPlaybackSource, { autoplay, startSeconds })
       return nextPlaybackSource
     }).catch((error) => {
       if (playbackSourceRequestRef.current === requestId) {
@@ -661,7 +657,9 @@ function WatchPage({
     const player = playerRef.current
     const startSeconds = pendingResumeTargetRef.current > 0
       ? pendingResumeTargetRef.current
-      : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : currentTime
+      : Number.isFinite(pendingAudioTranscodeTargetRef.current)
+        ? pendingAudioTranscodeTargetRef.current
+        : player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : currentTime
     mediaErrorRecoveryRef.current.attempts = 0
     hasUsedStreamFallbackRef.current = false
     clearMediaErrorRecovery()

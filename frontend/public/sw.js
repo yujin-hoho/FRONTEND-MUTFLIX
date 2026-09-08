@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'reel-static-v3'
+const STATIC_CACHE = 'reel-static-v4'
 const IMAGE_CACHE = 'mutflix-images-v2'
 const STATIC_ASSETS = ['/', '/index.html', '/REEL-logo-red.svg', '/REEL-logo-centered-dark.svg', '/icons.svg']
 const MAX_IMAGE_CACHE_ITEMS = 800
@@ -32,20 +32,30 @@ async function trimCache(cacheName, maxItems) {
 async function cacheFirst(request, cacheName) {
   const cache = await caches.open(cacheName)
   const cached = await cache.match(request)
-  if (cached) return cached
+  if (cached && isValidAssetResponse(request, cached)) return cached
+  if (cached) await cache.delete(request)
 
-  const response = await fetch(request)
-  if (response.ok) {
+  const response = await fetch(request, cached ? { cache: 'reload' } : undefined)
+  if (response.ok && isValidAssetResponse(request, response)) {
     await cache.put(request, response.clone())
     if (cacheName === IMAGE_CACHE) await trimCache(IMAGE_CACHE, MAX_IMAGE_CACHE_ITEMS)
   }
   return response
 }
 
+function isValidAssetResponse(request, response) {
+  // A SPA fallback can return 200 + HTML for a removed JS/CSS chunk.
+  // Never preserve that response under an asset URL across subsequent reloads.
+  const type = (response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase()
+  if (request.destination === 'script') return /^(?:text|application)\/(?:javascript|ecmascript|x-javascript)$/.test(type)
+  if (request.destination === 'style') return type === 'text/css'
+  return type !== 'text/html' && type !== 'application/xhtml+xml'
+}
+
 async function networkFirst(request) {
   const cache = await caches.open(STATIC_CACHE)
   try {
-    const response = await fetch(request)
+    const response = await fetch(request, { cache: 'no-cache' })
     if (response.ok) await cache.put(request, response.clone())
     return response
   } catch {

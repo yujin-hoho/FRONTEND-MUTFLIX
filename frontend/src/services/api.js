@@ -1,4 +1,5 @@
 import { API_BASE_URL, CLOUDFLARE_STREAM_PROXY_URL } from '../config'
+import { resolveAudioTranscodeTimeline } from '../utils/audioTranscodeTimeline'
 import {
   getCatalogIdentityKey,
   getGenres,
@@ -524,9 +525,10 @@ function normalizeAudioStreamIndex(value) {
 
 export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeconds, { signal } = {}) {
   const requestedStart = Math.max(0, Number(startSeconds) || 0)
-  if (!audioTranscodeStartUrl || requestedStart <= 0) {
+  if (requestedStart <= 0) {
     return { streamStartSeconds: requestedStart, timelineOffsetReady: true, timelineOffsetSeconds: requestedStart }
   }
+  if (!audioTranscodeStartUrl) throw new Error('Server belum menyediakan waktu awal stream untuk seek yang sinkron.')
 
   const url = new URL(audioTranscodeStartUrl, window.location.origin)
   url.searchParams.set('start_seconds', String(requestedStart))
@@ -540,18 +542,11 @@ export async function fetchAudioTranscodeStart(audioTranscodeStartUrl, startSeco
     const data = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(data.message || data.error || 'Failed to prepare the playback position.')
 
-    const start = {
-      streamStartSeconds: Math.max(0, Number(data.stream_start_seconds) || requestedStart),
-      timelineOffsetReady: data.timeline_offset_ready !== false,
-      timelineOffsetSeconds: Math.min(requestedStart, Math.max(0, Number(data.timeline_offset_seconds) || 0)),
-      timelineOffsetSource: String(data.timeline_offset_source || ''),
-    }
-    if (start.timelineOffsetReady || attemptIndex === retryDelays.length - 1) {
-      return start
-    }
+    const start = resolveAudioTranscodeTimeline(data, requestedStart)
+    if (start) return start
   }
 
-  return { streamStartSeconds: requestedStart, timelineOffsetReady: false, timelineOffsetSeconds: requestedStart }
+  throw new Error('Waktu awal stream belum terkonfirmasi. Coba ulangi pemutaran agar subtitle tetap sinkron.')
 }
 
 function getAudioCodecLabel(data) {

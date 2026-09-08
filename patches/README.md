@@ -41,3 +41,37 @@ npm --prefix frontend run build
 FFmpeg option reference: https://ffmpeg.org/ffmpeg-formats.html
 Flask response cleanup reference:
 https://werkzeug.palletsprojects.com/en/stable/wrappers/#werkzeug.wrappers.Response.call_on_close
+
+## Subtitle timeline and module loading follow-up
+
+The player now resolves the actual transcode keyframe timestamp for resume and
+audio switches as well as regular seeks. Previously these paths assumed the
+requested seek timestamp was the fragment origin, moving the subtitle clock ahead
+by the keyframe preroll. A pending or malformed server timestamp is retried and
+reported as an error rather than silently used as an offset. Buffered seeks still
+reuse the current stream and its confirmed offset.
+
+`frontend-module-routing.patch` tracks the additional changes applied to the local
+backend: missing assets return 404 instead of `index.html`, HTML revalidates, and
+the service worker is served with `no-store`. Vercel has matching routing/cache
+rules and explicitly builds the `dist` output. The service worker cache is bumped
+to v4 and rejects HTML responses for asset requests. A removed lazy module can
+trigger one reload per build/tab, without a reload loop.
+
+Validation: 33 frontend tests, four backend routing tests, the production build,
+and lint on changed frontend files passed. Tests cover long-keyframe timeline
+offsets, zero offsets, unresolved probes, poisoned asset caches, missing modules,
+JavaScript MIME types, client routes, and bounded chunk reloads.
+
+For Vercel use `frontend` as the project's Root Directory. For Flask hosting,
+publish the contents of `frontend/dist` into the backend's `dist` directory.
+Deploy frontend and backend together, then reload existing tabs to activate the
+new worker. Production playback has not been verified without the failing site
+and asset URLs.
+
+```sh
+python tests/test_frontend_routes.py ../serverUtama.py
+```
+
+References: [Vite load error handling](https://vite.dev/guide/build#load-error-handling),
+[Vercel routing configuration](https://vercel.com/docs/project-configuration/vercel-json).
