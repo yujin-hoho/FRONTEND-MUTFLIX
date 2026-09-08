@@ -1,0 +1,80 @@
+--- a/serverUtama.py
++++ b/serverUtama.py
+@@ -6948,6 +6948,10 @@
+         "-b:a", AUDIO_TRANSCODE_AUDIO_BITRATE,
+         "-avoid_negative_ts", "make_zero",
+         "-movflags", "frag_keyframe+empty_moov+default_base_moof",
++        # Bound output bursts even when copied video has a long keyframe interval.
++        "-frag_duration", "1000000",
++        "-max_interleave_delta", "1000000",
++        "-flush_packets", "1",
+         "-f", "mp4",
+         "pipe:1",
+     ])
+@@ -6962,27 +6966,40 @@
+         _audio_transcode_slots.release()
+         return jsonify({"error": "Failed to start audio transcoder"}), 500
+ 
+-    def generate():
++    cleanup_lock = threading.Lock()
++    cleaned_up = False
++
++    def cleanup():
++        nonlocal cleaned_up
++        with cleanup_lock:
++            if cleaned_up:
++                return
++            cleaned_up = True
+         try:
+-            while True:
+-                chunk = process.stdout.read(1024 * 1024)
+-                if not chunk:
+-                    break
+-                yield chunk
+-        finally:
+-            try:
+-                process.stdout.close()
+-            except Exception:
+-                pass
+             if process.poll() is None:
+                 process.terminate()
+                 try:
+                     process.wait(timeout=2)
+                 except subprocess.TimeoutExpired:
+                     process.kill()
+-            _audio_transcode_slots.release()
+-
+-    return Response(
++                    process.wait()
++        finally:
++            try:
++                process.stdout.close()
++            finally:
++                _audio_transcode_slots.release()
++
++    def generate():
++        try:
++            while True:
++                chunk = process.stdout.read(64 * 1024)
++                if not chunk:
++                    break
++                yield chunk
++        finally:
++            cleanup()
++
++    response = Response(
+         stream_with_context(generate()),
+         headers={
+             "Access-Control-Allow-Origin": "*",
+@@ -6992,8 +7009,10 @@
+             "Content-Type": "video/mp4",
+             "X-Accel-Buffering": "no",
+         },
+-        direct_passthrough=True,
+     )
++    # Also release the process/slot if the client closes before iteration starts.
++    response.call_on_close(cleanup)
++    return response
+ 
+ @app.route("/api/gdrive-audio-transcode-start/<fid>", methods=["GET"])
+ def get_gdrive_audio_transcode_start(fid):

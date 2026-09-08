@@ -371,6 +371,8 @@ export function getReleaseDate(item = {}) {
 }
 
 export function getReleaseYear(item = {}) {
+  if (!item) return 0
+
   const explicitYear = Number(item.override_year || item.year || item.release_year || item.tmdb_year || 0)
   if (explicitYear > 0) return explicitYear
 

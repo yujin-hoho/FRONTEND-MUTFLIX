@@ -36,6 +36,7 @@ import {
   getTitle,
   normalizeMediaPath,
 } from '../utils/media'
+import { getBufferedSeekTime } from '../utils/playbackBuffer'
 
 const SAVE_INTERVAL_MS = 10000
 const FORCED_SAVE_DEDUP_WINDOW_MS = 1500
@@ -551,6 +552,18 @@ function WatchPage({
     if (!player) return false
 
     const boundedTarget = Math.max(0, Number(targetSeconds) || 0)
+    if (audioTranscodeBaseUrlRef.current && !Number.isFinite(pendingAudioTranscodeTargetRef.current)) {
+      const bufferedTarget = getBufferedSeekTime(player, boundedTarget, audioTranscodeOffsetRef.current)
+      if (bufferedTarget !== null) {
+        try {
+          player.currentTime = bufferedTarget
+          setCurrentTime(boundedTarget)
+          return true
+        } catch {
+          // Some native players cannot seek fragmented MP4 even with buffered data.
+        }
+      }
+    }
     if (restartAudioTranscodeAt(boundedTarget)) return true
     if (!Number.isFinite(player.duration)) return false
 
@@ -576,6 +589,9 @@ function WatchPage({
   }, [revealControls, seekToPlaybackTime])
 
   const switchToFallbackStream = useCallback(() => {
+    // The original file cannot replace a stream that needs audio conversion.
+    // Switching on a temporary stall would discard the buffer and lose audio.
+    if (audioTranscodeBaseUrlRef.current) return false
     const fallbackUrl = fallbackStreamUrlRef.current
     if (!fallbackUrl || fallbackUrl === streamUrl || hasUsedStreamFallbackRef.current) return false
 
@@ -652,6 +668,7 @@ function WatchPage({
 
   const armStreamStallFallback = useCallback((delayMs = STREAM_STALL_FALLBACK_DELAY_MS) => {
     clearStreamStallTimeout()
+    if (audioTranscodeBaseUrlRef.current) return
     if (!fallbackStreamUrlRef.current || hasUsedStreamFallbackRef.current) return
 
     streamStallTimeoutRef.current = window.setTimeout(() => {
@@ -1039,6 +1056,8 @@ function WatchPage({
     return () => {
       ignore = true
       hls?.destroy()
+      player.removeAttribute('src')
+      player.load()
       clearStreamStallTimeout()
     }
   }, [clearStreamStallTimeout, isHlsVideo, streamUrl, switchToFallbackStream])
