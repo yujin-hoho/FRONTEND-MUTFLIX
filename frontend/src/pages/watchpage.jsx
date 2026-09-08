@@ -102,6 +102,8 @@ function WatchPage({
   const audioTranscodeStartUrlRef = useRef('')
   const audioTranscodeStartRequestRef = useRef({ controller: null, id: 0 })
   const audioTranscodeStartTimeoutRef = useRef(null)
+  const audioTranscodeMediaRequestRef = useRef(null)
+  const pendingAudioTranscodeSeekRef = useRef(false)
   const pendingAudioTranscodeOffsetRef = useRef(0)
   const pendingAudioTranscodeTargetRef = useRef(null)
   const pendingAudioTranscodeAutoplayRef = useRef(null)
@@ -415,6 +417,13 @@ function WatchPage({
     setSeekPreviewTime(null)
   }, [])
 
+  const clearMediaErrorRecovery = useCallback(() => {
+    window.clearTimeout(mediaErrorRecoveryRef.current.timeoutId)
+    window.clearTimeout(mediaErrorRecoveryRef.current.stableTimeoutId)
+    mediaErrorRecoveryRef.current.timeoutId = null
+    mediaErrorRecoveryRef.current.stableTimeoutId = null
+  }, [])
+
   const restartAudioTranscodeAt = useCallback((targetSeconds, { autoplay, immediate = false } = {}) => {
     const audioTranscodeUrl = audioTranscodeBaseUrlRef.current
     if (!audioTranscodeUrl) return false
@@ -430,7 +439,10 @@ function WatchPage({
       ?? !player?.paused
     holdCurrentFrame()
     player?.pause()
+    clearMediaErrorRecovery()
     cancelAudioTranscodeStartRequest()
+    audioTranscodeMediaRequestRef.current = null
+    pendingAudioTranscodeSeekRef.current = false
     const requestId = audioTranscodeStartRequestRef.current.id
     const controller = new AbortController()
     audioTranscodeStartRequestRef.current = { controller, id: requestId }
@@ -446,6 +458,12 @@ function WatchPage({
     setSeekPreviewTime(boundedTarget)
     setCurrentTime(boundedTarget)
     setIsBuffering(true)
+    // Release the old response/FFmpeg slot before probing the new position.
+    // pause() alone leaves the previous transcoder downloading.
+    if (player) {
+      player.removeAttribute('src')
+      player.load()
+    }
     const resolveStreamStart = () => {
       audioTranscodeStartTimeoutRef.current = null
       fetchAudioTranscodeStart(audioTranscodeStartUrlRef.current, boundedTarget, { signal: controller.signal })
@@ -467,7 +485,7 @@ function WatchPage({
       audioTranscodeStartTimeoutRef.current = window.setTimeout(resolveStreamStart, AUDIO_TRANSCODE_SEEK_DEBOUNCE_MS)
     }
     return true
-  }, [cancelAudioTranscodeStartRequest, clearStreamStallTimeout, holdCurrentFrame])
+  }, [cancelAudioTranscodeStartRequest, clearMediaErrorRecovery, clearStreamStallTimeout, holdCurrentFrame])
 
   const applyPlaybackSource = useCallback((playbackSource, { autoplay = true, startSeconds = 0 } = {}) => {
     const {
@@ -538,22 +556,19 @@ function WatchPage({
     })
   }, [applyPlaybackSource, authToken, item, videoName, videoOriginalName, videoPath])
 
-  const clearMediaErrorRecovery = useCallback(() => {
-    window.clearTimeout(mediaErrorRecoveryRef.current.timeoutId)
-    window.clearTimeout(mediaErrorRecoveryRef.current.stableTimeoutId)
-    mediaErrorRecoveryRef.current.timeoutId = null
-    mediaErrorRecoveryRef.current.stableTimeoutId = null
-  }, [])
-
   const seekToPlaybackTime = useCallback((targetSeconds) => {
     const player = playerRef.current
     if (!player) return false
 
+    clearMediaErrorRecovery()
+    // A user seek supersedes any source refresh started by error recovery.
+    if (playbackSourceRef.current) playbackSourceRequestRef.current += 1
     const boundedTarget = Math.max(0, Number(targetSeconds) || 0)
     if (audioTranscodeBaseUrlRef.current && !Number.isFinite(pendingAudioTranscodeTargetRef.current)) {
       const bufferedTarget = getBufferedSeekTime(player, boundedTarget, audioTranscodeOffsetRef.current)
       if (bufferedTarget !== null) {
         try {
+          requestedSeekPositionRef.current = boundedTarget
           player.currentTime = bufferedTarget
           setCurrentTime(boundedTarget)
           return true
@@ -568,7 +583,7 @@ function WatchPage({
     player.currentTime = Math.min(player.duration, boundedTarget)
     setCurrentTime(getPlaybackPosition(player, audioTranscodeOffsetRef.current))
     return true
-  }, [restartAudioTranscodeAt])
+  }, [clearMediaErrorRecovery, restartAudioTranscodeAt])
 
   const seekBy = useCallback((seconds) => {
     const player = playerRef.current
@@ -623,18 +638,25 @@ function WatchPage({
   const handleMediaError = useCallback((event) => {
     const player = event.currentTarget
     const mediaErrorCode = player.error?.code || 0
-    clearHeldFrame()
 
     // Replacing a source aborts the previous request and can emit a harmless
     // MEDIA_ERR_ABORTED event while the new source is already loading.
-    if (mediaErrorCode === HTMLMediaElement.MEDIA_ERR_ABORTED || !streamUrl) return
+    if (!mediaErrorCode || mediaErrorCode === HTMLMediaElement.MEDIA_ERR_ABORTED || !streamUrl) return
+    if (audioTranscodeBaseUrlRef.current
+      && audioTranscodeMediaRequestRef.current !== audioTranscodeStartRequestRef.current.id) return
+    clearHeldFrame()
     if (switchToFallbackStream()) return
 
     const recovery = mediaErrorRecoveryRef.current
+    if (recovery.timeoutId !== null) return
     if (recovery.attempts < MAX_MEDIA_ERROR_RETRIES) {
-      const startSeconds = pendingResumeTargetRef.current > 0
-        ? pendingResumeTargetRef.current
-        : getPlaybackPosition(player, audioTranscodeOffsetRef.current)
+      const startSeconds = Number.isFinite(pendingAudioTranscodeTargetRef.current)
+        ? pendingAudioTranscodeTargetRef.current
+        : Number.isFinite(requestedSeekPositionRef.current)
+          ? requestedSeekPositionRef.current
+          : pendingResumeTargetRef.current > 0
+            ? pendingResumeTargetRef.current
+            : getPlaybackPosition(player, audioTranscodeOffsetRef.current)
       const autoplay = pendingAudioTranscodeAutoplayRef.current ?? !player.paused
 
       recovery.attempts += 1
@@ -693,6 +715,10 @@ function WatchPage({
 
   const handleSeeked = useCallback(() => {
     const player = playerRef.current
+    if (audioTranscodeBaseUrlRef.current && (
+      audioTranscodeMediaRequestRef.current !== audioTranscodeStartRequestRef.current.id
+      || pendingAudioTranscodeSeekRef.current
+    )) return
     isSeekingRef.current = false
     clearStreamStallTimeout()
     if (!player) return
@@ -720,17 +746,25 @@ function WatchPage({
       resumeSeekAttemptsRef.current = 0
     }
     requestedSeekPositionRef.current = null
+    pendingAudioTranscodeTargetRef.current = null
+    pendingAudioTranscodeAutoplayRef.current = null
     setCurrentTime(playbackPosition)
     setIsBuffering(!player.paused && player.readyState < HTMLMediaElement.HAVE_FUTURE_DATA)
-    if (!Number.isFinite(pendingAudioTranscodeTargetRef.current)) clearSeekPreview()
+    clearSeekPreview()
+    clearHeldFrame()
     if (pendingInitialSeekRef.current) {
       pendingInitialSeekRef.current = false
       player.play().catch(() => setShowControls(true))
     }
-  }, [clearSeekPreview, clearStreamStallTimeout, switchToFallbackStream])
+  }, [clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, switchToFallbackStream])
 
   const handlePlaying = useCallback(() => {
     const player = playerRef.current
+    if (audioTranscodeBaseUrlRef.current && (
+      audioTranscodeMediaRequestRef.current !== audioTranscodeStartRequestRef.current.id
+      || pendingAudioTranscodeSeekRef.current
+      || isSeekingRef.current
+    )) return
     const resumeTarget = pendingResumeTargetRef.current
     const playbackPosition = player ? getPlaybackPosition(player, audioTranscodeOffsetRef.current) : 0
     if (player && resumeTarget > 0 && playbackPosition < resumeTarget - 4) {
@@ -774,6 +808,39 @@ function WatchPage({
     }, MEDIA_RECOVERY_STABLE_PLAYBACK_MS)
     setIsBuffering(false)
   }, [clearHeldFrame, clearSeekPreview, clearStreamStallTimeout, switchToFallbackStream])
+
+  const applyPendingAudioTranscodeSeek = useCallback(() => {
+    const player = playerRef.current
+    if (!audioTranscodeBaseUrlRef.current || !Number.isFinite(pendingAudioTranscodeTargetRef.current)) return false
+    if (!player || audioTranscodeMediaRequestRef.current !== audioTranscodeStartRequestRef.current.id) return true
+    if (!pendingAudioTranscodeSeekRef.current || player.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return true
+
+    const target = pendingAudioTranscodeTargetRef.current
+    const fragmentTarget = target - audioTranscodeOffsetRef.current
+    // Metadata can arrive before any MP4 fragments. An unbuffered seek may
+    // issue a Range request that this live response cannot serve. Wait for
+    // progress/canplay without clamping the target to a partial duration.
+    const bufferedTarget = fragmentTarget > 0.05
+      ? getBufferedSeekTime(player, target, audioTranscodeOffsetRef.current)
+      : 0
+    if (bufferedTarget === null) return true
+
+    pendingAudioTranscodeSeekRef.current = false
+    pendingInitialSeekRef.current = pendingAudioTranscodeAutoplayRef.current !== false
+    requestedSeekPositionRef.current = target
+    if (bufferedTarget > 0.05) {
+      isSeekingRef.current = true
+      try {
+        player.currentTime = bufferedTarget
+      } catch {
+        isSeekingRef.current = false
+        pendingAudioTranscodeSeekRef.current = true
+      }
+    } else {
+      handleSeeked()
+    }
+    return true
+  }, [handleSeeked])
 
   useEffect(() => {
     progressContextRef.current = { item, profileId, video }
@@ -856,6 +923,8 @@ function WatchPage({
     sourceDurationRef.current = 0
     audioTranscodeBaseUrlRef.current = ''
     audioTranscodeOffsetRef.current = 0
+    audioTranscodeMediaRequestRef.current = null
+    pendingAudioTranscodeSeekRef.current = false
     audioTranscodeStartUrlRef.current = ''
     cancelAudioTranscodeStartRequest()
     pendingAudioTranscodeOffsetRef.current = 0
@@ -1015,6 +1084,10 @@ function WatchPage({
         audioTranscodeOffsetRef.current = audioTranscodeBaseUrlRef.current
           ? pendingAudioTranscodeOffsetRef.current
           : 0
+        audioTranscodeMediaRequestRef.current = audioTranscodeBaseUrlRef.current
+          ? audioTranscodeStartRequestRef.current.id
+          : null
+        pendingAudioTranscodeSeekRef.current = Boolean(audioTranscodeBaseUrlRef.current)
         player.src = streamUrl
         player.load()
         return
@@ -1122,21 +1195,9 @@ function WatchPage({
     setDuration(playbackDuration)
     const pendingTranscodeTarget = pendingAudioTranscodeTargetRef.current
     if (Number.isFinite(pendingTranscodeTarget) && audioTranscodeBaseUrlRef.current) {
-      const fragmentTarget = pendingTranscodeTarget - audioTranscodeOffsetRef.current
-      const hasFragmentDuration = Number.isFinite(player.duration) && player.duration > 0
-      const boundedFragmentTarget = hasFragmentDuration
-        ? Math.min(Math.max(0, player.duration - 0.05), Math.max(0, fragmentTarget))
-        : Math.max(0, fragmentTarget)
-      if (boundedFragmentTarget > 0.05) {
-        isSeekingRef.current = true
-        pendingInitialSeekRef.current = pendingAudioTranscodeAutoplayRef.current !== false
-        requestedSeekPositionRef.current = pendingTranscodeTarget
-        player.currentTime = boundedFragmentTarget
-        setCurrentTime(pendingTranscodeTarget)
-        setIsBuffering(true)
-        setTextTracksHidden(player)
-        return
-      }
+      applyPendingAudioTranscodeSeek()
+      setTextTracksHidden(player)
+      return
     }
     if (!restoredPositionRef.current) {
       const fallbackSeconds = fallbackPositionRef.current
@@ -1402,8 +1463,10 @@ function WatchPage({
           setShowControls(true)
         }}
         onError={handleMediaError}
+        onCanPlay={applyPendingAudioTranscodeSeek}
+        onProgress={applyPendingAudioTranscodeSeek}
         onLoadedData={() => {
-          if (Number.isFinite(pendingAudioTranscodeTargetRef.current)) return
+          if (applyPendingAudioTranscodeSeek()) return
           clearHeldFrame()
           setIsBuffering(false)
         }}

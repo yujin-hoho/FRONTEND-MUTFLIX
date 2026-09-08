@@ -75,3 +75,31 @@ python tests/test_frontend_routes.py ../serverUtama.py
 
 References: [Vite load error handling](https://vite.dev/guide/build#load-error-handling),
 [Vercel routing configuration](https://vercel.com/docs/project-configuration/vercel-json).
+
+## Transcode seek recovery follow-up
+
+The player now waits for the requested fragment position to be buffered and
+seekable before assigning `currentTime`. Metadata alone is insufficient, and a
+partial MP4 duration must not clamp a seek to the first fragment. Replaced media
+requests close before the next keyframe probe, and error recovery retains the
+pending absolute target. A later user seek cancels stale recovery work. Paused
+seeks also finish their pending state without requiring a `playing` event.
+
+Validation: eight browser regression scenarios passed using real React/DOM events
+with simulated progressive media data and API responses. Coverage includes slow
+buffering, buffered backward seeks, paused seeks, retries, rapid skips, request
+cleanup, partial duration, and Continue Watching. The original player failed the
+first scenario by assigning `currentTime = 7` while the new buffer was empty.
+Changed-file lint and the production build passed. These tests do not verify
+native media decoding or production Google Drive throughput.
+
+Run Vite on localhost port 5180 and a disposable Chrome profile with remote
+debugging on port 9224, then run from the repository root:
+
+```sh
+node frontend/tests/audio-transcode-seek.browser.mjs
+```
+
+This follow-up changes the frontend only and uses the existing backend API.
+Publish the rebuilt frontend to apply it. Browser API reference:
+[buffered and seekable ranges](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Audio_and_video_delivery/buffering_seeking_time_ranges).
