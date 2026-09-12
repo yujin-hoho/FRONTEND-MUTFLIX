@@ -9,6 +9,7 @@ import {
   normalizeMediaPath,
   normalizeWatchHistory,
 } from '../utils/media'
+import { getPersonSearchQueryVariants, rankPersonSearchResults } from '../utils/personSearch'
 
 const EMBEDDED_SUBTITLE_CACHE_VERSION = 'v6'
 const EMBEDDED_SUBTITLE_REQUEST_TIMEOUT_MS = 120000
@@ -328,25 +329,33 @@ export async function fetchTmdbPeopleSearch(authToken, query, { pages = 3, signa
   if (!normalizedQuery) return []
 
   const headers = { 'x-access-token': authToken }
-  const firstPage = await fetchTmdbPeopleSearchPage(headers, normalizedQuery, 1, signal)
+  const queryVariants = getPersonSearchQueryVariants(normalizedQuery)
+  const firstPage = await fetchTmdbPeopleSearchPage(headers, queryVariants[0], 1, signal)
   const pageLimit = Math.min(
     Number(firstPage.total_pages || 1),
     Math.max(1, Number(pages || 1)),
   )
-  const remainingPages = pageLimit > 1
-    ? await Promise.all(
-      Array.from({ length: pageLimit - 1 }, (_, index) => fetchTmdbPeopleSearchPage(headers, normalizedQuery, index + 2, signal)),
-    )
-    : []
+  const [fallbackPages, remainingPages] = await Promise.all([
+    Promise.all(queryVariants.slice(1).map((variant) => (
+      fetchOptionalTmdbPeopleSearchPage(headers, variant, signal)
+    ))),
+    pageLimit > 1
+      ? Promise.all(
+        Array.from({ length: pageLimit - 1 }, (_, index) => fetchTmdbPeopleSearchPage(headers, normalizedQuery, index + 2, signal)),
+      )
+      : [],
+  ])
 
-  const seen = new Set()
-  return [firstPage, ...remainingPages]
-    .flatMap((page) => Array.isArray(page.results) ? page.results : [])
-    .filter((person) => {
-      if (!person?.id || seen.has(person.id)) return false
-      seen.add(person.id)
-      return true
-    })
+  return rankPersonSearchResults([firstPage, ...remainingPages, ...fallbackPages], normalizedQuery)
+}
+
+async function fetchOptionalTmdbPeopleSearchPage(headers, query, signal) {
+  try {
+    return await fetchTmdbPeopleSearchPage(headers, query, 1, signal)
+  } catch (error) {
+    if (error.name === 'AbortError') throw error
+    return { results: [] }
+  }
 }
 
 async function fetchTmdbPeopleSearchPage(headers, query, page, signal) {
